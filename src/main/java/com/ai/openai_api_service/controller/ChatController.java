@@ -3,6 +3,7 @@ package com.ai.openai_api_service.controller;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.service.OpenAIService;
+import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -26,7 +27,7 @@ public class ChatController {
 
     @PostMapping
     @Operation(summary = "Send a chat message", description = "Sends user input to OpenAI and returns the response.")
-    public ResponseEntity<ChatResponse> chat(@RequestBody ChatRequest request) {
+    public ResponseEntity<ChatResponse> chat(@Valid @RequestBody ChatRequest request) {
         ChatResponse response = openAIService.chat(request);
         return ResponseEntity.ok(response);
     }

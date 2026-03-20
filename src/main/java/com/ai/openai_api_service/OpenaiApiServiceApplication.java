@@ -8,6 +8,7 @@ public class OpenaiApiServiceApplication {
 
 	public static void main(String[] args) {
 		SpringApplication.run(OpenaiApiServiceApplication.class, args);
+        System.out.println(System.getenv("OPENAI_API_KEY"));
         System.out.println(" >>>>>>>>>>>>>>>>>>Open AI Application started <<<<<<<<<<<<<<<<<<<<<<<<<<< ");
 	}
 }

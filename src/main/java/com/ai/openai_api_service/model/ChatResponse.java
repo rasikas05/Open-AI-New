@@ -2,6 +2,7 @@ package com.ai.openai_api_service.model;
 
 public class ChatResponse {
 
+    // Response returned to API clients for each chat request.
     private String reply;
     private boolean truncated;
 

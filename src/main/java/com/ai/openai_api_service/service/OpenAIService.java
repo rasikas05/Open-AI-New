@@ -15,6 +15,7 @@ import org.springframework.web.client.RestTemplate;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 @Service
@@ -47,9 +48,17 @@ public class OpenAIService {
 
         if (request.getHistory() != null) {
             for (MessageDto message : request.getHistory()) {
+                String role = message.getRole() == null ? null : message.getRole().trim().toLowerCase(Locale.ROOT);
+                String content = message.getContent() == null ? null : message.getContent().trim();
+                if (!isValidRole(role) || content == null || content.isBlank()) {
+                    throw new OpenAIException(
+                            "Invalid history item. role must be system/user/assistant and content must be non-empty.",
+                            400
+                    );
+                }
                 Map<String, String> map = new HashMap<>();
-                map.put("role", message.getRole());
-                map.put("content", message.getContent());
+                map.put("role", role);
+                map.put("content", content);
                 messages.add(map);
             }
         }
@@ -109,6 +118,10 @@ public class OpenAIService {
         }
 
         return new ChatResponse(content, truncated);
+    }
+
+    private boolean isValidRole(String role) {
+        return "system".equals(role) || "user".equals(role) || "assistant".equals(role);
     }
 }
 

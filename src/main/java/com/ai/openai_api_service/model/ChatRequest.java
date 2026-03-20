@@ -1,10 +1,18 @@
 package com.ai.openai_api_service.model;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import java.util.List;
 
 public class ChatRequest {
 
+    @NotBlank(message = "userMessage is required")
+    @Schema(example = "String")
     private String userMessage;
+
+    @Valid
+    @Schema(example = "[]")
     private List<MessageDto> history;
 
     public ChatRequest() {
