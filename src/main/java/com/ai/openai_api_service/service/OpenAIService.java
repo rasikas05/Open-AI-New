@@ -36,6 +36,13 @@ public class OpenAIService {
     }
 
     public ChatResponse chat(ChatRequest request) {
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new OpenAIException(
+                    "OpenAI API key is missing. Set OPENAI_API_KEY env var or openai.api.key property.",
+                    401
+            );
+        }
+
         List<Map<String, String>> messages = new ArrayList<>();
 
         if (request.getHistory() != null) {

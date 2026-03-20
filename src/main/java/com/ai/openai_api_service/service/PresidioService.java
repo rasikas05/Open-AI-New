@@ -3,6 +3,7 @@ package com.ai.openai_api_service.service;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 
 import java.util.HashMap;
@@ -25,29 +26,35 @@ public class PresidioService {
             return text;
         }
 
-        Map<String, Object> analyzeReq = new HashMap<>();
-        analyzeReq.put("text", text);
-        analyzeReq.put("language", "en");
+        try {
+            Map<String, Object> analyzeReq = new HashMap<>();
+            analyzeReq.put("text", text);
+            analyzeReq.put("language", "en");
 
-        ResponseEntity<List> analyzeResponse =
-                restTemplate.postForEntity(analyzerUrl, analyzeReq, List.class);
+            @SuppressWarnings("unchecked")
+            ResponseEntity<List<?>> analyzeResponse =
+                    (ResponseEntity<List<?>>) (ResponseEntity<?>) restTemplate.postForEntity(analyzerUrl, analyzeReq, List.class);
 
-        List<?> analyzerResults = analyzeResponse.getBody();
+            List<?> analyzerResults = analyzeResponse.getBody();
 
-        Map<String, Object> anonymizeReq = new HashMap<>();
-        anonymizeReq.put("text", text);
-        anonymizeReq.put("analyzer_results", analyzerResults);
+            Map<String, Object> anonymizeReq = new HashMap<>();
+            anonymizeReq.put("text", text);
+            anonymizeReq.put("analyzer_results", analyzerResults);
 
-        ResponseEntity<Map> anonymizedResponse =
-                restTemplate.postForEntity(anonymizerUrl, anonymizeReq, Map.class);
+            @SuppressWarnings("unchecked")
+            ResponseEntity<Map<?, ?>> anonymizedResponse =
+                    (ResponseEntity<Map<?, ?>>) (ResponseEntity<?>) restTemplate.postForEntity(anonymizerUrl, anonymizeReq, Map.class);
 
-        Map<?, ?> body = anonymizedResponse.getBody();
-        if (body == null) {
+            Map<?, ?> body = anonymizedResponse.getBody();
+            if (body == null) {
+                return text;
+            }
+
+            Object anonymizedText = body.get("text");
+            return anonymizedText != null ? anonymizedText.toString() : text;
+        } catch (RestClientException e) {
             return text;
         }
-
-        Object anonymizedText = body.get("text");
-        return anonymizedText != null ? anonymizedText.toString() : text;
     }
 }
 
