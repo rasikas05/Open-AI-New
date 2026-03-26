@@ -23,6 +23,7 @@ public class OpenAIService {
 
     private final RestTemplate restTemplate;
     private final PresidioService presidioService;
+    private final ChatPersistenceService chatPersistenceService;
 
     @Value("${openai.api.key}")
     private String apiKey;
@@ -33,9 +34,16 @@ public class OpenAIService {
     @Value("${openai.api.url}")
     private String openaiUrl;
 
-    public OpenAIService(PresidioService presidioService) {
+    @Value("${openai.assistant.system-prompt.enabled:true}")
+    private boolean systemPromptEnabled;
+
+    @Value("${openai.assistant.system-prompt:}")
+    private String systemPrompt;
+
+    public OpenAIService(PresidioService presidioService, ChatPersistenceService chatPersistenceService) {
         this.restTemplate = new RestTemplate();
         this.presidioService = presidioService;
+        this.chatPersistenceService = chatPersistenceService;
     }
 
     public ChatResponse chat(ChatRequest request) {
@@ -47,6 +55,12 @@ public class OpenAIService {
         }
 
         List<Map<String, String>> messages = new ArrayList<>();
+        if (systemPromptEnabled && systemPrompt != null && !systemPrompt.isBlank()) {
+            Map<String, String> systemMessage = new HashMap<>();
+            systemMessage.put("role", "system");
+            systemMessage.put("content", systemPrompt.trim());
+            messages.add(systemMessage);
+        }
 
         if (request.getHistory() != null) {
             for (MessageDto message : request.getHistory()) {
@@ -65,9 +79,12 @@ public class OpenAIService {
             }
         }
 
+        String originalUserText = request.getUserMessage();
+        String sanitizedUserText = presidioService.sanitizeText(originalUserText);
+
         Map<String, String> userMessage = new HashMap<>();
         userMessage.put("role", "user");
-        userMessage.put("content", presidioService.sanitizeText(request.getUserMessage()));
+        userMessage.put("content", sanitizedUserText);
         messages.add(userMessage);
 
         Map<String, Object> body = new HashMap<>();
@@ -119,11 +136,34 @@ public class OpenAIService {
             truncated = true;
         }
 
+        Integer totalTokens = extractTotalTokens(response);
+        chatPersistenceService.persistChat(
+                request.getTenantId(),
+                request.getUserId(),
+                request.getSessionId(),
+                originalUserText,
+                sanitizedUserText,
+                content,
+                totalTokens
+        );
+
         return new ChatResponse(content, truncated);
     }
 
     private boolean isValidRole(String role) {
         return "system".equals(role) || "user".equals(role) || "assistant".equals(role);
+    }
+
+    private Integer extractTotalTokens(Map<String, Object> response) {
+        Object usageObj = response.get("usage");
+        if (!(usageObj instanceof Map<?, ?> usageMap)) {
+            return null;
+        }
+        Object totalTokens = usageMap.get("total_tokens");
+        if (totalTokens instanceof Number n) {
+            return n.intValue();
+        }
+        return null;
     }
 }
 
