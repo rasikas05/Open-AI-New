@@ -22,6 +22,7 @@ import java.util.Map;
 public class OpenAIService {
 
     private final RestTemplate restTemplate;
+    private final PresidioService presidioService;
 
     @Value("${openai.api.key}")
     private String apiKey;
@@ -32,8 +33,9 @@ public class OpenAIService {
     @Value("${openai.api.url}")
     private String openaiUrl;
 
-    public OpenAIService() {
+    public OpenAIService(PresidioService presidioService) {
         this.restTemplate = new RestTemplate();
+        this.presidioService = presidioService;
     }
 
     public ChatResponse chat(ChatRequest request) {
@@ -58,14 +60,14 @@ public class OpenAIService {
                 }
                 Map<String, String> map = new HashMap<>();
                 map.put("role", role);
-                map.put("content", content);
+                map.put("content", "user".equals(role) ? presidioService.sanitizeText(content) : content);
                 messages.add(map);
             }
         }
 
         Map<String, String> userMessage = new HashMap<>();
         userMessage.put("role", "user");
-        userMessage.put("content", request.getUserMessage());
+        userMessage.put("content", presidioService.sanitizeText(request.getUserMessage()));
         messages.add(userMessage);
 
         Map<String, Object> body = new HashMap<>();
