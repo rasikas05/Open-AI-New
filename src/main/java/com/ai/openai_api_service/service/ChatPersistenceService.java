@@ -2,13 +2,19 @@ package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.entity.ChatMessageEntity;
 import com.ai.openai_api_service.entity.ChatSessionEntity;
+import com.ai.openai_api_service.model.MessageDto;
 import com.ai.openai_api_service.repository.ChatMessageRepository;
 import com.ai.openai_api_service.repository.ChatSessionRepository;
+import org.springframework.data.domain.PageRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 @Service
 public class ChatPersistenceService {
@@ -66,5 +72,45 @@ public class ChatPersistenceService {
             // Never fail chat response if persistence fails.
             log.error("Failed to persist chat interaction. sessionId={}, reason={}", sessionId, e.getMessage(), e);
         }
+    }
+
+    @Transactional(readOnly = true)
+    public List<MessageDto> loadHistoryForPrompt(String tenantId, String userId, String sessionId, int maxExchanges) {
+        if (maxExchanges <= 0) {
+            return List.of();
+        }
+        List<ChatMessageEntity> rows = chatMessageRepository.findByTenantIdAndUserIdAndSessionIdOrderByCreatedAtDesc(
+                tenantId,
+                userId,
+                sessionId,
+                PageRequest.of(0, maxExchanges)
+        );
+        Collections.reverse(rows);
+
+        List<MessageDto> messages = new ArrayList<>();
+        for (ChatMessageEntity row : rows) {
+            if (row.getSanitizedText() != null && !row.getSanitizedText().isBlank()) {
+                messages.add(new MessageDto("user", row.getSanitizedText()));
+            }
+            if (row.getOpenaiResponse() != null && !row.getOpenaiResponse().isBlank()) {
+                messages.add(new MessageDto("assistant", row.getOpenaiResponse()));
+            }
+        }
+        return messages;
+    }
+
+    @Transactional(readOnly = true)
+    public List<ChatMessageEntity> loadHistoryForDisplay(String tenantId, String userId, String sessionId, int maxExchanges) {
+        if (maxExchanges <= 0) {
+            return List.of();
+        }
+        List<ChatMessageEntity> rows = chatMessageRepository.findByTenantIdAndUserIdAndSessionIdOrderByCreatedAtDesc(
+                tenantId,
+                userId,
+                sessionId,
+                PageRequest.of(0, maxExchanges)
+        );
+        Collections.reverse(rows);
+        return rows;
     }
 }

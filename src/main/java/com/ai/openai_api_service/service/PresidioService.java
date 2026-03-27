@@ -36,95 +36,96 @@ public class PresidioService {
 
     private final RestTemplate restTemplate = new RestTemplate();
 
+    public Map<?, ?> analyzeRaw(String text) {
+        Map<String, Object> analyzeReq = new HashMap<>();
+        analyzeReq.put("text", text);
+        @SuppressWarnings("unchecked")
+        ResponseEntity<Map<?, ?>> analyzeResponse =
+                (ResponseEntity<Map<?, ?>>) (ResponseEntity<?>) restTemplate.postForEntity(
+                        analyzerUrl,
+                        buildEntity(analyzeReq),
+                        Map.class
+                );
+        return analyzeResponse.getBody();
+    }
+
+    public Map<?, ?> anonymizeRaw(String text) {
+        return anonymizeRaw(text, null);
+    }
+
+    public Map<?, ?> anonymizeRaw(String text, List<?> analyzerResults) {
+        Map<String, Object> anonymizeReq = new HashMap<>();
+        anonymizeReq.put("text", text);
+        if (analyzerResults != null && !analyzerResults.isEmpty()) {
+            anonymizeReq.put("analyzer_results", analyzerResults);
+        }
+        @SuppressWarnings("unchecked")
+        ResponseEntity<Map<?, ?>> anonymizedResponse =
+                (ResponseEntity<Map<?, ?>>) (ResponseEntity<?>) restTemplate.postForEntity(
+                        anonymizerUrl,
+                        buildEntity(anonymizeReq),
+                        Map.class
+                );
+        return anonymizedResponse.getBody();
+    }
+
     public String sanitizeText(String text) {
         if (!enabled || text == null || text.isBlank()) {
             return text;
         }
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new IllegalStateException("Presidio is enabled but presidio.api.key is empty.");
+        }
 
         try {
-            Map<String, Object> analyzeReq = new HashMap<>();
-            analyzeReq.put("text", text);
-
-            @SuppressWarnings("unchecked")
-            ResponseEntity<Map<?, ?>> analyzeResponse =
-                    (ResponseEntity<Map<?, ?>>) (ResponseEntity<?>) restTemplate.postForEntity(
-                            analyzerUrl,
-                            buildEntity(analyzeReq),
-                            Map.class
-                    );
-            Map<?, ?> analyzeBody = analyzeResponse.getBody();
+            Map<?, ?> analyzeBody = analyzeRaw(text);
             if (analyzeBody == null) {
-                log.warn("Presidio analyze returned empty body. Sending original text to OpenAI.");
-                return text;
+                throw new IllegalStateException("Presidio analyze returned empty body.");
             }
 
             Object analyzeStatus = analyzeBody.get("status");
             if (analyzeStatus == null || !"success".equalsIgnoreCase(analyzeStatus.toString())) {
-                log.warn("Presidio analyze status is not success. Sending original text to OpenAI.");
-                return text;
+                throw new IllegalStateException("Presidio analyze status is not success.");
             }
 
             Object analyzeDataObj = analyzeBody.get("data");
             if (!(analyzeDataObj instanceof Map<?, ?> analyzeDataMap)) {
-                log.warn("Presidio analyze data is missing/invalid. Sending original text to OpenAI.");
-                return text;
+                throw new IllegalStateException("Presidio analyze data is missing/invalid.");
             }
 
             Object entitiesObj = analyzeDataMap.get("entities");
-            if (!(entitiesObj instanceof List<?> entities) || entities.isEmpty()) {
-                log.info("Presidio analyze detected no entities. Sending original text to OpenAI.");
-                return text;
-            }
-
-            log.info("Presidio analyze detected {} entities. Calling anonymizer.", entities.size());
-
-            Map<String, Object> anonymizeReq = new HashMap<>();
-            anonymizeReq.put("text", text);
-
-            @SuppressWarnings("unchecked")
-            ResponseEntity<Map<?, ?>> anonymizedResponse =
-                    (ResponseEntity<Map<?, ?>>) (ResponseEntity<?>) restTemplate.postForEntity(
-                            anonymizerUrl,
-                            buildEntity(anonymizeReq),
-                            Map.class
-                    );
-
-            Map<?, ?> body = anonymizedResponse.getBody();
+            List<?> entities = entitiesObj instanceof List<?> list ? list : List.of();
+            log.info("Presidio analyze completed. entitiesCount={}. Calling anonymizer.", entities.size());
+            Map<?, ?> body = anonymizeRaw(text, entities);
             if (body == null) {
-                log.warn("Presidio anonymize returned empty body. Sending original text to OpenAI.");
-                return text;
+                throw new IllegalStateException("Presidio anonymize returned empty body.");
             }
 
             Object status = body.get("status");
             if (status == null || !"success".equalsIgnoreCase(status.toString())) {
-                log.warn("Presidio anonymize status is not success. Sending original text to OpenAI.");
-                return text;
+                throw new IllegalStateException("Presidio anonymize status is not success.");
             }
 
             Object dataObj = body.get("data");
             if (!(dataObj instanceof Map<?, ?> dataMap)) {
-                return text;
+                throw new IllegalStateException("Presidio anonymize data is missing/invalid.");
             }
 
             Object anonymizedText = dataMap.get("anonymized_text");
             if (anonymizedText == null || anonymizedText.toString().isBlank()) {
-                log.warn("Presidio anonymize text is empty. Sending original text to OpenAI.");
-                return text;
+                throw new IllegalStateException("Presidio anonymize text is empty.");
             }
             log.info("Presidio anonymization applied successfully.");
             return anonymizedText != null ? anonymizedText.toString() : text;
         } catch (RestClientException e) {
-            log.warn("Presidio call failed. Sending original text to OpenAI. reason={}", e.getMessage());
-            return text;
+            throw new IllegalStateException("Presidio call failed: " + e.getMessage(), e);
         }
     }
 
     private HttpEntity<Map<String, Object>> buildEntity(Map<String, Object> body) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
-        if (apiKey != null && !apiKey.isBlank()) {
-            headers.set(apiKeyHeader, apiKey);
-        }
+        headers.set(apiKeyHeader, apiKey);
         return new HttpEntity<>(body, headers);
     }
 }

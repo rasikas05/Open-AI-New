@@ -4,6 +4,8 @@ import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.MessageDto;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -17,9 +19,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 
 @Service
 public class OpenAIService {
+    private static final Logger log = LoggerFactory.getLogger(OpenAIService.class);
 
     private final RestTemplate restTemplate;
     private final PresidioService presidioService;
@@ -39,6 +43,21 @@ public class OpenAIService {
 
     @Value("${openai.assistant.system-prompt:}")
     private String systemPrompt;
+
+    @Value("${openai.input.remove-anonymization-placeholders:true}")
+    private boolean removeAnonymizationPlaceholders;
+
+    @Value("${openai.response.include-sanitization-debug:false}")
+    private boolean includeSanitizationDebug;
+
+    @Value("${chat.history.load-from-db:true}")
+    private boolean loadHistoryFromDb;
+
+    @Value("${chat.history.max-exchanges:10}")
+    private int maxHistoryExchanges;
+
+    @Value("${chat.history.allow-client-history:false}")
+    private boolean allowClientHistory;
 
     public OpenAIService(PresidioService presidioService, ChatPersistenceService chatPersistenceService) {
         this.restTemplate = new RestTemplate();
@@ -62,8 +81,23 @@ public class OpenAIService {
             messages.add(systemMessage);
         }
 
-        if (request.getHistory() != null) {
-            for (MessageDto message : request.getHistory()) {
+        List<MessageDto> sourceHistory;
+        if (loadHistoryFromDb) {
+            sourceHistory = chatPersistenceService.loadHistoryForPrompt(
+                    request.getTenantId(),
+                    request.getUserId(),
+                    request.getSessionId(),
+                    maxHistoryExchanges
+            );
+        } else if (allowClientHistory && request.getHistory() != null) {
+            sourceHistory = request.getHistory();
+        } else {
+            sourceHistory = List.of();
+        }
+        int historyCount = sourceHistory != null ? sourceHistory.size() : 0;
+
+        if (sourceHistory != null) {
+            for (MessageDto message : sourceHistory) {
                 String role = message.getRole() == null ? null : message.getRole().trim().toLowerCase(Locale.ROOT);
                 String content = message.getContent() == null ? null : message.getContent().trim();
                 if (!isValidRole(role) || content == null || content.isBlank()) {
@@ -74,17 +108,29 @@ public class OpenAIService {
                 }
                 Map<String, String> map = new HashMap<>();
                 map.put("role", role);
-                map.put("content", "user".equals(role) ? presidioService.sanitizeText(content) : content);
+                map.put("content", "user".equals(role)
+                        ? prepareUserContentForOpenAi(presidioService.sanitizeText(content))
+                        : content);
                 messages.add(map);
             }
         }
 
         String originalUserText = request.getUserMessage();
         String sanitizedUserText = presidioService.sanitizeText(originalUserText);
+        String modelReadyUserText = prepareUserContentForOpenAi(sanitizedUserText);
+        log.info(
+                "Preparing OpenAI call. tenantId={}, userId={}, sessionId={}, historyCount={}, original='{}', modelReady='{}'",
+                request.getTenantId(),
+                request.getUserId(),
+                request.getSessionId(),
+                historyCount,
+                originalUserText,
+                modelReadyUserText
+        );
 
         Map<String, String> userMessage = new HashMap<>();
         userMessage.put("role", "user");
-        userMessage.put("content", sanitizedUserText);
+        userMessage.put("content", modelReadyUserText);
         messages.add(userMessage);
 
         Map<String, Object> body = new HashMap<>();
@@ -142,12 +188,17 @@ public class OpenAIService {
                 request.getUserId(),
                 request.getSessionId(),
                 originalUserText,
-                sanitizedUserText,
+                modelReadyUserText,
                 content,
                 totalTokens
         );
 
-        return new ChatResponse(content, truncated);
+        ChatResponse chatResponse = new ChatResponse(content, truncated);
+        chatResponse.setSanitizationApplied(!Objects.equals(originalUserText, modelReadyUserText));
+        if (includeSanitizationDebug) {
+            chatResponse.setSanitizedUserMessage(modelReadyUserText);
+        }
+        return chatResponse;
     }
 
     private boolean isValidRole(String role) {
@@ -164,6 +215,20 @@ public class OpenAIService {
             return n.intValue();
         }
         return null;
+    }
+
+    private String prepareUserContentForOpenAi(String sanitizedText) {
+        if (sanitizedText == null) {
+            return null;
+        }
+        if (!removeAnonymizationPlaceholders) {
+            return sanitizedText;
+        }
+        String withoutTags = sanitizedText
+                .replaceAll("<[A-Z_]+>", " ")
+                .replaceAll("\\s{2,}", " ")
+                .trim();
+        return withoutTags.isBlank() ? sanitizedText : withoutTags;
     }
 }
 
