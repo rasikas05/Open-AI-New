@@ -4,6 +4,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestClientException;
@@ -117,6 +118,21 @@ public class PresidioService {
             }
             log.info("Presidio anonymization applied successfully.");
             return anonymizedText != null ? anonymizedText.toString() : text;
+        } catch (HttpStatusCodeException e) {
+            HttpHeaders h = e.getResponseHeaders();
+            if (h != null) {
+                // Presidio rate limiting headers vary; log everything we might get.
+                log.warn("Presidio error x-ratelimit-limit-requests={}", h.getFirst("x-ratelimit-limit-requests"));
+                log.warn("Presidio error x-ratelimit-remaining-requests={}", h.getFirst("x-ratelimit-remaining-requests"));
+                log.warn("Presidio error x-ratelimit-reset-requests={}", h.getFirst("x-ratelimit-reset-requests"));
+                log.warn("Presidio error x-ratelimit-limit-tokens={}", h.getFirst("x-ratelimit-limit-tokens"));
+                log.warn("Presidio error x-ratelimit-remaining-tokens={}", h.getFirst("x-ratelimit-remaining-tokens"));
+                log.warn("Presidio error x-ratelimit-reset-tokens={}", h.getFirst("x-ratelimit-reset-tokens"));
+            }
+
+            String errorBody = e.getResponseBodyAsString();
+            log.warn("Presidio error status={} body={}", e.getStatusCode(), errorBody);
+            throw new IllegalStateException("Presidio call failed: " + e.getStatusCode() + " body=" + errorBody, e);
         } catch (RestClientException e) {
             throw new IllegalStateException("Presidio call failed: " + e.getMessage(), e);
         }

@@ -9,6 +9,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
@@ -145,9 +147,32 @@ public class OpenAIService {
 
         Map<String, Object> response;
         try {
-            response = restTemplate.postForObject(openaiUrl, entity, Map.class);
+            ResponseEntity<Map> responseEntity = restTemplate.exchange(
+                    openaiUrl,
+                    HttpMethod.POST,
+                    entity,
+                    Map.class
+            );
+            response = responseEntity.getBody();
         } catch (HttpClientErrorException e) {
             int code = e.getStatusCode().value();
+            HttpHeaders h = e.getResponseHeaders();
+            if (h != null) {
+                // OpenAI includes useful rate-limit headers on 429; logging them removes guesswork.
+                log.warn("OpenAI x-ratelimit-limit-requests={}", h.getFirst("x-ratelimit-limit-requests"));
+                log.warn("OpenAI x-ratelimit-remaining-requests={}", h.getFirst("x-ratelimit-remaining-requests"));
+                log.warn("OpenAI x-ratelimit-reset-requests={}", h.getFirst("x-ratelimit-reset-requests"));
+                log.warn("OpenAI x-ratelimit-limit-tokens={}", h.getFirst("x-ratelimit-limit-tokens"));
+                log.warn("OpenAI x-ratelimit-remaining-tokens={}", h.getFirst("x-ratelimit-remaining-tokens"));
+                log.warn("OpenAI x-ratelimit-reset-tokens={}", h.getFirst("x-ratelimit-reset-tokens"));
+            } else {
+                log.warn("OpenAI error response headers are empty.");
+            }
+
+            String errorBody = e.getResponseBodyAsString();
+            // MUST log full body for 429 diagnosis (quota vs rate limit).
+            log.warn("OpenAI error status={} body={}", e.getStatusCode(), errorBody);
+
             String msg = code == 401
                     ? "OpenAI API key is invalid or missing. Check openai.api.key in application.properties (no quotes)."
                     : "OpenAI API error: " + code + " " + e.getStatusText();
