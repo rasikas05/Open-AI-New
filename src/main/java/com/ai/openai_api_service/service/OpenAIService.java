@@ -83,18 +83,30 @@ public class OpenAIService {
             messages.add(systemMessage);
         }
 
+        // Choose history source:
+        // 1) If client sends non-empty `history`, prefer it (so the model uses the context you pass in).
+        // 2) Otherwise fall back to DB history (when enabled).
+        List<MessageDto> clientHistory = request.getHistory() != null ? request.getHistory() : List.of();
+        boolean hasClientHistory = allowClientHistory && !clientHistory.isEmpty();
+
         List<MessageDto> sourceHistory;
-        if (loadHistoryFromDb) {
+        if (hasClientHistory) {
+            sourceHistory = clientHistory;
+        } else if (loadHistoryFromDb) {
             sourceHistory = chatPersistenceService.loadHistoryForPrompt(
                     request.getTenantId(),
                     request.getUserId(),
                     request.getSessionId(),
                     maxHistoryExchanges
             );
-        } else if (allowClientHistory && request.getHistory() != null) {
-            sourceHistory = request.getHistory();
         } else {
             sourceHistory = List.of();
+        }
+
+        // Safety cap to avoid sending very large histories into the model.
+        if (sourceHistory != null && sourceHistory.size() > maxHistoryExchanges) {
+            int fromIndex = Math.max(0, sourceHistory.size() - maxHistoryExchanges);
+            sourceHistory = sourceHistory.subList(fromIndex, sourceHistory.size());
         }
         int historyCount = sourceHistory != null ? sourceHistory.size() : 0;
 
