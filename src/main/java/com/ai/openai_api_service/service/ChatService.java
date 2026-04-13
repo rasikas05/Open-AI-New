@@ -13,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Arrays;
 
 @Service
 public class ChatService {
@@ -23,6 +24,7 @@ public class ChatService {
     private final SuggestionRuleService suggestionRuleService;
     private final SuggestionLLMService suggestionLLMService;
     private final SuggestionCacheService suggestionCacheService;
+    private final TenantQuotaService tenantQuotaService;
 
     @Value("${suggestion.min-count:3}")
     private int minSuggestionCount;
@@ -40,16 +42,43 @@ public class ChatService {
             OpenAIService openAIService,
             SuggestionRuleService suggestionRuleService,
             SuggestionLLMService suggestionLLMService,
-            SuggestionCacheService suggestionCacheService
+            SuggestionCacheService suggestionCacheService,
+            TenantQuotaService tenantQuotaService
     ) {
         this.openAIService = openAIService;
         this.suggestionRuleService = suggestionRuleService;
         this.suggestionLLMService = suggestionLLMService;
         this.suggestionCacheService = suggestionCacheService;
+        this.tenantQuotaService = tenantQuotaService;
     }
 
     public ChatResponse chat(ChatRequest request) {
+        TenantQuotaService.QuotaCheckResult quotaCheck = tenantQuotaService.checkBeforeChat(request.getTenantId());
+        if (!quotaCheck.allowed()) {
+            String reason = quotaCheck.reason();
+            String reply = "Token limit reached for this tenant. Please top up to continue.";
+            if ("QUOTA_NOT_CONFIGURED".equals(reason)) {
+                reply = "Quota is not configured for this tenant. Please contact admin.";
+            } else if ("TENANT_BLOCKED".equals(reason)) {
+                reply = "This tenant is blocked. Please contact admin.";
+            }
+            ChatResponse blocked = new ChatResponse(reply, false);
+            blocked.setLimitExceeded(true);
+            blocked.setUsage(quotaCheck.usage());
+            blocked.setBlockReason(reason);
+            if ("QUOTA_NOT_CONFIGURED".equals(reason)) {
+                blocked.setUpgradeOptions(List.of("Contact admin to assign quota"));
+            } else {
+                blocked.setUpgradeOptions(Arrays.asList("Buy 100 tokens", "Buy 500 tokens", "Buy 5000 tokens"));
+            }
+            return blocked;
+        }
+
         ChatResponse chatResponse = openAIService.chat(request);
+        if (Boolean.TRUE.equals(chatResponse.getLimitExceeded())) {
+            return chatResponse;
+        }
+        chatResponse.setLimitExceeded(false);
         SuggestionResult suggestionResult = buildSuggestions(request);
         chatResponse.setSuggestions(suggestionResult.suggestions());
         chatResponse.setSuggestionDetails(suggestionResult.details());

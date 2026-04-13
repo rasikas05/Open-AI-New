@@ -7,6 +7,7 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.client.RestClientException;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -49,6 +50,18 @@ public class GlobalExceptionHandler {
                 .status(status)
                 .body(Map.of(
                         "error", "Upstream service error: " + e.getMessage(),
+                        "status", status
+                ));
+    }
+
+    @ExceptionHandler(ResponseStatusException.class)
+    public ResponseEntity<Map<String, Object>> handleResponseStatusException(ResponseStatusException e) {
+        int status = e.getStatusCode().value();
+        String message = e.getReason() == null ? "Request failed" : e.getReason();
+        return ResponseEntity
+                .status(status)
+                .body(Map.of(
+                        "error", message,
                         "status", status
                 ));
     }

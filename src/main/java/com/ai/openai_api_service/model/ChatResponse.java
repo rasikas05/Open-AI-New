@@ -11,6 +11,10 @@ public class ChatResponse {
     private String sanitizedUserMessage;
     private List<String> suggestions;
     private List<SuggestionDto> suggestionDetails;
+    private Boolean limitExceeded;
+    private TokenUsageDto usage;
+    private List<String> upgradeOptions;
+    private String blockReason;
 
     public ChatResponse() {
     }
@@ -66,6 +70,38 @@ public class ChatResponse {
 
     public void setSuggestionDetails(List<SuggestionDto> suggestionDetails) {
         this.suggestionDetails = suggestionDetails;
+    }
+
+    public Boolean getLimitExceeded() {
+        return limitExceeded;
+    }
+
+    public void setLimitExceeded(Boolean limitExceeded) {
+        this.limitExceeded = limitExceeded;
+    }
+
+    public TokenUsageDto getUsage() {
+        return usage;
+    }
+
+    public void setUsage(TokenUsageDto usage) {
+        this.usage = usage;
+    }
+
+    public List<String> getUpgradeOptions() {
+        return upgradeOptions;
+    }
+
+    public void setUpgradeOptions(List<String> upgradeOptions) {
+        this.upgradeOptions = upgradeOptions;
+    }
+
+    public String getBlockReason() {
+        return blockReason;
+    }
+
+    public void setBlockReason(String blockReason) {
+        this.blockReason = blockReason;
     }
 }
 

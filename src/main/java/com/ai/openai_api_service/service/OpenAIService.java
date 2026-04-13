@@ -1,5 +1,6 @@
 package com.ai.openai_api_service.service;
 
+import com.ai.openai_api_service.exception.TenantQuotaExceededException;
 import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
@@ -22,6 +23,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Arrays;
 
 @Service
 public class OpenAIService {
@@ -30,6 +32,7 @@ public class OpenAIService {
     private final RestTemplate restTemplate;
     private final PresidioService presidioService;
     private final ChatPersistenceService chatPersistenceService;
+    private final TenantQuotaService tenantQuotaService;
 
     @Value("${openai.api.key}")
     private String apiKey;
@@ -61,10 +64,15 @@ public class OpenAIService {
     @Value("${chat.history.allow-client-history:false}")
     private boolean allowClientHistory;
 
-    public OpenAIService(PresidioService presidioService, ChatPersistenceService chatPersistenceService) {
+    public OpenAIService(
+            PresidioService presidioService,
+            ChatPersistenceService chatPersistenceService,
+            TenantQuotaService tenantQuotaService
+    ) {
         this.restTemplate = new RestTemplate();
         this.presidioService = presidioService;
         this.chatPersistenceService = chatPersistenceService;
+        this.tenantQuotaService = tenantQuotaService;
     }
 
     public ChatResponse chat(ChatRequest request) {
@@ -220,6 +228,18 @@ public class OpenAIService {
         }
 
         Integer totalTokens = extractTotalTokens(response);
+        int consumedTokens = totalTokens != null ? totalTokens : 0;
+        String usageReferenceId = request.getSessionId() + ":" + System.currentTimeMillis();
+        try {
+            tenantQuotaService.recordUsage(request.getTenantId(), consumedTokens, usageReferenceId);
+        } catch (TenantQuotaExceededException e) {
+            ChatResponse blocked = new ChatResponse("Token limit reached for this tenant. Please top up to continue.", false);
+            blocked.setLimitExceeded(true);
+            blocked.setUsage(e.getUsage());
+            blocked.setBlockReason("LIMIT_EXCEEDED");
+            blocked.setUpgradeOptions(Arrays.asList("Buy 100 tokens", "Buy 500 tokens", "Buy 5000 tokens"));
+            return blocked;
+        }
         chatPersistenceService.persistChat(
                 request.getTenantId(),
                 request.getUserId(),
@@ -227,7 +247,7 @@ public class OpenAIService {
                 originalUserText,
                 modelReadyUserText,
                 content,
-                totalTokens
+                consumedTokens
         );
 
         ChatResponse chatResponse = new ChatResponse(content, truncated);
