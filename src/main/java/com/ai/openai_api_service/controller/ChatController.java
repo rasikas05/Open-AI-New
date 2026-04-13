@@ -8,8 +8,8 @@ import com.ai.openai_api_service.model.MessageDto;
 import com.ai.openai_api_service.model.SessionCountDto;
 import com.ai.openai_api_service.model.SessionMessageDto;
 import com.ai.openai_api_service.model.SessionSummaryDto;
+import com.ai.openai_api_service.service.ChatService;
 import com.ai.openai_api_service.service.ChatPersistenceService;
-import com.ai.openai_api_service.service.OpenAIService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
 import io.swagger.v3.oas.annotations.Operation;
@@ -31,18 +31,18 @@ import java.util.List;
 @CrossOrigin(origins = "*")
 public class ChatController {
 
-    private final OpenAIService openAIService;
+    private final ChatService chatService;
     private final ChatPersistenceService chatPersistenceService;
 
-    public ChatController(OpenAIService openAIService, ChatPersistenceService chatPersistenceService) {
-        this.openAIService = openAIService;
+    public ChatController(ChatService chatService, ChatPersistenceService chatPersistenceService) {
+        this.chatService = chatService;
         this.chatPersistenceService = chatPersistenceService;
     }
 
     @PostMapping
     @Operation(summary = "Send a chat message", description = "Sends user input to OpenAI and returns the response.")
     public ResponseEntity<ChatResponse> chat(@Valid @RequestBody ChatRequest request) {
-        ChatResponse response = openAIService.chat(request);
+        ChatResponse response = chatService.chat(request);
         return ResponseEntity.ok(response);
     }
 

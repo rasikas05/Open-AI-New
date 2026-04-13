@@ -1,0 +1,150 @@
+package com.ai.openai_api_service.service;
+
+import com.ai.openai_api_service.model.ChatRequest;
+import com.ai.openai_api_service.model.ChatResponse;
+import com.ai.openai_api_service.model.SuggestionDto;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.stereotype.Service;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+
+@Service
+public class ChatService {
+
+    private static final Logger log = LoggerFactory.getLogger(ChatService.class);
+
+    private final OpenAIService openAIService;
+    private final SuggestionRuleService suggestionRuleService;
+    private final SuggestionLLMService suggestionLLMService;
+    private final SuggestionCacheService suggestionCacheService;
+
+    @Value("${suggestion.min-count:3}")
+    private int minSuggestionCount;
+
+    @Value("${suggestion.max-count:5}")
+    private int maxSuggestionCount;
+
+    @Value("${suggestion.rule.enabled:true}")
+    private boolean ruleEnabled;
+
+    @Value("${suggestion.llm.enabled:true}")
+    private boolean llmEnabled;
+
+    public ChatService(
+            OpenAIService openAIService,
+            SuggestionRuleService suggestionRuleService,
+            SuggestionLLMService suggestionLLMService,
+            SuggestionCacheService suggestionCacheService
+    ) {
+        this.openAIService = openAIService;
+        this.suggestionRuleService = suggestionRuleService;
+        this.suggestionLLMService = suggestionLLMService;
+        this.suggestionCacheService = suggestionCacheService;
+    }
+
+    public ChatResponse chat(ChatRequest request) {
+        ChatResponse chatResponse = openAIService.chat(request);
+        SuggestionResult suggestionResult = buildSuggestions(request);
+        chatResponse.setSuggestions(suggestionResult.suggestions());
+        chatResponse.setSuggestionDetails(suggestionResult.details());
+        return chatResponse;
+    }
+
+    private SuggestionResult buildSuggestions(ChatRequest request) {
+        int minCount = Math.max(1, minSuggestionCount);
+        int maxCount = Math.max(minCount, maxSuggestionCount);
+
+        Map<String, String> merged = new LinkedHashMap<>();
+        if (ruleEnabled) {
+            List<String> ruleSuggestions = suggestionRuleService.suggest(request.getUserMessage(), maxCount);
+            for (String suggestion : ruleSuggestions) {
+                merged.putIfAbsent(suggestion, "RULE");
+            }
+        }
+
+        if (llmEnabled && merged.size() < minCount) {
+            String cacheKey = buildCacheKey(request);
+            List<String> cached = suggestionCacheService.get(cacheKey);
+            if (!cached.isEmpty()) {
+                for (String suggestion : cached) {
+                    merged.putIfAbsent(suggestion, "LLM");
+                }
+            } else {
+                List<String> llmSuggestions = suggestionLLMService.suggest(request, minCount, maxCount);
+                if (!llmSuggestions.isEmpty()) {
+                    suggestionCacheService.put(cacheKey, llmSuggestions);
+                    for (String suggestion : llmSuggestions) {
+                        merged.putIfAbsent(suggestion, "LLM");
+                    }
+                }
+            }
+        }
+
+        List<SuggestionDto> details = cleanSuggestionDetails(merged, maxCount);
+        List<String> result = details.stream().map(SuggestionDto::getText).toList();
+        if (details.isEmpty()) {
+            log.info("No suggestions generated for tenantId={}, userId={}, sessionId={}",
+                    request.getTenantId(), request.getUserId(), request.getSessionId());
+        }
+        return new SuggestionResult(result, details);
+    }
+
+    private String buildCacheKey(ChatRequest request) {
+        String tenant = normalizeToken(request.getTenantId());
+        String user = normalizeToken(request.getUserId());
+        String session = normalizeToken(request.getSessionId());
+        String msg = normalizeToken(request.getUserMessage());
+        return tenant + "|" + user + "|" + session + "|" + msg;
+    }
+
+    private String normalizeToken(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
+    }
+
+    private List<SuggestionDto> cleanSuggestionDetails(Map<String, String> sourceWithType, int maxCount) {
+        List<SuggestionDto> result = new ArrayList<>();
+        for (Map.Entry<String, String> entry : sourceWithType.entrySet()) {
+            String suggestion = entry.getKey();
+            String sourceType = entry.getValue();
+            if (suggestion == null) {
+                continue;
+            }
+            String clean = suggestion.trim().replaceAll("\\s{2,}", " ");
+            if (clean.isBlank()) {
+                continue;
+            }
+            if (clean.length() > 140) {
+                clean = clean.substring(0, 140).trim();
+            }
+            if (!clean.endsWith("?")) {
+                clean = clean + "?";
+            }
+            boolean alreadyPresent = false;
+            for (SuggestionDto item : result) {
+                if (clean.equals(item.getText())) {
+                    alreadyPresent = true;
+                    break;
+                }
+            }
+            if (!alreadyPresent) {
+                result.add(new SuggestionDto(clean, sourceType));
+            }
+            if (result.size() >= maxCount) {
+                break;
+            }
+        }
+        return result;
+    }
+
+    private record SuggestionResult(List<String> suggestions, List<SuggestionDto> details) {
+    }
+}

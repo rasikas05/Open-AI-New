@@ -1,5 +1,7 @@
 package com.ai.openai_api_service.model;
 
+import java.util.List;
+
 public class ChatResponse {
 
     // Response returned to API clients for each chat request.
@@ -7,6 +9,8 @@ public class ChatResponse {
     private boolean truncated;
     private Boolean sanitizationApplied;
     private String sanitizedUserMessage;
+    private List<String> suggestions;
+    private List<SuggestionDto> suggestionDetails;
 
     public ChatResponse() {
     }
@@ -46,6 +50,22 @@ public class ChatResponse {
 
     public void setSanitizedUserMessage(String sanitizedUserMessage) {
         this.sanitizedUserMessage = sanitizedUserMessage;
+    }
+
+    public List<String> getSuggestions() {
+        return suggestions;
+    }
+
+    public void setSuggestions(List<String> suggestions) {
+        this.suggestions = suggestions;
+    }
+
+    public List<SuggestionDto> getSuggestionDetails() {
+        return suggestionDetails;
+    }
+
+    public void setSuggestionDetails(List<SuggestionDto> suggestionDetails) {
+        this.suggestionDetails = suggestionDetails;
     }
 }
 
