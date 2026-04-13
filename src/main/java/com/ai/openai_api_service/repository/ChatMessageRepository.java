@@ -13,4 +13,10 @@ public interface ChatMessageRepository extends JpaRepository<ChatMessageEntity, 
             String sessionId,
             Pageable pageable
     );
+
+    List<ChatMessageEntity> findByTenantIdAndUserIdAndSessionIdOrderByCreatedAtAsc(
+            String tenantId,
+            String userId,
+            String sessionId
+    );
 }

@@ -113,4 +113,19 @@ public class ChatPersistenceService {
         Collections.reverse(rows);
         return rows;
     }
+
+    @Transactional(readOnly = true)
+    public List<ChatSessionEntity> listSessions(String tenantId, String userId) {
+        return chatSessionRepository.findByTenantIdAndUserIdOrderByUpdatedAtDesc(tenantId, userId);
+    }
+
+    @Transactional(readOnly = true)
+    public long countSessions(String tenantId, String userId) {
+        return chatSessionRepository.countByTenantIdAndUserId(tenantId, userId);
+    }
+
+    @Transactional(readOnly = true)
+    public List<ChatMessageEntity> loadSessionMessages(String tenantId, String userId, String sessionId) {
+        return chatMessageRepository.findByTenantIdAndUserIdAndSessionIdOrderByCreatedAtAsc(tenantId, userId, sessionId);
+    }
 }
