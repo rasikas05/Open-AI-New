@@ -79,34 +79,25 @@ public class PresidioService {
         }
 
         try {
-            Map<?, ?> analyzeBody = analyzeRaw(text);
-            if (analyzeBody == null) {
-                throw new IllegalStateException("Presidio analyze returned empty body.");
-            }
-
-            Object analyzeStatus = analyzeBody.get("status");
-            if (analyzeStatus == null || !"success".equalsIgnoreCase(analyzeStatus.toString())) {
-                throw new IllegalStateException("Presidio analyze status is not success.");
-            }
-
-            Object analyzeDataObj = analyzeBody.get("data");
-            if (!(analyzeDataObj instanceof Map<?, ?> analyzeDataMap)) {
-                throw new IllegalStateException("Presidio analyze data is missing/invalid.");
-            }
-
-            Object entitiesObj = analyzeDataMap.get("entities");
-            List<?> entities = entitiesObj instanceof List<?> list ? list : List.of();
-            log.info("Presidio analyze completed. entitiesCount={}. Calling anonymizer.", entities.size());
-            Map<?, ?> body = anonymizeRaw(text, entities);
+            Map<?, ?> body = anonymizeRaw(text);
             if (body == null) {
                 throw new IllegalStateException("Presidio anonymize returned empty body.");
             }
 
-            Object status = body.get("status");
-            if (status == null || !"success".equalsIgnoreCase(status.toString())) {
-                throw new IllegalStateException("Presidio anonymize status is not success.");
+            // New Python contract:
+            // { "originalText": "...", "sanitizedText": "...", "entities": [...] }
+            Object newSanitizedText = body.get("sanitizedText");
+            if (newSanitizedText != null && !newSanitizedText.toString().isBlank()) {
+                log.info("Presidio anonymization applied successfully (new contract).");
+                return newSanitizedText.toString();
             }
 
+            // Backward compatibility with old wrapped contract:
+            // { "status":"success", "data":{"anonymized_text":"..."} }
+            Object status = body.get("status");
+            if (status == null || !"success".equalsIgnoreCase(status.toString())) {
+                throw new IllegalStateException("Presidio anonymize response is invalid.");
+            }
             Object dataObj = body.get("data");
             if (!(dataObj instanceof Map<?, ?> dataMap)) {
                 throw new IllegalStateException("Presidio anonymize data is missing/invalid.");
@@ -116,8 +107,8 @@ public class PresidioService {
             if (anonymizedText == null || anonymizedText.toString().isBlank()) {
                 throw new IllegalStateException("Presidio anonymize text is empty.");
             }
-            log.info("Presidio anonymization applied successfully.");
-            return anonymizedText != null ? anonymizedText.toString() : text;
+            log.info("Presidio anonymization applied successfully (legacy contract).");
+            return anonymizedText.toString();
         } catch (HttpStatusCodeException e) {
             HttpHeaders h = e.getResponseHeaders();
             if (h != null) {

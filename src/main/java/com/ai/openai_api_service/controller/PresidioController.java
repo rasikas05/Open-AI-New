@@ -12,7 +12,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -35,20 +34,9 @@ public class PresidioController {
     }
 
     @PostMapping("/anonymize")
-    @Operation(summary = "Anonymize text with Presidio", description = "Analyzes then anonymizes text, forwarding analyzer_results to Python anonymizer.")
+    @Operation(summary = "Anonymize text with Presidio", description = "Proxies request to Python anonymizer and returns raw response.")
     public ResponseEntity<Map<?, ?>> anonymize(@Valid @RequestBody PresidioTextRequest request) {
-        Map<?, ?> analyzeResponse = presidioService.analyzeRaw(request.getText());
-        List<?> analyzerResults = null;
-        if (analyzeResponse != null) {
-            Object dataObj = analyzeResponse.get("data");
-            if (dataObj instanceof Map<?, ?> dataMap) {
-                Object entitiesObj = dataMap.get("entities");
-                if (entitiesObj instanceof List<?> entities) {
-                    analyzerResults = entities;
-                }
-            }
-        }
-        Map<?, ?> response = presidioService.anonymizeRaw(request.getText(), analyzerResults);
+        Map<?, ?> response = presidioService.anonymizeRaw(request.getText());
         return ResponseEntity.ok(response);
     }
 }
