@@ -1,5 +1,6 @@
 package com.ai.openai_api_service.controller;
 
+import com.ai.openai_api_service.config.JwtUtil;
 import com.ai.openai_api_service.entity.ChatMessageEntity;
 import com.ai.openai_api_service.entity.ChatSessionEntity;
 import com.ai.openai_api_service.model.ChatRequest;
@@ -11,7 +12,10 @@ import com.ai.openai_api_service.model.SessionSummaryDto;
 import com.ai.openai_api_service.service.ChatService;
 import com.ai.openai_api_service.service.ChatPersistenceService;
 import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.CrossOrigin;
@@ -31,29 +35,39 @@ import java.util.List;
 @CrossOrigin(origins = "*")
 public class ChatController {
 
+    private static final Logger logger = LoggerFactory.getLogger(ChatController.class);
+
     private final ChatService chatService;
     private final ChatPersistenceService chatPersistenceService;
+    private final JwtUtil jwtUtil;
 
-    public ChatController(ChatService chatService, ChatPersistenceService chatPersistenceService) {
+    public ChatController(ChatService chatService, ChatPersistenceService chatPersistenceService, JwtUtil jwtUtil) {
         this.chatService = chatService;
         this.chatPersistenceService = chatPersistenceService;
+        this.jwtUtil = jwtUtil;
     }
 
     @PostMapping
     @Operation(summary = "Send a chat message", description = "Sends user input to OpenAI and returns the response.")
+    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
     public ResponseEntity<ChatResponse> chat(@Valid @RequestBody ChatRequest request) {
+        String clientId = jwtUtil.getClientId();
+        logger.info("Chat request from client_id: {}", clientId);
         ChatResponse response = chatService.chat(request);
         return ResponseEntity.ok(response);
     }
 
     @GetMapping("/history")
     @Operation(summary = "Get chat history", description = "Returns prior session messages for widget display.")
+    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
     public ResponseEntity<List<MessageDto>> history(
             @RequestParam String tenantId,
             @RequestParam String userId,
             @RequestParam String sessionId,
             @RequestParam(defaultValue = "10") int maxExchanges
     ) {
+        String clientId = jwtUtil.getClientId();
+        logger.info("History request from client_id: {}", clientId);
         List<MessageDto> response = chatPersistenceService.loadHistoryForPrompt(
                 tenantId,
                 userId,
@@ -65,10 +79,13 @@ public class ChatController {
 
     @GetMapping("/sessions")
     @Operation(summary = "List user sessions", description = "Returns session-wise history for a tenant user.")
+    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
     public ResponseEntity<List<SessionSummaryDto>> listSessions(
             @RequestParam String tenantId,
             @RequestParam String userId
     ) {
+        String clientId = jwtUtil.getClientId();
+        logger.info("List sessions request from client_id: {}", clientId);
         List<ChatSessionEntity> sessions = chatPersistenceService.listSessions(tenantId, userId);
         List<SessionSummaryDto> response = sessions.stream()
                 .map(session -> new SessionSummaryDto(
@@ -85,10 +102,13 @@ public class ChatController {
 
     @GetMapping("/sessions/count")
     @Operation(summary = "Count user sessions", description = "Returns number of sessions for a tenant user.")
+    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
     public ResponseEntity<SessionCountDto> countSessions(
             @RequestParam String tenantId,
             @RequestParam String userId
     ) {
+        String clientId = jwtUtil.getClientId();
+        logger.info("Count sessions request from client_id: {}", clientId);
         long sessionCount = chatPersistenceService.countSessions(tenantId, userId);
         SessionCountDto response = new SessionCountDto(tenantId, userId, sessionCount);
         return ResponseEntity.ok(response);
@@ -96,11 +116,14 @@ public class ChatController {
 
     @GetMapping("/sessions/{sessionId}/messages")
     @Operation(summary = "Get session transcript", description = "Returns all messages for a selected user session.")
+    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
     public ResponseEntity<List<SessionMessageDto>> sessionMessages(
             @PathVariable String sessionId,
             @RequestParam String tenantId,
             @RequestParam String userId
     ) {
+        String clientId = jwtUtil.getClientId();
+        logger.info("Session messages request from client_id: {}", clientId);
         List<ChatMessageEntity> messages = chatPersistenceService.loadSessionMessages(tenantId, userId, sessionId);
         List<SessionMessageDto> response = messages.stream()
                 .map(message -> new SessionMessageDto(

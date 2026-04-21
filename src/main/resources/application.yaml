@@ -5,4 +5,5 @@ spring:
     oauth2:
       resourceserver:
         jwt:
-          issuer-uri: https://dummy-domain.auth.region.amazoncognito.com
+          issuer-uri: ${COGNITO_ISSUER_URI}
+          jwk-set-uri: ${COGNITO_JWK_SET_URI:${COGNITO_ISSUER_URI}/.well-known/jwks.json}
