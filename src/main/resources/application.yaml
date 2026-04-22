@@ -1,9 +1,15 @@
-spring:
-  application:
-    name: openai-api-service
-  security:
-    oauth2:
-      resourceserver:
-        jwt:
-          issuer-uri: ${COGNITO_ISSUER_URI}
-          jwk-set-uri: ${COGNITO_JWK_SET_URI:${COGNITO_ISSUER_URI}/.well-known/jwks.json}
+#spring:
+#  application:
+#    name: openai-api-service
+#  security:
+#    oauth2:
+#      resourceserver:
+#        jwt:
+#          issuer-uri: https://cognito-idp:ap-south-1:888182362334:userpool/ap-south-1_8skbXODdf
+#          jwk-set-uri: https://cognito-idp:ap-south-1:888182362334:userpool/ap-south-1_8skbXODdf/.well-known/jwks.json}
+#aws:
+  cognito:
+    userPoolId: ap-south-1_8skbXODdf
+    clientId: 5vando13pthgk6a50d2adpfon4
+    clientSecret: 19pcpha4uvjlsmm78au794au5b64vkbmrhj1nccqhasfep2hd6p
+    region: ap-south-1

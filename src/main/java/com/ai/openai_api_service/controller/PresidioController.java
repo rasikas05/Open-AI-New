@@ -2,6 +2,10 @@ package com.ai.openai_api_service.controller;
 
 import com.ai.openai_api_service.model.PresidioTextRequest;
 import com.ai.openai_api_service.service.PresidioService;
+import com.ai.openai_api_service.config.SecurityConstants;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.access.prepost.PreAuthorize;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;

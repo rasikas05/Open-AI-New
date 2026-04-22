@@ -1,6 +1,8 @@
 package com.ai.openai_api_service.controller;
 
-import com.ai.openai_api_service.config.JwtUtil;
+import com.ai.openai_api_service.config.SecurityConstants;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import com.ai.openai_api_service.entity.ChatMessageEntity;
 import com.ai.openai_api_service.entity.ChatSessionEntity;
 import com.ai.openai_api_service.model.ChatRequest;
@@ -26,6 +28,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.security.core.Authentication;
 
 import java.util.List;
 
@@ -50,7 +53,7 @@ public class ChatController {
     @PostMapping
     @Operation(summary = "Send a chat message", description = "Sends user input to OpenAI and returns the response.")
     @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
-    public ResponseEntity<ChatResponse> chat(@Valid @RequestBody ChatRequest request) {
+    public ResponseEntity<ChatResponse> chat(@AuthenticationPrincipal Jwt jwt, @Valid @RequestBody ChatRequest request) {
         String clientId = jwtUtil.getClientId();
         logger.info("Chat request from client_id: {}", clientId);
         ChatResponse response = chatService.chat(request);
@@ -112,6 +115,11 @@ public class ChatController {
         long sessionCount = chatPersistenceService.countSessions(tenantId, userId);
         SessionCountDto response = new SessionCountDto(tenantId, userId, sessionCount);
         return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/test-auth")
+    public String testAuth(Authentication authentication) {
+        return authentication.getName();
     }
 
     @GetMapping("/sessions/{sessionId}/messages")

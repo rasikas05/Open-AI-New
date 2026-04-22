@@ -15,6 +15,7 @@ import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 
 @WebMvcTest(TenantQuotaController.class)
 class TenantQuotaControllerTest {
@@ -38,6 +39,7 @@ class TenantQuotaControllerTest {
         when(tenantQuotaService.assignQuota("tenant-1", 10000)).thenReturn(response);
 
         mockMvc.perform(post("/tenant/quota")
+                        .with(jwt())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"tenantId\":\"tenant-1\",\"baseLimit\":10000}"))
                 .andExpect(status().isOk())
@@ -57,6 +59,7 @@ class TenantQuotaControllerTest {
         when(tenantQuotaService.topup("tenant-1", 500)).thenReturn(response);
 
         mockMvc.perform(post("/tenant/topup")
+                        .with(jwt())
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"tenantId\":\"tenant-1\",\"tokens\":500}"))
                 .andExpect(status().isOk())

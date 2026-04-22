@@ -1,6 +1,8 @@
 package com.ai.openai_api_service.controller;
 
-import com.ai.openai_api_service.config.JwtUtil;
+import com.ai.openai_api_service.config.SecurityConstants;
+import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.slf4j.Logger;
