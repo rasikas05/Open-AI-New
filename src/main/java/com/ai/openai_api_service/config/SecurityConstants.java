@@ -1,4 +1,4 @@
-﻿package com.ai.openai_api_service.config;
+package com.ai.openai_api_service.config;
 
 public class SecurityConstants {
     public static final String CHAT_READ = "SCOPE_chat:read";

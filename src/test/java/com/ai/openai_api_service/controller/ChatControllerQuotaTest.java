@@ -1,6 +1,5 @@
 package com.ai.openai_api_service.controller;
 
-import com.ai.openai_api_service.config.JwtUtil;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.TokenUsageDto;
 import com.ai.openai_api_service.service.ChatPersistenceService;
@@ -9,7 +8,6 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.boot.test.mock.mockito.MockBean;
-import org.springframework.context.annotation.Import;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
@@ -23,7 +21,6 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.jwt;
 
 @WebMvcTest(ChatController.class)
-@Import(JwtUtil.class)
 class ChatControllerQuotaTest {
 
     @Autowired
@@ -31,15 +28,19 @@ class ChatControllerQuotaTest {
 
     @MockBean
     private ChatService chatService;
+
     @MockBean
     private ChatPersistenceService chatPersistenceService;
 
     @Test
     void chatShouldReturn429WhenLimitExceeded() throws Exception {
-        ChatResponse response = new ChatResponse("Token limit reached for this tenant. Please top up to continue.", false);
+        ChatResponse response = new ChatResponse(
+                "Token limit reached for this tenant. Please top up to continue.", false);
+
         response.setLimitExceeded(true);
         response.setUsage(new TokenUsageDto(1000, 1000, 0));
         response.setUpgradeOptions(List.of("Buy 100 tokens", "Buy 500 tokens", "Buy 5000 tokens"));
+
         when(chatService.chat(any())).thenReturn(response);
 
         mockMvc.perform(post("/api/chat")

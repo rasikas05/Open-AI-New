@@ -20,17 +20,11 @@ public class SecuredController {
 
     private static final Logger logger = LoggerFactory.getLogger(SecuredController.class);
 
-    private final JwtUtil jwtUtil;
-
-    public SecuredController(JwtUtil jwtUtil) {
-        this.jwtUtil = jwtUtil;
-    }
-
     @GetMapping("/client-info")
     @Operation(summary = "Get client information", description = "Returns information about the authenticated client.")
     @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
-    public ResponseEntity<String> getClientInfo() {
-        String clientId = jwtUtil.getClientId();
+    public ResponseEntity<String> getClientInfo(@AuthenticationPrincipal Jwt jwt) {
+        String clientId = jwt.getClaimAsString("client_id");
         logger.info("Client info request from client_id: {}", clientId);
         return ResponseEntity.ok("Authenticated client: " + clientId);
     }
