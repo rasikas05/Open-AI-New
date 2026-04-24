@@ -1,5 +1,6 @@
 package com.ai.openai_api_service.service;
 
+import com.ai.openai_api_service.model.PresidioAnalyzerResult;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -113,6 +114,69 @@ public class PresidioService {
             HttpHeaders h = e.getResponseHeaders();
             if (h != null) {
                 // Presidio rate limiting headers vary; log everything we might get.
+                log.warn("Presidio error x-ratelimit-limit-requests={}", h.getFirst("x-ratelimit-limit-requests"));
+                log.warn("Presidio error x-ratelimit-remaining-requests={}", h.getFirst("x-ratelimit-remaining-requests"));
+                log.warn("Presidio error x-ratelimit-reset-requests={}", h.getFirst("x-ratelimit-reset-requests"));
+                log.warn("Presidio error x-ratelimit-limit-tokens={}", h.getFirst("x-ratelimit-limit-tokens"));
+                log.warn("Presidio error x-ratelimit-remaining-tokens={}", h.getFirst("x-ratelimit-remaining-tokens"));
+                log.warn("Presidio error x-ratelimit-reset-tokens={}", h.getFirst("x-ratelimit-reset-tokens"));
+            }
+
+            String errorBody = e.getResponseBodyAsString();
+            log.warn("Presidio error status={} body={}", e.getStatusCode(), errorBody);
+            throw new IllegalStateException("Presidio call failed: " + e.getStatusCode() + " body=" + errorBody, e);
+        } catch (RestClientException e) {
+            throw new IllegalStateException("Presidio call failed: " + e.getMessage(), e);
+        }
+    }
+
+    public String sanitizeTextWithExternalResults(String text, List<PresidioAnalyzerResult> externalResults) {
+        if (!enabled || text == null || text.isBlank()) {
+            return text;
+        }
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new IllegalStateException("Presidio is enabled but presidio.api.key is empty.");
+        }
+        if (externalResults == null || externalResults.isEmpty()) {
+            log.info("No external results provided, returning original text");
+            return text;
+        }
+
+        try {
+            log.info("Anonymizing text with {} external PII results", externalResults.size());
+            Map<?, ?> body = anonymizeRaw(text, externalResults);
+            if (body == null) {
+                throw new IllegalStateException("Presidio anonymize returned empty body.");
+            }
+
+            // New Python contract:
+            // { "originalText": "...", "sanitizedText": "...", "entities": [...] }
+            Object newSanitizedText = body.get("sanitizedText");
+            if (newSanitizedText != null && !newSanitizedText.toString().isBlank()) {
+                log.info("Presidio anonymization with external results applied successfully (new contract).");
+                return newSanitizedText.toString();
+            }
+
+            // Backward compatibility with old wrapped contract:
+            // { "status":"success", "data":{"anonymized_text":"..."} }
+            Object status = body.get("status");
+            if (status == null || !"success".equalsIgnoreCase(status.toString())) {
+                throw new IllegalStateException("Presidio anonymize response is invalid.");
+            }
+            Object dataObj = body.get("data");
+            if (!(dataObj instanceof Map<?, ?> dataMap)) {
+                throw new IllegalStateException("Presidio anonymize data is missing/invalid.");
+            }
+
+            Object anonymizedText = dataMap.get("anonymized_text");
+            if (anonymizedText == null || anonymizedText.toString().isBlank()) {
+                throw new IllegalStateException("Presidio anonymize text is empty.");
+            }
+            log.info("Presidio anonymization with external results applied successfully (legacy contract).");
+            return anonymizedText.toString();
+        } catch (HttpStatusCodeException e) {
+            HttpHeaders h = e.getResponseHeaders();
+            if (h != null) {
                 log.warn("Presidio error x-ratelimit-limit-requests={}", h.getFirst("x-ratelimit-limit-requests"));
                 log.warn("Presidio error x-ratelimit-remaining-requests={}", h.getFirst("x-ratelimit-remaining-requests"));
                 log.warn("Presidio error x-ratelimit-reset-requests={}", h.getFirst("x-ratelimit-reset-requests"));
