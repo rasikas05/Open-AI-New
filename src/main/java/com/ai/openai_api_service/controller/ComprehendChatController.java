@@ -85,7 +85,6 @@ public class ComprehendChatController {
         );
         return ResponseEntity.ok(response);
     }
-
     @GetMapping("/sessions")
     @Operation(
             summary = "List user sessions",
@@ -128,11 +127,7 @@ public class ComprehendChatController {
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("Comprehend Get session request from client_id: {} sessionId: {}", clientId, sessionId);
 
-        List<ChatSessionEntity> sessions = chatPersistenceService.listSessions(null, null);
-        ChatSessionEntity session = sessions.stream()
-                .filter(s -> sessionId.equals(s.getSessionId()))
-                .findFirst()
-                .orElse(null);
+        ChatSessionEntity session = chatPersistenceService.getSessionById(sessionId);
 
         if (session == null) {
             return ResponseEntity.notFound().build();
@@ -162,18 +157,11 @@ public class ComprehendChatController {
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("Comprehend Close session request from client_id: {} sessionId: {}", clientId, sessionId);
 
-        List<ChatSessionEntity> sessions = chatPersistenceService.listSessions(null, null);
-        ChatSessionEntity session = sessions.stream()
-                .filter(s -> sessionId.equals(s.getSessionId()))
-                .findFirst()
-                .orElse(null);
+        ChatSessionEntity session = chatPersistenceService.closeSessionById(sessionId);
 
         if (session == null) {
             return ResponseEntity.notFound().build();
         }
-
-        session.setStatus("CLOSED");
-        session.setEndTime(java.time.LocalDateTime.now());
 
         SessionSummaryDto response = new SessionSummaryDto(
                 session.getSessionId(),

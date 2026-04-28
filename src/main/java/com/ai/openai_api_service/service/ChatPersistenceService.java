@@ -75,6 +75,25 @@ public class ChatPersistenceService {
     }
 
     @Transactional(readOnly = true)
+    public ChatSessionEntity getSessionById(String sessionId) {
+        return chatSessionRepository.findBySessionId(sessionId)
+                .orElse(null);
+    }
+
+    @Transactional
+    public ChatSessionEntity closeSessionById(String sessionId) {
+
+        ChatSessionEntity session = chatSessionRepository.findBySessionId(sessionId)
+                .orElse(null);
+
+        if (session != null) {
+            session.setStatus("CLOSED");
+            return chatSessionRepository.save(session);
+        }
+
+        return null;
+    }
+    @Transactional(readOnly = true)
     public List<MessageDto> loadHistoryForPrompt(String tenantId, String userId, String sessionId, int maxExchanges) {
         if (maxExchanges <= 0) {
             return List.of();

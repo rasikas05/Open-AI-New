@@ -9,7 +9,13 @@ import java.util.Optional;
 public interface ChatSessionRepository extends JpaRepository<ChatSessionEntity, Long> {
     Optional<ChatSessionEntity> findBySessionId(String sessionId);
 
+    Optional<ChatSessionEntity> findByTenantIdAndUserIdAndSessionId(String tenantId, String userId, String sessionId);
+
     List<ChatSessionEntity> findByTenantIdAndUserIdOrderByUpdatedAtDesc(String tenantId, String userId);
 
     long countByTenantIdAndUserId(String tenantId, String userId);
+
+    default Optional<ChatSessionEntity> findBySessionIdAllowNullTenantUser(String sessionId) {
+        return findBySessionId(sessionId);
+    }
 }
