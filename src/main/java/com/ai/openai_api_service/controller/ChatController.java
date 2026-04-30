@@ -13,6 +13,7 @@ import com.ai.openai_api_service.model.SessionMessageDto;
 import com.ai.openai_api_service.model.SessionSummaryDto;
 import com.ai.openai_api_service.service.ChatService;
 import com.ai.openai_api_service.service.ChatPersistenceService;
+import com.ai.openai_api_service.service.TenantService;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -42,10 +43,12 @@ public class ChatController {
 
     private final ChatService chatService;
     private final ChatPersistenceService chatPersistenceService;
+    private final TenantService tenantService;
 
-    public ChatController(ChatService chatService, ChatPersistenceService chatPersistenceService) {
+    public ChatController(ChatService chatService, ChatPersistenceService chatPersistenceService, TenantService tenantService) {
         this.chatService = chatService;
         this.chatPersistenceService = chatPersistenceService;
+        this.tenantService = tenantService;
     }
 
     @PostMapping
@@ -58,6 +61,7 @@ public class ChatController {
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("Chat request from client_id: {}", clientId);
 
+        tenantService.registerUserAndSession(request.getTenantId(), request.getUserId(), request.getSessionId(), 0);
         ChatResponse response = chatService.chat(request);
         return ResponseEntity.ok(response);
     }

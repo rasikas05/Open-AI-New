@@ -1,6 +1,6 @@
 package com.ai.openai_api_service.service;
 
-import com.ai.openai_api_service.entity.TenantQuotaEntity;
+import com.ai.openai_api_service.entity.TenantQuota;
 import com.ai.openai_api_service.repository.TenantQuotaRepository;
 import com.ai.openai_api_service.repository.TokenTransactionRepository;
 import org.junit.jupiter.api.BeforeEach;
@@ -42,7 +42,7 @@ class TenantQuotaServiceTest {
 
     @Test
     void checkBeforeChatShouldBlockWhenUsedEqualsTotal() {
-        TenantQuotaEntity quota = new TenantQuotaEntity();
+        TenantQuota quota = new TenantQuota();
         quota.setTenantId("tenant-1");
         quota.setBaseLimit(500);
         quota.setExtraTokens(100);
@@ -59,7 +59,7 @@ class TenantQuotaServiceTest {
 
     @Test
     void topupShouldIncreaseExtraTokensAndReturnUpdatedUsage() {
-        TenantQuotaEntity quota = new TenantQuotaEntity();
+        TenantQuota quota = new TenantQuota();
         quota.setTenantId("tenant-2");
         quota.setBaseLimit(1000);
         quota.setExtraTokens(0);
@@ -77,7 +77,7 @@ class TenantQuotaServiceTest {
 
     @Test
     void resetMonthlyQuotasShouldClearUsageAndTopups() {
-        TenantQuotaEntity quota = new TenantQuotaEntity();
+        TenantQuota quota = new TenantQuota();
         quota.setTenantId("tenant-3");
         quota.setBaseLimit(1000);
         quota.setExtraTokens(250);
@@ -91,7 +91,7 @@ class TenantQuotaServiceTest {
         assertEquals(1, resetCount);
         assertEquals(0, quota.getTokensUsed());
         assertEquals(0, quota.getExtraTokens());
-        ArgumentCaptor<List<TenantQuotaEntity>> captor = ArgumentCaptor.forClass(List.class);
+        ArgumentCaptor<List<TenantQuota>> captor = ArgumentCaptor.forClass(List.class);
         verify(tenantQuotaRepository).saveAll(captor.capture());
         assertEquals(1, captor.getValue().size());
     }

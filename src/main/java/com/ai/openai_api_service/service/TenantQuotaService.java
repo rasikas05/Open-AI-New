@@ -1,7 +1,7 @@
 package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.exception.TenantQuotaExceededException;
-import com.ai.openai_api_service.entity.TenantQuotaEntity;
+import com.ai.openai_api_service.entity.TenantQuota;
 import com.ai.openai_api_service.entity.TokenTransactionEntity;
 import com.ai.openai_api_service.model.TokenTransactionType;
 import com.ai.openai_api_service.model.TokenUsageDto;
@@ -52,12 +52,12 @@ public class TenantQuotaService {
 
     @Transactional
     public QuotaCheckResult checkBeforeChat(String tenantId) {
-        Optional<TenantQuotaEntity> quotaOptional = tenantQuotaRepository.findByTenantId(tenantId);
+        Optional<TenantQuota> quotaOptional = tenantQuotaRepository.findByTenantId(tenantId);
         if (quotaOptional.isEmpty()) {
             log.warn("Tenant quota missing. tenantId={}", tenantId);
             return new QuotaCheckResult(false, null, "QUOTA_NOT_CONFIGURED");
         }
-        TenantQuotaEntity quota = quotaOptional.get();
+        TenantQuota quota = quotaOptional.get();
         TokenUsageDto usage = toUsage(quota);
         if ("BLOCKED".equalsIgnoreCase(quota.getStatus())) {
             log.warn("Blocked tenant attempted chat. tenantId={}", tenantId);
@@ -74,7 +74,7 @@ public class TenantQuotaService {
 
     @Transactional
     public TokenUsageDto recordUsage(String tenantId, int consumedTokens, String referenceId) {
-        TenantQuotaEntity quota = tenantQuotaRepository.findByTenantId(tenantId)
+        TenantQuota quota = tenantQuotaRepository.findByTenantId(tenantId)
                 .orElseThrow(() -> new ResponseStatusException(BAD_REQUEST, "tenant quota not found"));
         if ("BLOCKED".equalsIgnoreCase(quota.getStatus())) {
             throw new ResponseStatusException(FORBIDDEN, "Tenant is blocked");
@@ -97,7 +97,7 @@ public class TenantQuotaService {
         txn.setReferenceId(referenceId);
         tokenTransactionRepository.save(txn);
 
-        TenantQuotaEntity latestQuota = tenantQuotaRepository.findByTenantId(tenantId).orElse(quota);
+        TenantQuota latestQuota = tenantQuotaRepository.findByTenantId(tenantId).orElse(quota);
         return toUsage(latestQuota);
     }
 
@@ -110,7 +110,7 @@ public class TenantQuotaService {
             throw new ResponseStatusException(BAD_REQUEST, "tokens exceeds allowed top-up limit");
         }
 
-        TenantQuotaEntity quota = tenantQuotaRepository.findByTenantId(tenantId)
+        TenantQuota quota = tenantQuotaRepository.findByTenantId(tenantId)
                 .orElseThrow(() -> new ResponseStatusException(BAD_REQUEST, "tenant quota not found"));
         if ("BLOCKED".equalsIgnoreCase(quota.getStatus())) {
             throw new ResponseStatusException(FORBIDDEN, "Blocked tenants cannot be topped up");
@@ -118,7 +118,7 @@ public class TenantQuotaService {
 
         int safeTopup = tokens;
         quota.setExtraTokens(safeInt(quota.getExtraTokens()) + safeTopup);
-        TenantQuotaEntity saved = tenantQuotaRepository.save(quota);
+        TenantQuota saved = tenantQuotaRepository.save(quota);
 
         TokenTransactionEntity txn = new TokenTransactionEntity();
         txn.setTenantId(tenantId);
@@ -144,14 +144,14 @@ public class TenantQuotaService {
             throw new ResponseStatusException(BAD_REQUEST, "Quota already assigned for this tenant");
         }
 
-        TenantQuotaEntity quota = new TenantQuotaEntity();
+        TenantQuota quota = new TenantQuota();
         quota.setTenantId(tenantId);
         quota.setBaseLimit(baseLimit);
         quota.setExtraTokens(0);
         quota.setTokensUsed(0);
         quota.setStatus("ACTIVE");
         quota.setLastResetAt(LocalDateTime.now());
-        TenantQuotaEntity saved = tenantQuotaRepository.save(quota);
+        TenantQuota saved = tenantQuotaRepository.save(quota);
         return toQuotaResponse(saved);
     }
 
@@ -160,24 +160,24 @@ public class TenantQuotaService {
         if (baseLimit <= 0) {
             throw new ResponseStatusException(BAD_REQUEST, "baseLimit must be greater than 0");
         }
-        TenantQuotaEntity quota = tenantQuotaRepository.findByTenantId(tenantId)
+        TenantQuota quota = tenantQuotaRepository.findByTenantId(tenantId)
                 .orElseThrow(() -> new ResponseStatusException(BAD_REQUEST, "tenant quota not found"));
         quota.setBaseLimit(baseLimit);
         if (status != null && !status.isBlank()) {
             quota.setStatus(status.trim().toUpperCase());
         }
-        TenantQuotaEntity saved = tenantQuotaRepository.save(quota);
+        TenantQuota saved = tenantQuotaRepository.save(quota);
         return toQuotaResponse(saved);
     }
 
     @Transactional
     public int resetMonthlyQuotas() {
-        List<TenantQuotaEntity> activeQuotas = tenantQuotaRepository.findByStatus("ACTIVE");
+        List<TenantQuota> activeQuotas = tenantQuotaRepository.findByStatus("ACTIVE");
         LocalDateTime now = LocalDateTime.now();
         ZoneId zoneId = ZoneId.of(quotaTimezone);
         YearMonth currentMonth = YearMonth.from(now.atZone(zoneId));
         int resetCount = 0;
-        for (TenantQuotaEntity quota : activeQuotas) {
+        for (TenantQuota quota : activeQuotas) {
             LocalDateTime lastResetAt = quota.getLastResetAt();
             YearMonth quotaMonth = lastResetAt == null
                     ? null
@@ -197,7 +197,7 @@ public class TenantQuotaService {
     public record QuotaCheckResult(boolean allowed, TokenUsageDto usage, String reason) {
     }
 
-    private TokenUsageDto toUsage(TenantQuotaEntity quota) {
+    private TokenUsageDto toUsage(TenantQuota quota) {
         int used = safeInt(quota.getTokensUsed());
         int total = safeInt(quota.getBaseLimit()) + safeInt(quota.getExtraTokens());
         int remaining = Math.max(total - used, 0);
@@ -208,7 +208,7 @@ public class TenantQuotaService {
         return value == null ? 0 : value;
     }
 
-    private TenantQuotaResponse toQuotaResponse(TenantQuotaEntity quota) {
+    private TenantQuotaResponse toQuotaResponse(TenantQuota quota) {
         return new TenantQuotaResponse(
                 quota.getTenantId(),
                 safeInt(quota.getBaseLimit()),

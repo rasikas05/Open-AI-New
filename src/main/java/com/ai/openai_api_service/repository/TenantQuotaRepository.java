@@ -1,18 +1,19 @@
 package com.ai.openai_api_service.repository;
 
-import com.ai.openai_api_service.entity.TenantQuotaEntity;
-import org.springframework.data.jpa.repository.Modifying;
+import com.ai.openai_api_service.entity.TenantQuota;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
+import org.springframework.stereotype.Repository;
 
 import java.util.List;
 import java.util.Optional;
 
-public interface TenantQuotaRepository extends JpaRepository<TenantQuotaEntity, Long> {
-    Optional<TenantQuotaEntity> findByTenantId(String tenantId);
-
-    List<TenantQuotaEntity> findByStatus(String status);
+@Repository
+public interface TenantQuotaRepository extends JpaRepository<TenantQuota, Long> {
+    Optional<TenantQuota> findByTenantId(String tenantId);
+    List<TenantQuota> findByStatus(String status);
 
     @Modifying
     @Query(value = """
