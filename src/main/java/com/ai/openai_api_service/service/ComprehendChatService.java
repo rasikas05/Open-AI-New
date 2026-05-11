@@ -124,7 +124,7 @@ public class ComprehendChatService {
             sourceHistory = clientHistory;
         } else if (loadHistoryFromDb) {
             sourceHistory = chatPersistenceService.loadHistoryForPrompt(
-                    request.getTenantId(),
+                    request.getTenantCode(),
                     request.getUserId(),
                     request.getSessionId(),
                     maxHistoryExchanges
@@ -163,8 +163,8 @@ public class ComprehendChatService {
         String sanitizedUserText = sanitizeTextWithComprehend(originalUserText);
         String modelReadyUserText = prepareUserContentForOpenAi(sanitizedUserText);
         log.info(
-                "Preparing OpenAI call with Comprehend sanitization. tenantId={}, userId={}, sessionId={}, historyCount={}, original='{}', modelReady='{}'",
-                request.getTenantId(),
+                "Preparing OpenAI call with Comprehend sanitization. tenantCode={}, userId={}, sessionId={}, historyCount={}, original='{}', modelReady='{}'",
+                request.getTenantCode(),
                 request.getUserId(),
                 request.getSessionId(),
                 historyCount,
@@ -251,7 +251,7 @@ public class ComprehendChatService {
         int consumedTokens = totalTokens != null ? totalTokens : 0;
         String usageReferenceId = request.getSessionId() + ":" + System.currentTimeMillis();
         try {
-            tenantQuotaService.recordUsage(request.getTenantId(), consumedTokens, usageReferenceId);
+            tenantQuotaService.recordUsage(request.getTenantCode(), consumedTokens, usageReferenceId);
         } catch (TenantQuotaExceededException e) {
             ChatResponse blocked = new ChatResponse("Token limit reached for this tenant. Please top up to continue.", false);
             blocked.setLimitExceeded(true);
@@ -261,7 +261,7 @@ public class ComprehendChatService {
             return blocked;
         }
         chatPersistenceService.persistChat(
-                request.getTenantId(),
+                request.getTenantCode(),
                 request.getUserId(),
                 request.getSessionId(),
                 originalUserText,
@@ -343,14 +343,14 @@ public class ComprehendChatService {
         List<SuggestionDto> details = cleanSuggestionDetails(merged, maxCount);
         List<String> result = details.stream().map(SuggestionDto::getText).toList();
         if (details.isEmpty()) {
-            log.info("No suggestions generated for tenantId={}, userId={}, sessionId={}",
-                    request.getTenantId(), request.getUserId(), request.getSessionId());
+            log.info("No suggestions generated for tenantCode={}, userId={}, sessionId={}",
+                    request.getTenantCode(), request.getUserId(), request.getSessionId());
         }
         return new SuggestionResult(result, details);
     }
 
     private String buildCacheKey(ChatRequest request) {
-        String tenant = normalizeToken(request.getTenantId());
+        String tenant = normalizeToken(request.getTenantCode());
         String user = normalizeToken(request.getUserId());
         String session = normalizeToken(request.getSessionId());
         String msg = normalizeToken(request.getUserMessage());

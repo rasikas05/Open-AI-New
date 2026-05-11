@@ -6,7 +6,6 @@ public class SessionSummaryDto {
 
     private String sessionId;
     private String status;
-    private Integer tokenLimit;
     private Integer tokensUsed;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
@@ -17,14 +16,12 @@ public class SessionSummaryDto {
     public SessionSummaryDto(
             String sessionId,
             String status,
-            Integer tokenLimit,
             Integer tokensUsed,
             LocalDateTime createdAt,
             LocalDateTime updatedAt
     ) {
         this.sessionId = sessionId;
         this.status = status;
-        this.tokenLimit = tokenLimit;
         this.tokensUsed = tokensUsed;
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
@@ -44,14 +41,6 @@ public class SessionSummaryDto {
 
     public void setStatus(String status) {
         this.status = status;
-    }
-
-    public Integer getTokenLimit() {
-        return tokenLimit;
-    }
-
-    public void setTokenLimit(Integer tokenLimit) {
-        this.tokenLimit = tokenLimit;
     }
 
     public Integer getTokensUsed() {

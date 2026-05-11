@@ -5,16 +5,16 @@ import java.time.LocalDateTime;
 public class UserResponse {
 
     private Long id;
-    private String tenantId;
+    private String tenantCode;
     private String userId;
     private LocalDateTime createdAt;
 
     public UserResponse() {
     }
 
-    public UserResponse(Long id, String tenantId, String userId, LocalDateTime createdAt) {
+    public UserResponse(Long id, String tenantCode, String userId, LocalDateTime createdAt) {
         this.id = id;
-        this.tenantId = tenantId;
+        this.tenantCode = tenantCode;
         this.userId = userId;
         this.createdAt = createdAt;
     }
@@ -27,12 +27,12 @@ public class UserResponse {
         this.id = id;
     }
 
-    public String getTenantId() {
-        return tenantId;
+    public String getTenantCode() {
+        return tenantCode;
     }
 
-    public void setTenantId(String tenantId) {
-        this.tenantId = tenantId;
+    public void setTenantCode(String tenantCode) {
+        this.tenantCode = tenantCode;
     }
 
     public String getUserId() {

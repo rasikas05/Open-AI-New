@@ -2,25 +2,25 @@ package com.ai.openai_api_service.model;
 
 public class SessionCountDto {
 
-    private String tenantId;
+    private String tenantCode;
     private String userId;
     private long sessionCount;
 
     public SessionCountDto() {
     }
 
-    public SessionCountDto(String tenantId, String userId, long sessionCount) {
-        this.tenantId = tenantId;
+    public SessionCountDto(String tenantCode, String userId, long sessionCount) {
+        this.tenantCode = tenantCode;
         this.userId = userId;
         this.sessionCount = sessionCount;
     }
 
-    public String getTenantId() {
-        return tenantId;
+    public String getTenantCode() {
+        return tenantCode;
     }
 
-    public void setTenantId(String tenantId) {
-        this.tenantId = tenantId;
+    public void setTenantCode(String tenantCode) {
+        this.tenantCode = tenantCode;
     }
 
     public String getUserId() {

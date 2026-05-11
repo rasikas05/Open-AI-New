@@ -3,8 +3,8 @@ package com.ai.openai_api_service.controller;
 import com.ai.openai_api_service.config.SecurityConstants;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
-import com.ai.openai_api_service.entity.ChatMessageEntity;
-import com.ai.openai_api_service.entity.ChatSessionEntity;
+import com.ai.openai_api_service.entity.RequestLog;
+import com.ai.openai_api_service.entity.Session;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.MessageDto;
@@ -61,7 +61,7 @@ public class ChatController {
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("Chat request from client_id: {}", clientId);
 
-        tenantService.registerUserAndSession(request.getTenantId(), request.getUserId(), request.getSessionId(), 0);
+        tenantService.registerUserAndSession(request.getTenantCode(), request.getUserId(), request.getSessionId(), 0);
         ChatResponse response = chatService.chat(request);
         return ResponseEntity.ok(response);
     }
@@ -96,13 +96,12 @@ public class ChatController {
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("List sessions request from client_id: {}", clientId);
 
-        List<ChatSessionEntity> sessions = chatPersistenceService.listSessions(tenantId, userId);
+        List<Session> sessions = chatPersistenceService.listSessions(tenantId, userId);
 
         List<SessionSummaryDto> response = sessions.stream()
                 .map(session -> new SessionSummaryDto(
                         session.getSessionId(),
                         session.getStatus(),
-                        session.getTokenLimit(),
                         session.getTokensUsed(),
                         session.getCreatedAt(),
                         session.getUpdatedAt()
@@ -146,13 +145,13 @@ public class ChatController {
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("Session messages request from client_id: {}", clientId);
 
-        List<ChatMessageEntity> messages =
+        List<RequestLog> messages =
                 chatPersistenceService.loadSessionMessages(tenantId, userId, sessionId);
 
         List<SessionMessageDto> response = messages.stream()
                 .map(message -> new SessionMessageDto(
                         message.getId(),
-                        message.getSessionId(),
+                        message.getSession().getSessionId(),
                         message.getOriginalText(),
                         message.getSanitizedText(),
                         message.getOpenaiResponse(),

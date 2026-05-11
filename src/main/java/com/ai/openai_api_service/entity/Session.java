@@ -5,24 +5,37 @@ import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "session",
-       uniqueConstraints = @UniqueConstraint(columnNames = {"tenant_id", "user_id", "session_id"}))
+       uniqueConstraints = @UniqueConstraint(columnNames = {"session_id"}))
 public class Session {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
-    @Column(name = "tenant_id", nullable = false)
-    private String tenantId;
-    @Column(name = "user_id", nullable = false)
-    private String userId;
+
+    @ManyToOne(optional = false)
+    @JoinColumn(name = "tenant_ref_id", nullable = false)
+    private Tenant tenant;
+
+    @ManyToOne(optional = false)
+    @JoinColumn(name = "user_ref_id", nullable = false)
+    private User user;
+
     @Column(name = "session_id", nullable = false)
     private String sessionId;
+
     private String status = "ACTIVE";
-    private int tokenLimit;
+
+    @Column(name = "tokens_used")
     private int tokensUsed = 0;
+
+    @Column(name = "created_at")
     private LocalDateTime createdAt = LocalDateTime.now();
+
+    @Column(name = "updated_at")
     private LocalDateTime updatedAt = LocalDateTime.now();
+
+    @Column(name = "end_time")
     private LocalDateTime endTime;
-    // getters/setters
+
     public Long getId() {
         return id;
     }
@@ -31,20 +44,20 @@ public class Session {
         this.id = id;
     }
 
-    public String getTenantId() {
-        return tenantId;
+    public Tenant getTenant() {
+        return tenant;
     }
 
-    public void setTenantId(String tenantId) {
-        this.tenantId = tenantId;
+    public void setTenant(Tenant tenant) {
+        this.tenant = tenant;
     }
 
-    public String getUserId() {
-        return userId;
+    public User getUser() {
+        return user;
     }
 
-    public void setUserId(String userId) {
-        this.userId = userId;
+    public void setUser(User user) {
+        this.user = user;
     }
 
     public String getSessionId() {
@@ -61,14 +74,6 @@ public class Session {
 
     public void setStatus(String status) {
         this.status = status;
-    }
-
-    public int getTokenLimit() {
-        return tokenLimit;
-    }
-
-    public void setTokenLimit(int tokenLimit) {
-        this.tokenLimit = tokenLimit;
     }
 
     public int getTokensUsed() {

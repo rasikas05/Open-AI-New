@@ -20,12 +20,16 @@ class ChatServiceTest {
 
     @Mock
     private OpenAIService openAIService;
+
     @Mock
     private SuggestionRuleService suggestionRuleService;
+
     @Mock
     private SuggestionLLMService suggestionLLMService;
+
     @Mock
     private SuggestionCacheService suggestionCacheService;
+
     @Mock
     private TenantQuotaService tenantQuotaService;
 
@@ -34,38 +38,57 @@ class ChatServiceTest {
 
     @Test
     void chatShouldReturnBlockedResponseWhenQuotaExceeded() {
+
         ChatRequest request = new ChatRequest();
-        request.setTenantId("tenant-1");
+        request.setTenantCode("tenant-1");
         request.setUserId("user-1");
         request.setSessionId("session-1");
         request.setUserMessage("hello");
 
         TokenUsageDto usage = new TokenUsageDto(1000, 1000, 0);
+
         when(tenantQuotaService.checkBeforeChat("tenant-1"))
-                .thenReturn(new TenantQuotaService.QuotaCheckResult(false, usage, "LIMIT_EXCEEDED"));
+                .thenReturn(
+                        new TenantQuotaService.QuotaCheckResult(
+                                false,
+                                usage,
+                                "LIMIT_EXCEEDED"
+                        )
+                );
 
         ChatResponse response = chatService.chat(request);
 
         assertTrue(Boolean.TRUE.equals(response.getLimitExceeded()));
         assertEquals(usage.getUsed(), response.getUsage().getUsed());
+
         verify(openAIService, never()).chat(request);
     }
 
     @Test
     void chatShouldCallOpenAiWhenQuotaAvailable() {
+
         ChatRequest request = new ChatRequest();
-        request.setTenantId("tenant-2");
+        request.setTenantCode("tenant-2");
         request.setUserId("user-1");
         request.setSessionId("session-2");
         request.setUserMessage("hello");
 
         when(tenantQuotaService.checkBeforeChat("tenant-2"))
-                .thenReturn(new TenantQuotaService.QuotaCheckResult(true, new TokenUsageDto(10, 1000, 990), null));
-        when(openAIService.chat(request)).thenReturn(new ChatResponse("ok", false));
+                .thenReturn(
+                        new TenantQuotaService.QuotaCheckResult(
+                                true,
+                                new TokenUsageDto(10, 1000, 990),
+                                null
+                        )
+                );
+
+        when(openAIService.chat(request))
+                .thenReturn(new ChatResponse("ok", false));
 
         ChatResponse response = chatService.chat(request);
 
         assertTrue(Boolean.FALSE.equals(response.getLimitExceeded()));
+
         verify(openAIService).chat(request);
     }
 }

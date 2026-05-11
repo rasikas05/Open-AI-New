@@ -38,7 +38,7 @@ public class TenantController {
     @Operation(summary = "Create tenant", description = "Create a tenant record in the database.")
     @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
     public ResponseEntity<TenantResponse> createTenant(@Valid @RequestBody TenantCreateRequest request) {
-        logger.info("Creating tenant: {}", request.getTenantId());
+        logger.info("Creating tenant: {}", request.getTenantCode());
         TenantResponse response = tenantService.createTenant(request);
         return ResponseEntity.ok(response);
     }

@@ -38,7 +38,7 @@ public class TenantQuotaController {
     @PostMapping("/quota")
     @Operation(summary = "Assign tenant quota", description = "Assigns initial quota for a tenant. Fails if quota already exists.")
     public ResponseEntity<TenantQuotaResponse> assignQuota(@Valid @RequestBody TenantQuotaRequest request) {
-        TenantQuotaResponse response = tenantQuotaService.assignQuota(request.getTenantId(), request.getBaseLimit());
+        TenantQuotaResponse response = tenantQuotaService.assignQuota(request.getTenantCode(), request.getBaseLimit());
         return ResponseEntity.ok(response);
     }
 
@@ -46,7 +46,7 @@ public class TenantQuotaController {
     @Operation(summary = "Update tenant quota", description = "Updates base quota and optional tenant quota status.")
     public ResponseEntity<TenantQuotaResponse> updateQuota(@Valid @RequestBody TenantQuotaUpdateRequest request) {
         TenantQuotaResponse response = tenantQuotaService.updateQuota(
-                request.getTenantId(),
+                request.getTenantCode(),
                 request.getBaseLimit(),
                 request.getStatus()
         );
@@ -56,7 +56,7 @@ public class TenantQuotaController {
     @PostMapping("/topup")
     @Operation(summary = "Top up tenant tokens", description = "Adds extra tokens to tenant quota.")
     public ResponseEntity<TopupResponse> topup(@Valid @RequestBody TopupRequest request) {
-        TopupResponse response = tenantQuotaService.topup(request.getTenantId(), request.getTokens());
+        TopupResponse response = tenantQuotaService.topup(request.getTenantCode(), request.getTokens());
         return ResponseEntity.ok(response);
     }
 }

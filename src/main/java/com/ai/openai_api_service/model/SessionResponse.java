@@ -5,11 +5,10 @@ import java.time.LocalDateTime;
 public class SessionResponse {
 
     private Long id;
-    private String tenantId;
+    private String tenantCode;
     private String userId;
     private String sessionId;
     private String status;
-    private int tokenLimit;
     private int tokensUsed;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
@@ -18,13 +17,12 @@ public class SessionResponse {
     public SessionResponse() {
     }
 
-    public SessionResponse(Long id, String tenantId, String userId, String sessionId, String status, int tokenLimit, int tokensUsed, LocalDateTime createdAt, LocalDateTime updatedAt, LocalDateTime endTime) {
+    public SessionResponse(Long id, String tenantCode, String userId, String sessionId, String status, int tokensUsed, LocalDateTime createdAt, LocalDateTime updatedAt, LocalDateTime endTime) {
         this.id = id;
-        this.tenantId = tenantId;
+        this.tenantCode = tenantCode;
         this.userId = userId;
         this.sessionId = sessionId;
         this.status = status;
-        this.tokenLimit = tokenLimit;
         this.tokensUsed = tokensUsed;
         this.createdAt = createdAt;
         this.updatedAt = updatedAt;
@@ -39,12 +37,12 @@ public class SessionResponse {
         this.id = id;
     }
 
-    public String getTenantId() {
-        return tenantId;
+    public String getTenantCode() {
+        return tenantCode;
     }
 
-    public void setTenantId(String tenantId) {
-        this.tenantId = tenantId;
+    public void setTenantCode(String tenantCode) {
+        this.tenantCode = tenantCode;
     }
 
     public String getUserId() {
@@ -69,14 +67,6 @@ public class SessionResponse {
 
     public void setStatus(String status) {
         this.status = status;
-    }
-
-    public int getTokenLimit() {
-        return tokenLimit;
-    }
-
-    public void setTokenLimit(int tokenLimit) {
-        this.tokenLimit = tokenLimit;
     }
 
     public int getTokensUsed() {

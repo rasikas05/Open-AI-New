@@ -5,7 +5,7 @@ import java.time.LocalDateTime;
 public class TenantResponse {
 
     private Long id;
-    private String tenantId;
+    private String tenantCode;
     private String name;
     private String status;
     private LocalDateTime createdAt;
@@ -13,9 +13,9 @@ public class TenantResponse {
     public TenantResponse() {
     }
 
-    public TenantResponse(Long id, String tenantId, String name, String status, LocalDateTime createdAt) {
+    public TenantResponse(Long id, String tenantCode, String name, String status, LocalDateTime createdAt) {
         this.id = id;
-        this.tenantId = tenantId;
+        this.tenantCode = tenantCode;
         this.name = name;
         this.status = status;
         this.createdAt = createdAt;
@@ -29,12 +29,12 @@ public class TenantResponse {
         this.id = id;
     }
 
-    public String getTenantId() {
-        return tenantId;
+    public String getTenantCode() {
+        return tenantCode;
     }
 
-    public void setTenantId(String tenantId) {
-        this.tenantId = tenantId;
+    public void setTenantCode(String tenantCode) {
+        this.tenantCode = tenantCode;
     }
 
     public String getName() {

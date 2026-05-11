@@ -1,7 +1,7 @@
 package com.ai.openai_api_service.model;
 
 public class TenantQuotaResponse {
-    private String tenantId;
+    private String tenantCode;
     private int baseLimit;
     private int extraTokens;
     private int tokensUsed;
@@ -11,21 +11,25 @@ public class TenantQuotaResponse {
     public TenantQuotaResponse() {
     }
 
-    public TenantQuotaResponse(String tenantId, int baseLimit, int extraTokens, int tokensUsed, String status, TokenUsageDto usage) {
-        this.tenantId = tenantId;
+    public TenantQuotaResponse(String tenantCode, int baseLimit, int extraTokens, int tokensUsed, String status, TokenUsageDto usage) {
+        this.tenantCode = tenantCode;
         this.baseLimit = baseLimit;
+        this.extraTokens = extraTokens;
+        this.tokensUsed = tokensUsed;
+        this.status = status;
+        this.usage = usage;
         this.extraTokens = extraTokens;
         this.tokensUsed = tokensUsed;
         this.status = status;
         this.usage = usage;
     }
 
-    public String getTenantId() {
-        return tenantId;
+    public String getTenantCode() {
+        return tenantCode;
     }
 
-    public void setTenantId(String tenantId) {
-        this.tenantId = tenantId;
+    public void setTenantCode(String tenantCode) {
+        this.tenantCode = tenantCode;
     }
 
     public int getBaseLimit() {

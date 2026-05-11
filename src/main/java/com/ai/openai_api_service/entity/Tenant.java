@@ -9,12 +9,17 @@ public class Tenant {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
-    @Column(name = "tenant_id", unique = true, nullable = false)
-    private String tenantId;
+
+    @Column(name = "tenant_code", unique = true, nullable = false)
+    private String tenantCode;
+
     private String name;
+
     private String status; // ACTIVE / DISABLED
+
+    @Column(name = "created_at")
     private LocalDateTime createdAt = LocalDateTime.now();
-    // getters/setters
+
     public Long getId() {
         return id;
     }
@@ -23,12 +28,12 @@ public class Tenant {
         this.id = id;
     }
 
-    public String getTenantId() {
-        return tenantId;
+    public String getTenantCode() {
+        return tenantCode;
     }
 
-    public void setTenantId(String tenantId) {
-        this.tenantId = tenantId;
+    public void setTenantCode(String tenantCode) {
+        this.tenantCode = tenantCode;
     }
 
     public String getName() {

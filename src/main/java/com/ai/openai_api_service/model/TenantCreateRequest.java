@@ -5,9 +5,9 @@ import jakarta.validation.constraints.NotBlank;
 
 public class TenantCreateRequest {
 
-    @NotBlank(message = "tenantId is required")
+    @NotBlank(message = "tenantCode is required")
     @Schema(example = "infor")
-    private String tenantId;
+    private String tenantCode;
 
     @NotBlank(message = "name is required")
     @Schema(example = "Infor Tenant")
@@ -16,12 +16,12 @@ public class TenantCreateRequest {
     public TenantCreateRequest() {
     }
 
-    public String getTenantId() {
-        return tenantId;
+    public String getTenantCode() {
+        return tenantCode;
     }
 
-    public void setTenantId(String tenantId) {
-        this.tenantId = tenantId;
+    public void setTenantCode(String tenantCode) {
+        this.tenantCode = tenantCode;
     }
 
     public String getName() {

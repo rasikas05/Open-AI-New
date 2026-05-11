@@ -39,12 +39,12 @@ public class TenantService {
 
     @Transactional
     public TenantResponse createTenant(TenantCreateRequest request) {
-        if (tenantRepository.existsByTenantId(request.getTenantId())) {
+        if (tenantRepository.existsByTenantCode(request.getTenantCode())) {
             throw new ResponseStatusException(BAD_REQUEST, "Tenant already exists");
         }
 
         Tenant tenant = new Tenant();
-        tenant.setTenantId(request.getTenantId());
+        tenant.setTenantCode(request.getTenantCode());
         tenant.setName(request.getName());
         tenant.setStatus("ACTIVE");
         tenant.setCreatedAt(LocalDateTime.now());
@@ -54,27 +54,31 @@ public class TenantService {
     }
 
     @Transactional
+    public void registerUserAndSession(String tenantId, String userId, String sessionId) {
+        registerUserAndSession(tenantId, userId, sessionId, null);
+    }
+
+    @Transactional
     public void registerUserAndSession(String tenantId, String userId, String sessionId, Integer tokenLimit) {
-        Tenant tenant = tenantRepository.findByTenantId(tenantId)
+        Tenant tenant = tenantRepository.findByTenantCode(tenantId)
                 .orElseThrow(() -> new ResponseStatusException(BAD_REQUEST, "Tenant not found"));
 
-        userRepository.findByTenantIdAndUserId(tenantId, userId)
+        User user = userRepository.findByTenantAndUsername(tenant, userId)
                 .orElseGet(() -> {
                     User newUser = new User();
-                    newUser.setTenantId(tenantId);
-                    newUser.setUserId(userId);
+                    newUser.setTenant(tenant);
+                    newUser.setUsername(userId);
                     newUser.setCreatedAt(LocalDateTime.now());
                     return userRepository.save(newUser);
                 });
 
-        sessionRepository.findByTenantIdAndUserIdAndSessionId(tenantId, userId, sessionId)
+        sessionRepository.findByTenantAndUserAndSessionId(tenant, user, sessionId)
                 .orElseGet(() -> {
                     Session session = new Session();
-                    session.setTenantId(tenantId);
-                    session.setUserId(userId);
+                    session.setTenant(tenant);
+                    session.setUser(user);
                     session.setSessionId(sessionId);
                     session.setStatus("ACTIVE");
-                    session.setTokenLimit(tokenLimit != null ? tokenLimit : 0);
                     session.setTokensUsed(0);
                     session.setCreatedAt(LocalDateTime.now());
                     session.setUpdatedAt(LocalDateTime.now());
@@ -83,32 +87,35 @@ public class TenantService {
     }
 
     public List<UserResponse> getUsersForTenant(String tenantId) {
-        tenantRepository.findByTenantId(tenantId)
+        Tenant tenant = tenantRepository.findByTenantCode(tenantId)
                 .orElseThrow(() -> new ResponseStatusException(BAD_REQUEST, "Tenant not found"));
 
-        return userRepository.findByTenantId(tenantId)
+        return userRepository.findByTenant(tenant)
                 .stream()
                 .map(this::toUserResponse)
                 .collect(Collectors.toList());
     }
 
     public List<SessionResponse> getSessionsForUser(String tenantId, String userId) {
-        tenantRepository.findByTenantId(tenantId)
-                .orElseThrow(() -> new ResponseStatusException(BAD_REQUEST, "Tenant not found"));
 
-        userRepository.findByTenantIdAndUserId(tenantId, userId)
-                .orElseThrow(() -> new ResponseStatusException(BAD_REQUEST, "User not found"));
+        Tenant tenant = tenantRepository.findByTenantCode(tenantId)
+                .orElseThrow(() ->
+                        new ResponseStatusException(BAD_REQUEST, "Tenant not found"));
 
-        return sessionRepository.findByTenantIdAndUserId(tenantId, userId)
+        User user = userRepository.findByTenantAndUsername(tenant, userId)
+                .orElseThrow(() ->
+                        new ResponseStatusException(BAD_REQUEST, "User not found"));
+
+        return sessionRepository
+                .findByTenantAndUserOrderByUpdatedAtDesc(tenant, user)
                 .stream()
                 .map(this::toSessionResponse)
                 .collect(Collectors.toList());
     }
-
     private TenantResponse toResponse(Tenant tenant) {
         return new TenantResponse(
                 tenant.getId(),
-                tenant.getTenantId(),
+                tenant.getTenantCode(),
                 tenant.getName(),
                 tenant.getStatus(),
                 tenant.getCreatedAt()
@@ -118,8 +125,8 @@ public class TenantService {
     private UserResponse toUserResponse(User user) {
         return new UserResponse(
                 user.getId(),
-                user.getTenantId(),
-                user.getUserId(),
+                user.getTenant().getTenantCode(),
+                user.getUsername(),
                 user.getCreatedAt()
         );
     }
@@ -127,11 +134,10 @@ public class TenantService {
     private SessionResponse toSessionResponse(Session session) {
         return new SessionResponse(
                 session.getId(),
-                session.getTenantId(),
-                session.getUserId(),
+                session.getTenant().getTenantCode(),
+                session.getUser().getUsername(),
                 session.getSessionId(),
                 session.getStatus(),
-                session.getTokenLimit(),
                 session.getTokensUsed(),
                 session.getCreatedAt(),
                 session.getUpdatedAt(),

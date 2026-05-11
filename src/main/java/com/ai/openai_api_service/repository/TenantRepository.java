@@ -9,8 +9,13 @@ import java.util.Optional;
 
 @Repository
 public interface TenantRepository extends JpaRepository<Tenant, Long> {
-    List<Tenant> findAll();
+
     List<Tenant> findByStatus(String status);
-    Optional<Tenant> findByTenantId(String tenantId);
-    boolean existsByTenantId(String tenantId);
+
+    Optional<Tenant> findByTenantCode(String tenantCode);
+
+    boolean existsByTenantCode(String tenantCode);
+    Optional<Tenant> findByTenantCodeIgnoreCase(String tenantCode);
+
+    boolean existsByTenantCodeIgnoreCase(String tenantCode);
 }

@@ -6,19 +6,64 @@ import java.time.LocalDateTime;
 @Entity
 @Table(name = "tenant_quota")
 public class TenantQuota {
+
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
-    @Column(name = "tenant_id", unique = true)
-    private String tenantId;
+
+    @OneToOne(fetch = FetchType.LAZY, optional = false)
+    @JoinColumn(name = "tenant_ref_id", nullable = false, unique = true)
+    private Tenant tenant;
+
+    @Column(name = "base_limit")
     private int baseLimit;
+
+    @Column(name = "extra_tokens")
     private int extraTokens;
+
+    @Column(name = "tokens_used")
     private int tokensUsed;
-    private String status;
+
+    @Column(nullable = false)
+    private String status = "ACTIVE";
+
+    @Column(name = "reset_frequency", nullable = false)
+    private String resetFrequency = "MONTHLY";
+
+    @Column(name = "last_reset_at")
     private LocalDateTime lastResetAt;
-    private LocalDateTime createdAt;
-    private LocalDateTime updatedAt;
-    // getters/setters
+
+    @Column(name = "created_at")
+    private LocalDateTime createdAt = LocalDateTime.now();
+
+    @Column(name = "updated_at")
+    private LocalDateTime updatedAt = LocalDateTime.now();
+
+    @PrePersist
+    public void prePersist() {
+
+        if (createdAt == null) {
+            createdAt = LocalDateTime.now();
+        }
+
+        if (updatedAt == null) {
+            updatedAt = LocalDateTime.now();
+        }
+
+        if (status == null) {
+            status = "ACTIVE";
+        }
+
+        if (resetFrequency == null) {
+            resetFrequency = "MONTHLY";
+        }
+    }
+
+    @PreUpdate
+    public void preUpdate() {
+        this.updatedAt = LocalDateTime.now();
+    }
+
     public Long getId() {
         return id;
     }
@@ -27,12 +72,12 @@ public class TenantQuota {
         this.id = id;
     }
 
-    public String getTenantId() {
-        return tenantId;
+    public Tenant getTenant() {
+        return tenant;
     }
 
-    public void setTenantId(String tenantId) {
-        this.tenantId = tenantId;
+    public void setTenant(Tenant tenant) {
+        this.tenant = tenant;
     }
 
     public int getBaseLimit() {
@@ -65,6 +110,14 @@ public class TenantQuota {
 
     public void setStatus(String status) {
         this.status = status;
+    }
+
+    public String getResetFrequency() {
+        return resetFrequency;
+    }
+
+    public void setResetFrequency(String resetFrequency) {
+        this.resetFrequency = resetFrequency;
     }
 
     public LocalDateTime getLastResetAt() {

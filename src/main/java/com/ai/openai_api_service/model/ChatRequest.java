@@ -8,9 +8,9 @@ import java.util.List;
 
 public class ChatRequest {
 
-    @NotBlank(message = "tenantId is required")
+    @NotBlank(message = "tenantCode is required")
     @Schema(example = "infor")
-    private String tenantId;
+    private String tenantCode;
 
     @NotBlank(message = "userId is required")
     @Schema(example = "rasika")
@@ -36,12 +36,12 @@ public class ChatRequest {
         this.history = history;
     }
 
-    public String getTenantId() {
-        return tenantId;
+    public String getTenantCode() {
+        return tenantCode;
     }
 
-    public void setTenantId(String tenantId) {
-        this.tenantId = tenantId;
+    public void setTenantCode(String tenantCode) {
+        this.tenantCode = tenantCode;
     }
 
     public String getUserId() {

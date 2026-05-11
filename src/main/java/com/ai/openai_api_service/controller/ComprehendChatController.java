@@ -1,7 +1,6 @@
 package com.ai.openai_api_service.controller;
 
-import com.ai.openai_api_service.entity.ChatMessageEntity;
-import com.ai.openai_api_service.entity.ChatSessionEntity;
+import com.ai.openai_api_service.entity.Session;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.MessageDto;
@@ -99,13 +98,12 @@ public class ComprehendChatController {
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("Comprehend List sessions request from client_id: {}", clientId);
 
-        List<ChatSessionEntity> sessions = chatPersistenceService.listSessions(tenantId, userId);
+        List<Session> sessions = chatPersistenceService.listSessions(tenantId, userId);
 
         List<SessionSummaryDto> response = sessions.stream()
                 .map(session -> new SessionSummaryDto(
                         session.getSessionId(),
                         session.getStatus(),
-                        session.getTokenLimit(),
                         session.getTokensUsed(),
                         session.getCreatedAt(),
                         session.getUpdatedAt()
@@ -127,7 +125,7 @@ public class ComprehendChatController {
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("Comprehend Get session request from client_id: {} sessionId: {}", clientId, sessionId);
 
-        ChatSessionEntity session = chatPersistenceService.getSessionById(sessionId);
+        Session session = chatPersistenceService.getSessionById(sessionId);
 
         if (session == null) {
             return ResponseEntity.notFound().build();
@@ -136,7 +134,6 @@ public class ComprehendChatController {
         SessionSummaryDto response = new SessionSummaryDto(
                 session.getSessionId(),
                 session.getStatus(),
-                session.getTokenLimit(),
                 session.getTokensUsed(),
                 session.getCreatedAt(),
                 session.getUpdatedAt()
@@ -157,7 +154,7 @@ public class ComprehendChatController {
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("Comprehend Close session request from client_id: {} sessionId: {}", clientId, sessionId);
 
-        ChatSessionEntity session = chatPersistenceService.closeSessionById(sessionId);
+        Session session = chatPersistenceService.closeSessionById(sessionId);
 
         if (session == null) {
             return ResponseEntity.notFound().build();
@@ -166,7 +163,6 @@ public class ComprehendChatController {
         SessionSummaryDto response = new SessionSummaryDto(
                 session.getSessionId(),
                 session.getStatus(),
-                session.getTokenLimit(),
                 session.getTokensUsed(),
                 session.getCreatedAt(),
                 session.getUpdatedAt()

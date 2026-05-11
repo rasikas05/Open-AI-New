@@ -5,17 +5,25 @@ import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "users",
-       uniqueConstraints = @UniqueConstraint(columnNames = {"tenant_id", "user_id"}))
+       uniqueConstraints = @UniqueConstraint(columnNames = {"tenant_ref_id", "username"}))
 public class User {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
-    @Column(name = "tenant_id", nullable = false)
-    private String tenantId;
-    @Column(name = "user_id", nullable = false)
-    private String userId;
+
+    @ManyToOne(optional = false)
+    @JoinColumn(name = "tenant_ref_id", nullable = false)
+    private Tenant tenant;
+
+    @Column(name = "username", nullable = false)
+    private String username;
+
+    @Column(name = "created_at")
     private LocalDateTime createdAt = LocalDateTime.now();
-    // getters/setters
+
+    @Column(name = "last_login")
+    private LocalDateTime lastLogin;
+
     public Long getId() {
         return id;
     }
@@ -24,20 +32,20 @@ public class User {
         this.id = id;
     }
 
-    public String getTenantId() {
-        return tenantId;
+    public Tenant getTenant() {
+        return tenant;
     }
 
-    public void setTenantId(String tenantId) {
-        this.tenantId = tenantId;
+    public void setTenant(Tenant tenant) {
+        this.tenant = tenant;
     }
 
-    public String getUserId() {
-        return userId;
+    public String getUsername() {
+        return username;
     }
 
-    public void setUserId(String userId) {
-        this.userId = userId;
+    public void setUsername(String username) {
+        this.username = username;
     }
 
     public LocalDateTime getCreatedAt() {
@@ -46,5 +54,13 @@ public class User {
 
     public void setCreatedAt(LocalDateTime createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public LocalDateTime getLastLogin() {
+        return lastLogin;
+    }
+
+    public void setLastLogin(LocalDateTime lastLogin) {
+        this.lastLogin = lastLogin;
     }
 }

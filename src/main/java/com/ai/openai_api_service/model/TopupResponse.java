@@ -2,16 +2,16 @@ package com.ai.openai_api_service.model;
 
 public class TopupResponse {
     private String message;
-    private String tenantId;
+    private String tenantCode;
     private int tokensAdded;
     private TokenUsageDto usage;
 
     public TopupResponse() {
     }
 
-    public TopupResponse(String message, String tenantId, int tokensAdded, TokenUsageDto usage) {
+    public TopupResponse(String message, String tenantCode, int tokensAdded, TokenUsageDto usage) {
         this.message = message;
-        this.tenantId = tenantId;
+        this.tenantCode = tenantCode;
         this.tokensAdded = tokensAdded;
         this.usage = usage;
     }
@@ -24,12 +24,12 @@ public class TopupResponse {
         this.message = message;
     }
 
-    public String getTenantId() {
-        return tenantId;
+    public String getTenantCode() {
+        return tenantCode;
     }
 
-    public void setTenantId(String tenantId) {
-        this.tenantId = tenantId;
+    public void setTenantCode(String tenantCode) {
+        this.tenantCode = tenantCode;
     }
 
     public int getTokensAdded() {

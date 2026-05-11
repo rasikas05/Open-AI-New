@@ -4,18 +4,18 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 
 public class TenantQuotaRequest {
-    @NotBlank(message = "tenantId is required")
-    private String tenantId;
+    @NotBlank(message = "tenantCode is required")
+    private String tenantCode;
 
     @Min(value = 1, message = "baseLimit must be greater than 0")
     private int baseLimit;
 
-    public String getTenantId() {
-        return tenantId;
+    public String getTenantCode() {
+        return tenantCode;
     }
 
-    public void setTenantId(String tenantId) {
-        this.tenantId = tenantId;
+    public void setTenantCode(String tenantCode) {
+        this.tenantCode = tenantCode;
     }
 
     public int getBaseLimit() {

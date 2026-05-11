@@ -53,7 +53,7 @@ public class ChatService {
     }
 
     public ChatResponse chat(ChatRequest request) {
-        TenantQuotaService.QuotaCheckResult quotaCheck = tenantQuotaService.checkBeforeChat(request.getTenantId());
+        TenantQuotaService.QuotaCheckResult quotaCheck = tenantQuotaService.checkBeforeChat(request.getTenantCode());
         if (!quotaCheck.allowed()) {
             String reason = quotaCheck.reason();
             String reply = "Token limit reached for this tenant. Please top up to continue.";
@@ -118,14 +118,14 @@ public class ChatService {
         List<SuggestionDto> details = cleanSuggestionDetails(merged, maxCount);
         List<String> result = details.stream().map(SuggestionDto::getText).toList();
         if (details.isEmpty()) {
-            log.info("No suggestions generated for tenantId={}, userId={}, sessionId={}",
-                    request.getTenantId(), request.getUserId(), request.getSessionId());
+            log.info("No suggestions generated for tenantCode={}, userId={}, sessionId={}",
+                    request.getTenantCode(), request.getUserId(), request.getSessionId());
         }
         return new SuggestionResult(result, details);
     }
 
     private String buildCacheKey(ChatRequest request) {
-        String tenant = normalizeToken(request.getTenantId());
+        String tenant = normalizeToken(request.getTenantCode());
         String user = normalizeToken(request.getUserId());
         String session = normalizeToken(request.getSessionId());
         String msg = normalizeToken(request.getUserMessage());

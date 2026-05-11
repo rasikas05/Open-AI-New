@@ -102,7 +102,7 @@ public class OpenAIService {
             sourceHistory = clientHistory;
         } else if (loadHistoryFromDb) {
             sourceHistory = chatPersistenceService.loadHistoryForPrompt(
-                    request.getTenantId(),
+                    request.getTenantCode(),
                     request.getUserId(),
                     request.getSessionId(),
                     maxHistoryExchanges
@@ -141,8 +141,8 @@ public class OpenAIService {
         String sanitizedUserText = presidioService.sanitizeText(originalUserText);
         String modelReadyUserText = prepareUserContentForOpenAi(sanitizedUserText);
         log.info(
-                "Preparing OpenAI call. tenantId={}, userId={}, sessionId={}, historyCount={}, original='{}', modelReady='{}'",
-                request.getTenantId(),
+                "Preparing OpenAI call. tenantCode={}, userId={}, sessionId={}, historyCount={}, original='{}', modelReady='{}'",
+                request.getTenantCode(),
                 request.getUserId(),
                 request.getSessionId(),
                 historyCount,
@@ -231,7 +231,7 @@ public class OpenAIService {
         int consumedTokens = totalTokens != null ? totalTokens : 0;
         String usageReferenceId = request.getSessionId() + ":" + System.currentTimeMillis();
         try {
-            tenantQuotaService.recordUsage(request.getTenantId(), consumedTokens, usageReferenceId);
+            tenantQuotaService.recordUsage(request.getTenantCode(), consumedTokens, usageReferenceId);
         } catch (TenantQuotaExceededException e) {
             ChatResponse blocked = new ChatResponse("Token limit reached for this tenant. Please top up to continue.", false);
             blocked.setLimitExceeded(true);
@@ -241,7 +241,7 @@ public class OpenAIService {
             return blocked;
         }
         chatPersistenceService.persistChat(
-                request.getTenantId(),
+                request.getTenantCode(),
                 request.getUserId(),
                 request.getSessionId(),
                 originalUserText,
