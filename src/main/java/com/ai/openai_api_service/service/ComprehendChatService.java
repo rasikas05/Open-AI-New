@@ -30,6 +30,8 @@ import java.util.Arrays;
 public class ComprehendChatService {
     private static final Logger log = LoggerFactory.getLogger(ComprehendChatService.class);
 
+    private static final String GENERIC_MESSAGE = "I'm here to help with questions related to Infor M3 ERP. If you have any queries about Infor M3 modules, processes, or troubleshooting, please let me know!";
+
     private final RestTemplate restTemplate;
     private final ComprehendAnonymizationService comprehendAnonymizationService;
     private final ChatPersistenceService chatPersistenceService;
@@ -318,6 +320,18 @@ public class ComprehendChatService {
     private SuggestionResult buildSuggestions(ChatRequest request) {
         int minCount = Math.max(1, minSuggestionCount);
         int maxCount = Math.max(minCount, maxSuggestionCount);
+
+        if (request == null || request.getUserMessage() == null || request.getUserMessage().isBlank()) {
+            return new SuggestionResult(List.of(), List.of());
+        }
+
+        if (!suggestionRuleService.isSupportedM3Topic(request.getUserMessage())) {
+            List<String> generic = suggestionRuleService.genericSuggestions(maxCount);
+            List<SuggestionDto> details = generic.stream()
+                    .map(text -> new SuggestionDto(text, "GENERIC"))
+                    .toList();
+            return new SuggestionResult(generic, details);
+        }
 
         Map<String, String> merged = new java.util.LinkedHashMap<>();
         if (llmEnabled) {

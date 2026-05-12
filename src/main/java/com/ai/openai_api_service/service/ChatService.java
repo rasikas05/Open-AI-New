@@ -21,6 +21,8 @@ public class ChatService {
 
     private static final Logger log = LoggerFactory.getLogger(ChatService.class);
 
+    private static final String GENERIC_MESSAGE = "I'm here to help with questions related to Infor M3 ERP. If you have any queries about Infor M3 modules, processes, or troubleshooting, please let me know!";
+
     private final OpenAIService openAIService;
     private final PresidioService presidioService;
     private final SuggestionRuleService suggestionRuleService;
@@ -94,6 +96,18 @@ public class ChatService {
     private SuggestionResult buildSuggestions(ChatRequest request) {
         int minCount = Math.max(1, minSuggestionCount);
         int maxCount = Math.max(minCount, maxSuggestionCount);
+
+        if (request == null || request.getUserMessage() == null || request.getUserMessage().isBlank()) {
+            return new SuggestionResult(List.of(), List.of());
+        }
+
+        if (!suggestionRuleService.isSupportedM3Topic(request.getUserMessage())) {
+            List<String> generic = suggestionRuleService.genericSuggestions(maxCount);
+            List<SuggestionDto> details = generic.stream()
+                    .map(text -> new SuggestionDto(text, "GENERIC"))
+                    .toList();
+            return new SuggestionResult(generic, details);
+        }
 
         Map<String, String> merged = new LinkedHashMap<>();
         if (llmEnabled) {
@@ -173,7 +187,8 @@ public class ChatService {
             return text;
         }
         try {
-            return presidioService.sanitizeText(text);
+            String sanitized = presidioService.sanitizeText(text);
+            return sanitized == null || sanitized.isBlank() ? text : sanitized;
         } catch (Exception e) {
             log.warn("Suggestion sanitization failed, using original text: {}", e.getMessage());
             return text;

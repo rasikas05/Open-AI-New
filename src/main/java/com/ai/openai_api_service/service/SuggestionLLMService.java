@@ -60,7 +60,7 @@ public class SuggestionLLMService {
                         Map.of(
                                 "role", "user",
                                 "content", "Based on this context, generate " + minCount + " to " + maxCount +
-                                        " short follow-up prompts. Each prompt must be a standalone, self-explanatory user query or request that is AI-ready and domain-relevant. Avoid menu labels, navigation options, and assistant clarification phrasings such as 'Do you want', 'Should I', or 'Would you like'. Output only a JSON array of strings.\n\n" + context
+                                        " short follow-up prompts. Each prompt must be a standalone, self-explanatory user query or request that is AI-ready and domain-relevant. Avoid menu labels, navigation options, and assistant clarification phrasings such as 'Do you want', 'Should I', or 'Would you like'. Do NOT generate suggestions that assume system execution capabilities. Do NOT generate suggestions that imply exporting files, fetching live ERP data, summarizing database values, retrieving customer records, sending emails, or generating reports. Suggestions should focus on process understanding, workflow guidance, M3 program usage, filtering techniques, configuration knowledge, and troubleshooting. Suggestions must sound like realistic follow-up learning questions. Output only a JSON array of strings.\n\n" + context
                         )
                 )
         );

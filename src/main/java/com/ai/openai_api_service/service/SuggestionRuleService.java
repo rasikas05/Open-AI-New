@@ -15,6 +15,64 @@ public class SuggestionRuleService {
     @Value("${suggestion.rule.enabled:true}")
     private boolean ruleEnabled;
 
+public boolean isSupportedM3Topic(String latestUserMessage) {
+    if (latestUserMessage == null || latestUserMessage.isBlank()) {
+        return false;
+    }
+
+    String text = latestUserMessage.toLowerCase(Locale.ROOT);
+    return containsAny(text,
+            "m3",
+            "infor",
+            "ois100",
+            "ois101",
+            "ois390",
+            "crs610",
+            "mms200",
+            "mi",
+            "api",
+            "customer order",
+            "customer master",
+            "address",
+            "payer",
+            "ship-to",
+            "item master",
+            "warehouse",
+            "facility",
+            "uom",
+            "costing",
+            "invoice",
+            "invoicing",
+            "billing",
+            "validation",
+            "error",
+            "transaction",
+            "program",
+            "panel",
+            "inventory",
+            "delivery",
+            "order",
+            "customer"
+    );
+}
+
+public List<String> genericSuggestions(int maxCount) {
+    if (maxCount <= 0) {
+        return List.of();
+    }
+    List<String> generic = List.of(
+            "Infor M3 order management",
+            "M3 inventory management",
+            "Customer order workflow in M3",
+            "Infor M3 API integration",
+            "M3 invoicing process",
+            "M3 warehouse and facility planning",
+            "M3 item master configuration",
+            "Troubleshooting M3 transaction issues"
+    );
+    return generic.subList(0, Math.min(maxCount, generic.size()));
+}
+
 public List<String> suggest(String latestUserMessage, int maxCount) {
 
     if (!ruleEnabled || latestUserMessage == null || latestUserMessage.isBlank()) {
