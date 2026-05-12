@@ -2,6 +2,7 @@ package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.MessageDto;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -14,11 +15,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
+import java.util.stream.Collectors;
 
 @Service
 public class SuggestionLLMService {
@@ -26,6 +26,7 @@ public class SuggestionLLMService {
     private static final Logger log = LoggerFactory.getLogger(SuggestionLLMService.class);
 
     private final RestTemplate restTemplate = new RestTemplate();
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Value("${openai.api.key}")
     private String apiKey;
@@ -54,12 +55,12 @@ public class SuggestionLLMService {
                 "messages", List.of(
                         Map.of(
                                 "role", "system",
-                                "content", "You are an Infor M3 assistant. Generate only short follow-up questions."
+                                "content", "You are an Infor M3 assistant. Generate short user-centric suggestion chips."
                         ),
                         Map.of(
                                 "role", "user",
                                 "content", "Based on this context, generate " + minCount + " to " + maxCount +
-                                        " short, relevant follow-up questions. Return only plain lines, no numbering.\n\n" + context
+                                        " short follow-up prompts. Each prompt must be a standalone, self-explanatory user query or request that is AI-ready and domain-relevant. Avoid menu labels, navigation options, and assistant clarification phrasings such as 'Do you want', 'Should I', or 'Would you like'. Output only a JSON array of strings.\n\n" + context
                         )
                 )
         );
@@ -76,8 +77,8 @@ public class SuggestionLLMService {
                     Map.class
             );
             Map<String, Object> response = responseEntity.getBody();
-            String content = extractContent(response);
-            return normalize(content, maxCount);
+            List<String> suggestions = extractContent(response);
+            return suggestions.stream().limit(maxCount).collect(Collectors.toList());
         } catch (Exception e) {
             log.warn("LLM suggestion generation failed: {}", e.getMessage());
             return List.of();
@@ -102,51 +103,32 @@ public class SuggestionLLMService {
         return String.join("\n", contextLines);
     }
 
-    private String extractContent(Map<String, Object> response) {
+    private List<String> extractContent(Map<String, Object> response) {
         if (response == null) {
-            return "";
+            return List.of();
         }
         Object choicesObj = response.get("choices");
         if (!(choicesObj instanceof List<?> choices) || choices.isEmpty()) {
-            return "";
+            return List.of();
         }
         Object first = choices.get(0);
         if (!(first instanceof Map<?, ?> choiceMap)) {
-            return "";
+            return List.of();
         }
         Object messageObj = choiceMap.get("message");
         if (!(messageObj instanceof Map<?, ?> messageMap)) {
-            return "";
-        }
-        Object contentObj = messageMap.get("content");
-        return contentObj == null ? "" : contentObj.toString();
-    }
-
-    private List<String> normalize(String content, int maxCount) {
-        if (content == null || content.isBlank()) {
             return List.of();
         }
-        String[] lines = content.split("\\r?\\n");
-        Set<String> result = new LinkedHashSet<>();
-        for (String line : lines) {
-            String clean = line.replaceFirst("^[-*\\d.\\s]+", "").trim();
-            if (clean.isBlank()) {
-                continue;
-            }
-            if (!clean.endsWith("?")) {
-                clean = clean + "?";
-            }
-            if (clean.length() > 140) {
-                clean = clean.substring(0, 140).trim();
-                if (!clean.endsWith("?")) {
-                    clean = clean + "?";
-                }
-            }
-            result.add(clean);
-            if (result.size() >= maxCount) {
-                break;
-            }
+        Object contentObj = messageMap.get("content");
+        String content = contentObj == null ? "" : contentObj.toString();
+        if (content.isBlank()) {
+            return List.of();
         }
-        return new ArrayList<>(result);
+        try {
+            return objectMapper.readValue(content, objectMapper.getTypeFactory().constructCollectionType(List.class, String.class));
+        } catch (Exception e) {
+            log.warn("Failed to parse LLM response as JSON array: {}", e.getMessage());
+            return List.of();
+        }
     }
 }

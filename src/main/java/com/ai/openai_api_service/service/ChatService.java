@@ -2,6 +2,7 @@ package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
+import com.ai.openai_api_service.model.MessageDto;
 import com.ai.openai_api_service.model.SuggestionDto;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -21,6 +22,7 @@ public class ChatService {
     private static final Logger log = LoggerFactory.getLogger(ChatService.class);
 
     private final OpenAIService openAIService;
+    private final PresidioService presidioService;
     private final SuggestionRuleService suggestionRuleService;
     private final SuggestionLLMService suggestionLLMService;
     private final SuggestionCacheService suggestionCacheService;
@@ -40,12 +42,14 @@ public class ChatService {
 
     public ChatService(
             OpenAIService openAIService,
+            PresidioService presidioService,
             SuggestionRuleService suggestionRuleService,
             SuggestionLLMService suggestionLLMService,
             SuggestionCacheService suggestionCacheService,
             TenantQuotaService tenantQuotaService
     ) {
         this.openAIService = openAIService;
+        this.presidioService = presidioService;
         this.suggestionRuleService = suggestionRuleService;
         this.suggestionLLMService = suggestionLLMService;
         this.suggestionCacheService = suggestionCacheService;
@@ -79,7 +83,9 @@ public class ChatService {
             return chatResponse;
         }
         chatResponse.setLimitExceeded(false);
-        SuggestionResult suggestionResult = buildSuggestions(request);
+
+        ChatRequest suggestionRequest = sanitizeRequestForSuggestions(request);
+        SuggestionResult suggestionResult = buildSuggestions(suggestionRequest);
         chatResponse.setSuggestions(suggestionResult.suggestions());
         chatResponse.setSuggestionDetails(suggestionResult.details());
         return chatResponse;
@@ -90,14 +96,7 @@ public class ChatService {
         int maxCount = Math.max(minCount, maxSuggestionCount);
 
         Map<String, String> merged = new LinkedHashMap<>();
-        if (ruleEnabled) {
-            List<String> ruleSuggestions = suggestionRuleService.suggest(request.getUserMessage(), maxCount);
-            for (String suggestion : ruleSuggestions) {
-                merged.putIfAbsent(suggestion, "RULE");
-            }
-        }
-
-        if (llmEnabled && merged.size() < minCount) {
+        if (llmEnabled) {
             String cacheKey = buildCacheKey(request);
             List<String> cached = suggestionCacheService.get(cacheKey);
             if (!cached.isEmpty()) {
@@ -112,6 +111,13 @@ public class ChatService {
                         merged.putIfAbsent(suggestion, "LLM");
                     }
                 }
+            }
+        }
+
+        if (ruleEnabled && merged.size() < maxCount) {
+            List<String> ruleSuggestions = suggestionRuleService.suggest(request.getUserMessage(), maxCount - merged.size());
+            for (String suggestion : ruleSuggestions) {
+                merged.putIfAbsent(suggestion, "RULE");
             }
         }
 
@@ -130,6 +136,48 @@ public class ChatService {
         String session = normalizeToken(request.getSessionId());
         String msg = normalizeToken(request.getUserMessage());
         return tenant + "|" + user + "|" + session + "|" + msg;
+    }
+
+    private ChatRequest sanitizeRequestForSuggestions(ChatRequest request) {
+        if (request == null) {
+            return request;
+        }
+        String sanitizedUserMessage = safeSanitizeText(request.getUserMessage());
+        List<MessageDto> history = request.getHistory();
+        List<MessageDto> sanitizedHistory = null;
+        if (history != null) {
+            sanitizedHistory = new ArrayList<>();
+            for (MessageDto message : history) {
+                if (message == null) {
+                    continue;
+                }
+                String role = message.getRole();
+                String content = message.getContent();
+                String sanitizedContent = "user".equalsIgnoreCase(role)
+                        ? safeSanitizeText(content)
+                        : content;
+                sanitizedHistory.add(new MessageDto(role, sanitizedContent));
+            }
+        }
+        ChatRequest copy = new ChatRequest();
+        copy.setTenantCode(request.getTenantCode());
+        copy.setUserId(request.getUserId());
+        copy.setSessionId(request.getSessionId());
+        copy.setUserMessage(sanitizedUserMessage);
+        copy.setHistory(sanitizedHistory);
+        return copy;
+    }
+
+    private String safeSanitizeText(String text) {
+        if (text == null || text.isBlank()) {
+            return text;
+        }
+        try {
+            return presidioService.sanitizeText(text);
+        } catch (Exception e) {
+            log.warn("Suggestion sanitization failed, using original text: {}", e.getMessage());
+            return text;
+        }
     }
 
     private String normalizeToken(String value) {

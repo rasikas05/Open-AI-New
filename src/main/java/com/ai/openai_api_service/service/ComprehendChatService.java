@@ -276,7 +276,12 @@ public class ComprehendChatService {
             chatResponse.setSanitizedUserMessage(modelReadyUserText);
         }
 
-        SuggestionResult suggestionResult = buildSuggestions(request);
+        ChatRequest suggestionRequest = request;
+        if (!Objects.equals(originalUserText, modelReadyUserText)) {
+            suggestionRequest = copyRequestWithUserMessage(request, modelReadyUserText);
+        }
+
+        SuggestionResult suggestionResult = buildSuggestions(suggestionRequest);
         chatResponse.setSuggestions(suggestionResult.suggestions());
         chatResponse.setSuggestionDetails(suggestionResult.details());
 
@@ -315,14 +320,7 @@ public class ComprehendChatService {
         int maxCount = Math.max(minCount, maxSuggestionCount);
 
         Map<String, String> merged = new java.util.LinkedHashMap<>();
-        if (ruleEnabled) {
-            List<String> ruleSuggestions = suggestionRuleService.suggest(request.getUserMessage(), maxCount);
-            for (String suggestion : ruleSuggestions) {
-                merged.putIfAbsent(suggestion, "RULE");
-            }
-        }
-
-        if (llmEnabled && merged.size() < minCount) {
+        if (llmEnabled) {
             String cacheKey = buildCacheKey(request);
             List<String> cached = suggestionCacheService.get(cacheKey);
             if (!cached.isEmpty()) {
@@ -337,6 +335,13 @@ public class ComprehendChatService {
                         merged.putIfAbsent(suggestion, "LLM");
                     }
                 }
+            }
+        }
+
+        if (ruleEnabled && merged.size() < maxCount) {
+            List<String> ruleSuggestions = suggestionRuleService.suggest(request.getUserMessage(), maxCount - merged.size());
+            for (String suggestion : ruleSuggestions) {
+                merged.putIfAbsent(suggestion, "RULE");
             }
         }
 
@@ -362,6 +367,16 @@ public class ComprehendChatService {
             return "";
         }
         return value.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
+    }
+
+    private ChatRequest copyRequestWithUserMessage(ChatRequest original, String userMessage) {
+        ChatRequest copy = new ChatRequest();
+        copy.setTenantCode(original.getTenantCode());
+        copy.setUserId(original.getUserId());
+        copy.setSessionId(original.getSessionId());
+        copy.setUserMessage(userMessage);
+        copy.setHistory(original.getHistory());
+        return copy;
     }
 
     private List<SuggestionDto> cleanSuggestionDetails(Map<String, String> sourceWithType, int maxCount) {

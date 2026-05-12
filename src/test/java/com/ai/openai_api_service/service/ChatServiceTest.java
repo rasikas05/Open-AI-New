@@ -3,6 +3,7 @@ package com.ai.openai_api_service.service;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.TokenUsageDto;
+import com.ai.openai_api_service.service.PresidioService;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InjectMocks;
@@ -20,6 +21,9 @@ class ChatServiceTest {
 
     @Mock
     private OpenAIService openAIService;
+
+    @Mock
+    private PresidioService presidioService;
 
     @Mock
     private SuggestionRuleService suggestionRuleService;
