@@ -41,9 +41,9 @@ class TenantQuotaControllerTest {
         mockMvc.perform(post("/tenant/quota")
                         .with(jwt())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"tenantId\":\"tenant-1\",\"baseLimit\":10000}"))
+                        .content("{\"tenantCode\":\"tenant-1\",\"baseLimit\":10000}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.tenantId").value("tenant-1"))
+                .andExpect(jsonPath("$.tenantCode").value("tenant-1"))
                 .andExpect(jsonPath("$.baseLimit").value(10000))
                 .andExpect(jsonPath("$.usage.remaining").value(10000));
     }
@@ -61,9 +61,9 @@ class TenantQuotaControllerTest {
         mockMvc.perform(post("/tenant/topup")
                         .with(jwt())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"tenantId\":\"tenant-1\",\"tokens\":500}"))
+                        .content("{\"tenantCode\":\"tenant-1\",\"tokens\":500}"))
                 .andExpect(status().isOk())
-                .andExpect(jsonPath("$.tenantId").value("tenant-1"))
+                .andExpect(jsonPath("$.tenantCode").value("tenant-1"))
                 .andExpect(jsonPath("$.tokensAdded").value(500))
                 .andExpect(jsonPath("$.usage.total").value(1500))
                 .andExpect(jsonPath("$.usage.remaining").value(1400));

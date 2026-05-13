@@ -4,6 +4,7 @@ import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.TokenUsageDto;
 import com.ai.openai_api_service.service.ChatPersistenceService;
 import com.ai.openai_api_service.service.ChatService;
+import com.ai.openai_api_service.service.TenantService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
@@ -32,6 +33,9 @@ class ChatControllerQuotaTest {
     @MockBean
     private ChatPersistenceService chatPersistenceService;
 
+    @MockBean
+    private TenantService tenantService;
+
     @Test
     void chatShouldReturn429WhenLimitExceeded() throws Exception {
         ChatResponse response = new ChatResponse(
@@ -46,7 +50,7 @@ class ChatControllerQuotaTest {
         mockMvc.perform(post("/api/chat")
                         .with(jwt())
                         .contentType(MediaType.APPLICATION_JSON)
-                        .content("{\"tenantId\":\"t1\",\"userId\":\"u1\",\"sessionId\":\"s1\",\"userMessage\":\"hello\"}"))
+                        .content("{\"tenantCode\":\"t1\",\"userId\":\"u1\",\"sessionId\":\"s1\",\"userMessage\":\"hello\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.limitExceeded").value(true))
                 .andExpect(jsonPath("$.usage.total").value(1000))

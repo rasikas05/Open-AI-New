@@ -2,7 +2,9 @@ package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.entity.Tenant;
 import com.ai.openai_api_service.entity.TenantQuota;
+import com.ai.openai_api_service.model.TopupResponse;
 import com.ai.openai_api_service.repository.TenantQuotaRepository;
+import com.ai.openai_api_service.repository.TenantRepository;
 import com.ai.openai_api_service.repository.TokenTransactionRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,6 +32,9 @@ class TenantQuotaServiceTest {
     @Mock
     private TokenTransactionRepository tokenTransactionRepository;
 
+    @Mock
+    private TenantRepository tenantRepository;
+
     @InjectMocks
     private TenantQuotaService tenantQuotaService;
 
@@ -53,10 +58,18 @@ class TenantQuotaServiceTest {
         quota.setTokensUsed(600);
         quota.setLastResetAt(LocalDateTime.now());
 
+        when(tenantRepository.findByTenantCode("tenant-1"))
+                .thenReturn(Optional.of(tenant));
         when(tenantQuotaRepository.findByTenant(tenant))
                 .thenReturn(Optional.of(quota));
 
-        // adjust if service now fetches tenant differently
+        TenantQuotaService.QuotaCheckResult result = tenantQuotaService.checkBeforeChat("tenant-1");
+
+        assertTrue(result.allowed() == false);
+        assertEquals("LIMIT_EXCEEDED", result.reason());
+        assertEquals(600, result.usage().getUsed());
+        assertEquals(600, result.usage().getTotal());
+        assertEquals(0, result.usage().getRemaining());
     }
 
     @Test
@@ -72,13 +85,21 @@ class TenantQuotaServiceTest {
         quota.setTokensUsed(100);
         quota.setLastResetAt(LocalDateTime.now());
 
+        when(tenantRepository.findByTenantCode("tenant-2"))
+                .thenReturn(Optional.of(tenant));
         when(tenantQuotaRepository.findByTenant(tenant))
                 .thenReturn(Optional.of(quota));
-
         when(tenantQuotaRepository.save(quota))
                 .thenReturn(quota);
 
-        // update service mocking accordingly
+        TopupResponse response = tenantQuotaService.topup("tenant-2", 500);
+
+        assertEquals("tenant-2", response.getTenantCode());
+        assertEquals(500, response.getTokensAdded());
+        assertEquals(1500, response.getUsage().getTotal());
+        assertEquals(1400, response.getUsage().getRemaining());
+        verify(tenantQuotaRepository).save(quota);
+        verify(tokenTransactionRepository).save(any());
     }
 
     @Test
