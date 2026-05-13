@@ -6,6 +6,7 @@ public class SessionMessageDto {
 
     private Long id;
     private String sessionId;
+    private String title;
     private String originalText;
     private String sanitizedText;
     private String openaiResponse;
@@ -18,6 +19,7 @@ public class SessionMessageDto {
     public SessionMessageDto(
             Long id,
             String sessionId,
+            String title,
             String originalText,
             String sanitizedText,
             String openaiResponse,
@@ -26,6 +28,7 @@ public class SessionMessageDto {
     ) {
         this.id = id;
         this.sessionId = sessionId;
+        this.title = title;
         this.originalText = originalText;
         this.sanitizedText = sanitizedText;
         this.openaiResponse = openaiResponse;
@@ -47,6 +50,14 @@ public class SessionMessageDto {
 
     public void setSessionId(String sessionId) {
         this.sessionId = sessionId;
+    }
+
+    public String getTitle() {
+        return title;
+    }
+
+    public void setTitle(String title) {
+        this.title = title;
     }
 
     public String getOriginalText() {

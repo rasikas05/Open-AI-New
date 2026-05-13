@@ -7,6 +7,7 @@ import com.ai.openai_api_service.model.MessageDto;
 import com.ai.openai_api_service.model.SessionSummaryDto;
 import com.ai.openai_api_service.service.ComprehendChatService;
 import com.ai.openai_api_service.service.ChatPersistenceService;
+import com.ai.openai_api_service.service.TenantService;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -37,13 +38,16 @@ public class ComprehendChatController {
 
     private final ComprehendChatService comprehendChatService;
     private final ChatPersistenceService chatPersistenceService;
+    private final TenantService tenantService;
 
     public ComprehendChatController(
             ComprehendChatService comprehendChatService,
-            ChatPersistenceService chatPersistenceService
+            ChatPersistenceService chatPersistenceService,
+            TenantService tenantService
     ) {
         this.comprehendChatService = comprehendChatService;
         this.chatPersistenceService = chatPersistenceService;
+        this.tenantService = tenantService;
     }
 
     @PostMapping
@@ -58,6 +62,8 @@ public class ComprehendChatController {
 
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("Comprehend Chat request from client_id: {}", clientId);
+
+        tenantService.registerUserAndSession(request.getTenantCode(), request.getUserId(), request.getSessionId(), 0);
 
         ChatResponse response = comprehendChatService.chat(request);
         return ResponseEntity.ok(response);

@@ -217,6 +217,18 @@ public class TenantQuotaService {
 
         return toQuotaResponse(saved);
     }
+
+    @Transactional
+    public TokenUsageDto getTokenUsage(String tenantId) {
+        Tenant tenant = tenantRepository.findByTenantCode(tenantId)
+                .orElseThrow(() -> new ResponseStatusException(BAD_REQUEST, "Tenant not found"));
+
+        TenantQuota quota = tenantQuotaRepository.findByTenant(tenant)
+                .orElseThrow(() -> new ResponseStatusException(BAD_REQUEST, "tenant quota not found"));
+
+        return toUsage(quota);
+    }
+
     @Transactional
     public int resetMonthlyQuotas() {
         List<TenantQuota> activeQuotas = tenantQuotaRepository.findByStatus("ACTIVE");

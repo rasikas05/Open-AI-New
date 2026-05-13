@@ -13,6 +13,10 @@ public class RequestLog {
     @ManyToOne
     @JoinColumn(name = "session_ref_id", nullable = false)
     private Session session;
+
+    @Column(name = "title", length = 255)
+    private String title;
+
     @Lob
     @Column(name = "original_text", columnDefinition = "TEXT")
     private String originalText;
@@ -41,6 +45,14 @@ public class RequestLog {
 
     public void setSession(Session session) {
         this.session = session;
+    }
+
+    public String getTitle() {
+        return title;
+    }
+
+    public void setTitle(String title) {
+        this.title = title;
     }
 
     public String getOriginalText() {

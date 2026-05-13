@@ -8,6 +8,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.Optional;
 
 @Repository
 public interface RequestLogRepository extends JpaRepository<RequestLog, Long> {
@@ -23,6 +24,8 @@ public interface RequestLogRepository extends JpaRepository<RequestLog, Long> {
             User user,
             String sessionId
     );
+
+    Optional<RequestLog> findFirstBySession_SessionIdOrderByIdAsc(String sessionId);
 
     List<RequestLog> findBySession_SessionId(String sessionId);
 }

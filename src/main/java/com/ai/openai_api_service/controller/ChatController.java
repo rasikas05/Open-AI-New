@@ -152,6 +152,7 @@ public class ChatController {
                 .map(message -> new SessionMessageDto(
                         message.getId(),
                         message.getSession().getSessionId(),
+                        message.getTitle(),
                         message.getOriginalText(),
                         message.getSanitizedText(),
                         message.getOpenaiResponse(),

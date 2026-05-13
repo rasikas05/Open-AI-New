@@ -5,7 +5,7 @@ import java.time.LocalDateTime;
 
 @Entity
 @Table(name = "session",
-       uniqueConstraints = @UniqueConstraint(columnNames = {"session_id"}))
+       uniqueConstraints = @UniqueConstraint(columnNames = {"tenant_ref_id", "session_id"}))
 public class Session {
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -24,6 +24,9 @@ public class Session {
 
     private String status = "ACTIVE";
 
+    @Column(name = "title", length = 255)
+    private String title;
+
     @Column(name = "tokens_used")
     private int tokensUsed = 0;
 
@@ -38,10 +41,6 @@ public class Session {
 
     public Long getId() {
         return id;
-    }
-
-    public void setId(Long id) {
-        this.id = id;
     }
 
     public Tenant getTenant() {
@@ -74,6 +73,14 @@ public class Session {
 
     public void setStatus(String status) {
         this.status = status;
+    }
+
+    public String getTitle() {
+        return title;
+    }
+
+    public void setTitle(String title) {
+        this.title = title;
     }
 
     public int getTokensUsed() {
