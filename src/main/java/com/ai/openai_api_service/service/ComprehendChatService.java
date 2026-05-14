@@ -6,6 +6,8 @@ import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.MessageDto;
 import com.ai.openai_api_service.model.SuggestionDto;
+import com.ai.openai_api_service.model.python_rag.PythonQueryRequest;
+import com.ai.openai_api_service.model.python_rag.PythonQueryResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -39,24 +41,7 @@ public class ComprehendChatService {
     private final SuggestionRuleService suggestionRuleService;
     private final SuggestionLLMService suggestionLLMService;
     private final SuggestionCacheService suggestionCacheService;
-
-    @Value("${openai.api.key}")
-    private String apiKey;
-
-    @Value("${openai.api.model}")
-    private String model;
-
-    @Value("${openai.api.url}")
-    private String openaiUrl;
-
-    @Value("${openai.assistant.system-prompt.enabled:true}")
-    private boolean systemPromptEnabled;
-
-    @Value("${openai.assistant.system-prompt:}")
-    private String systemPrompt;
-
-    @Value("${openai.input.remove-anonymization-placeholders:true}")
-    private boolean removeAnonymizationPlaceholders;
+    private final PythonRagService pythonRagService;
 
     @Value("${openai.response.include-sanitization-debug:false}")
     private boolean includeSanitizationDebug;
@@ -88,7 +73,8 @@ public class ComprehendChatService {
             TenantQuotaService tenantQuotaService,
             SuggestionRuleService suggestionRuleService,
             SuggestionLLMService suggestionLLMService,
-            SuggestionCacheService suggestionCacheService
+            SuggestionCacheService suggestionCacheService,
+            PythonRagService pythonRagService
     ) {
         this.restTemplate = new RestTemplate();
         this.comprehendAnonymizationService = comprehendAnonymizationService;
@@ -97,160 +83,37 @@ public class ComprehendChatService {
         this.suggestionRuleService = suggestionRuleService;
         this.suggestionLLMService = suggestionLLMService;
         this.suggestionCacheService = suggestionCacheService;
+        this.pythonRagService = pythonRagService;
     }
 
     public ChatResponse chat(ChatRequest request) {
-        if (apiKey == null || apiKey.isBlank()) {
-            throw new OpenAIException(
-                    "OpenAI API key is missing. Set OPENAI_API_KEY env var or openai.api.key property.",
-                    401
-            );
+        // Validate required fields
+        if (request == null || request.getUserMessage() == null || request.getUserMessage().isBlank()) {
+            throw new OpenAIException("User message cannot be empty", 400);
         }
 
-        List<Map<String, String>> messages = new ArrayList<>();
-        if (systemPromptEnabled && systemPrompt != null && !systemPrompt.isBlank()) {
-            Map<String, String> systemMessage = new HashMap<>();
-            systemMessage.put("role", "system");
-            systemMessage.put("content", systemPrompt.trim());
-            messages.add(systemMessage);
-        }
-
-        // Choose history source:
-        // 1) If client sends non-empty `history`, prefer it (so the model uses the context you pass in).
-        // 2) Otherwise fall back to DB history (when enabled).
-        List<MessageDto> clientHistory = request.getHistory() != null ? request.getHistory() : List.of();
-        boolean hasClientHistory = allowClientHistory && !clientHistory.isEmpty();
-
-        List<MessageDto> sourceHistory;
-        if (hasClientHistory) {
-            sourceHistory = clientHistory;
-        } else if (loadHistoryFromDb) {
-            sourceHistory = chatPersistenceService.loadHistoryForPrompt(
-                    request.getTenantCode(),
-                    request.getUserId(),
-                    request.getSessionId(),
-                    maxHistoryExchanges
-            );
-        } else {
-            sourceHistory = List.of();
-        }
-
-        // Safety cap to avoid sending very large histories into the model.
-        if (sourceHistory != null && sourceHistory.size() > maxHistoryExchanges) {
-            int fromIndex = Math.max(0, sourceHistory.size() - maxHistoryExchanges);
-            sourceHistory = sourceHistory.subList(fromIndex, sourceHistory.size());
-        }
-        int historyCount = sourceHistory != null ? sourceHistory.size() : 0;
-
-        if (sourceHistory != null) {
-            for (MessageDto message : sourceHistory) {
-                String role = message.getRole() == null ? null : message.getRole().trim().toLowerCase(Locale.ROOT);
-                String content = message.getContent() == null ? null : message.getContent().trim();
-                if (!isValidRole(role) || content == null || content.isBlank()) {
-                    throw new OpenAIException(
-                            "Invalid history item. role must be system/user/assistant and content must be non-empty.",
-                            400
-                    );
-                }
-                Map<String, String> map = new HashMap<>();
-                map.put("role", role);
-                map.put("content", "user".equals(role)
-                        ? prepareUserContentForOpenAi(sanitizeTextWithComprehend(content))
-                        : content);
-                messages.add(map);
-            }
-        }
-
+        // Step 1: Sanitize user input with Comprehend
         String originalUserText = request.getUserMessage();
         String sanitizedUserText = sanitizeTextWithComprehend(originalUserText);
-        String modelReadyUserText = prepareUserContentForOpenAi(sanitizedUserText);
         log.info(
-                "Preparing OpenAI call with Comprehend sanitization. tenantCode={}, userId={}, sessionId={}, historyCount={}, original='{}', modelReady='{}'",
+                "Processing chat request with Python RAG API. tenantCode={}, userId={}, sessionId={}, original='{}', sanitized='{}'",
                 request.getTenantCode(),
                 request.getUserId(),
                 request.getSessionId(),
-                historyCount,
                 originalUserText,
-                modelReadyUserText
+                sanitizedUserText
         );
 
-        Map<String, String> userMessage = new HashMap<>();
-        userMessage.put("role", "user");
-        userMessage.put("content", modelReadyUserText);
-        messages.add(userMessage);
+        // Step 2: Call Python RAG API with sanitized question
+        PythonQueryResponse pythonResponse = callPythonRagApi(sanitizedUserText);
 
-        Map<String, Object> body = new HashMap<>();
-        body.put("model", model);
-        body.put("messages", messages);
-
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setBearerAuth(apiKey);
-
-        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
-
-        Map<String, Object> response;
-        try {
-            ResponseEntity<Map> responseEntity = restTemplate.exchange(
-                    openaiUrl,
-                    HttpMethod.POST,
-                    entity,
-                    Map.class
-            );
-            response = responseEntity.getBody();
-        } catch (HttpClientErrorException e) {
-            int code = e.getStatusCode().value();
-            HttpHeaders h = e.getResponseHeaders();
-            if (h != null) {
-                log.warn("OpenAI x-ratelimit-limit-requests={}", h.getFirst("x-ratelimit-limit-requests"));
-                log.warn("OpenAI x-ratelimit-remaining-requests={}", h.getFirst("x-ratelimit-remaining-requests"));
-                log.warn("OpenAI x-ratelimit-reset-requests={}", h.getFirst("x-ratelimit-reset-requests"));
-                log.warn("OpenAI x-ratelimit-limit-tokens={}", h.getFirst("x-ratelimit-limit-tokens"));
-                log.warn("OpenAI x-ratelimit-remaining-tokens={}", h.getFirst("x-ratelimit-remaining-tokens"));
-                log.warn("OpenAI x-ratelimit-reset-tokens={}", h.getFirst("x-ratelimit-reset-tokens"));
-            } else {
-                log.warn("OpenAI error response headers are empty.");
-            }
-
-            String errorBody = e.getResponseBodyAsString();
-            log.warn("OpenAI error status={} body={}", e.getStatusCode(), errorBody);
-
-            String msg = code == 401
-                    ? "OpenAI API key is invalid or missing. Check openai.api.key in application.properties (no quotes)."
-                    : "OpenAI API error: " + code + " " + e.getStatusText();
-            throw new OpenAIException(msg, code);
-        }
-
-        if (response == null) {
-            return new ChatResponse("No response from OpenAI.", true);
-        }
-
-        Object choicesObj = response.get("choices");
-        if (!(choicesObj instanceof List<?> choicesList) || choicesList.isEmpty()) {
-            return new ChatResponse("No choices returned from OpenAI.", true);
-        }
-
-        Object firstChoice = choicesList.get(0);
-        if (!(firstChoice instanceof Map<?, ?> choiceMap)) {
-            return new ChatResponse("Unexpected response format from OpenAI.", true);
-        }
-
-        Object messageObj = choiceMap.get("message");
-        if (!(messageObj instanceof Map<?, ?> messageMap)) {
-            return new ChatResponse("Unexpected message format from OpenAI.", true);
-        }
-
-        Object contentObj = messageMap.get("content");
-        String content = contentObj != null ? contentObj.toString() : "";
-
-        boolean truncated = false;
-        Object finishReason = choiceMap.get("finish_reason");
-        if (finishReason != null && "length".equals(finishReason.toString())) {
-            truncated = true;
-        }
-
-        Integer totalTokens = extractTotalTokens(response);
+        // Step 3: Extract answer and token usage from Python RAG response
+        String answer = pythonResponse.getAnswer();
+        Integer retrievedChunks = pythonResponse.getRetrievedChunks();
+        Integer totalTokens = pythonResponse.getUsage() != null ? pythonResponse.getUsage().getTotalTokens() : null;
         int consumedTokens = totalTokens != null ? totalTokens : 0;
+
+        // Step 4: Check and record token quota usage
         String usageReferenceId = request.getSessionId() + ":" + System.currentTimeMillis();
         try {
             tenantQuotaService.recordUsage(request.getTenantCode(), consumedTokens, usageReferenceId);
@@ -262,32 +125,59 @@ public class ComprehendChatService {
             blocked.setUpgradeOptions(Arrays.asList("Buy 100 tokens", "Buy 500 tokens", "Buy 5000 tokens"));
             return blocked;
         }
+
+        // Step 5: Persist the chat message
         chatPersistenceService.persistChat(
                 request.getTenantCode(),
                 request.getUserId(),
                 request.getSessionId(),
                 originalUserText,
-                modelReadyUserText,
-                content,
+                sanitizedUserText,
+                answer,
                 consumedTokens
         );
 
-        ChatResponse chatResponse = new ChatResponse(content, false);
-        chatResponse.setSanitizationApplied(!Objects.equals(originalUserText, modelReadyUserText));
+        // Step 6: Build chat response
+        ChatResponse chatResponse = new ChatResponse(answer, false);
+        chatResponse.setSanitizationApplied(!Objects.equals(originalUserText, sanitizedUserText));
         if (includeSanitizationDebug) {
-            chatResponse.setSanitizedUserMessage(modelReadyUserText);
+            chatResponse.setSanitizedUserMessage(sanitizedUserText);
         }
 
+        // Step 7: Generate suggestions based on the sanitized question
         ChatRequest suggestionRequest = request;
-        if (!Objects.equals(originalUserText, modelReadyUserText)) {
-            suggestionRequest = copyRequestWithUserMessage(request, modelReadyUserText);
+        if (!Objects.equals(originalUserText, sanitizedUserText)) {
+            suggestionRequest = copyRequestWithUserMessage(request, sanitizedUserText);
         }
 
         SuggestionResult suggestionResult = buildSuggestions(suggestionRequest);
         chatResponse.setSuggestions(suggestionResult.suggestions());
         chatResponse.setSuggestionDetails(suggestionResult.details());
 
+        log.info(
+                "Chat response prepared successfully. tenantCode={}, userId={}, sessionId={}, answer_length={}, sources_count={}, tokens_consumed={}, retrieved_chunks={}",
+                request.getTenantCode(),
+                request.getUserId(),
+                request.getSessionId(),
+                answer != null ? answer.length() : 0,
+                pythonResponse.getSources() != null ? pythonResponse.getSources().size() : 0,
+                consumedTokens,
+                retrievedChunks
+        );
+
         return chatResponse;
+    }
+
+    /**
+     * Call the Python RAG API with the sanitized question.
+     * The Python API handles all retrieval, prompt building, and OpenAI calls internally.
+     */
+    private PythonQueryResponse callPythonRagApi(String sanitizedQuestion) {
+        PythonQueryRequest ragRequest = new PythonQueryRequest();
+        ragRequest.setQuestion(sanitizedQuestion);
+        // Use default values from configuration for other parameters
+
+        return pythonRagService.query(ragRequest);
     }
 
     /**
