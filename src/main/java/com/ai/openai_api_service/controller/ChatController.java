@@ -104,6 +104,7 @@ public class ChatController {
         List<SessionSummaryDto> response = sessions.stream()
                 .map(session -> new SessionSummaryDto(
                         session.getSessionId(),
+                        session.getTitle(),
                         session.getStatus(),
                         session.getTokensUsed(),
                         session.getCreatedAt(),

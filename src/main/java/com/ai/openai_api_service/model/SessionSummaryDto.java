@@ -5,6 +5,7 @@ import java.time.LocalDateTime;
 public class SessionSummaryDto {
 
     private String sessionId;
+    private String title;
     private String status;
     private Integer tokensUsed;
     private LocalDateTime createdAt;
@@ -15,12 +16,14 @@ public class SessionSummaryDto {
 
     public SessionSummaryDto(
             String sessionId,
+            String title,
             String status,
             Integer tokensUsed,
             LocalDateTime createdAt,
             LocalDateTime updatedAt
     ) {
         this.sessionId = sessionId;
+        this.title = title;
         this.status = status;
         this.tokensUsed = tokensUsed;
         this.createdAt = createdAt;
@@ -33,6 +36,14 @@ public class SessionSummaryDto {
 
     public void setSessionId(String sessionId) {
         this.sessionId = sessionId;
+    }
+
+    public String getTitle() {
+        return title;
+    }
+
+    public void setTitle(String title) {
+        this.title = title;
     }
 
     public String getStatus() {
