@@ -11,6 +11,8 @@ import com.ai.openai_api_service.model.MessageDto;
 import com.ai.openai_api_service.model.SessionCountDto;
 import com.ai.openai_api_service.model.SessionMessageDto;
 import com.ai.openai_api_service.model.SessionSummaryDto;
+import com.ai.openai_api_service.model.SessionTitleUpdateRequest;
+import com.ai.openai_api_service.model.SessionTitleUpdateResponse;
 import com.ai.openai_api_service.service.ChatService;
 import com.ai.openai_api_service.service.ChatPersistenceService;
 import com.ai.openai_api_service.service.TenantService;
@@ -25,6 +27,7 @@ import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -140,19 +143,26 @@ public class ChatController {
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable String sessionId,
             @RequestParam String tenantId,
-            @RequestParam String userId) {
+            @RequestParam String userId,
+            @RequestParam(name = "sessionId", required = false) String querySessionId) {
 
         String clientId = jwt.getClaimAsString("client_id");
-        logger.info("Session messages request from client_id: {}", clientId);
+        logger.info("Session messages request from client_id: {}, tenantId={}, userId={}, pathSessionId={}, querySessionId={}", clientId, tenantId, userId, sessionId, querySessionId);
+        logger.info("Using path variable sessionId={}", sessionId);
+        if (querySessionId != null && !querySessionId.isBlank() && !querySessionId.equals(sessionId)) {
+            logger.warn("Conflicting sessionId values: path='{}' vs query='{}'. Using path variable sessionId. Remove sessionId query parameter.", sessionId, querySessionId);
+        }
 
         List<RequestLog> messages =
                 chatPersistenceService.loadSessionMessages(tenantId, userId, sessionId);
+        
+        logger.info("Query returned {} messages for sessionId={}, tenantId={}, userId={}", messages.size(), sessionId, tenantId, userId);
 
         List<SessionMessageDto> response = messages.stream()
                 .map(message -> new SessionMessageDto(
                         message.getId(),
                         message.getSession().getSessionId(),
-                        message.getTitle(),
+                        message.getSession().getTitle(),
                         message.getOriginalText(),
                         message.getSanitizedText(),
                         message.getOpenaiResponse(),
@@ -160,6 +170,28 @@ public class ChatController {
                         message.getCreatedAt()
                 ))
                 .toList();
+
+        return ResponseEntity.ok(response);
+    }
+
+    @PutMapping("/sessions/{sessionId}/title")
+    @Operation(summary = "Update session title", description = "Updates the title for an existing chat session.")
+    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    public ResponseEntity<SessionTitleUpdateResponse> updateSessionTitle(
+            @AuthenticationPrincipal Jwt jwt,
+            @PathVariable String sessionId,
+            @Valid @RequestBody SessionTitleUpdateRequest request) {
+
+        String clientId = jwt.getClaimAsString("client_id");
+        logger.info("Update session title request from client_id: {}, tenantId={}, userId={}, sessionId={}, title={}",
+                clientId, request.getTenantId(), request.getUserId(), sessionId, request.getTitle());
+
+        SessionTitleUpdateResponse response = chatPersistenceService.updateSessionTitle(
+                request.getTenantId(),
+                request.getUserId(),
+                sessionId,
+                request.getTitle()
+        );
 
         return ResponseEntity.ok(response);
     }

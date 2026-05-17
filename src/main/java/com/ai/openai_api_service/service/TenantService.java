@@ -82,7 +82,8 @@ public class TenantService {
                     session.setTokensUsed(0);
                     session.setCreatedAt(LocalDateTime.now());
                     session.setUpdatedAt(LocalDateTime.now());
-                    return sessionRepository.save(session);
+                    Session saved = sessionRepository.save(session);
+                    return saved;
                 });
     }
 

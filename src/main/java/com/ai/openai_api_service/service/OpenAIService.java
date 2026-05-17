@@ -240,6 +240,9 @@ public class OpenAIService {
             blocked.setUpgradeOptions(Arrays.asList("Buy 100 tokens", "Buy 500 tokens", "Buy 5000 tokens"));
             return blocked;
         }
+        
+        log.info("OpenAIService: About to call persistChat() with tenantCode={}, userId={}, sessionId={}", 
+                request.getTenantCode(), request.getUserId(), request.getSessionId());
         chatPersistenceService.persistChat(
                 request.getTenantCode(),
                 request.getUserId(),
@@ -249,6 +252,7 @@ public class OpenAIService {
                 content,
                 consumedTokens
         );
+        log.info("OpenAIService: persistChat() completed successfully for sessionId={}", request.getSessionId());
 
         ChatResponse chatResponse = new ChatResponse(content, truncated);
         chatResponse.setSanitizationApplied(!Objects.equals(originalUserText, modelReadyUserText));

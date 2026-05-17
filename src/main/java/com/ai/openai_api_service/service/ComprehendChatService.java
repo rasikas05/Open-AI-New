@@ -127,6 +127,8 @@ public class ComprehendChatService {
         }
 
         // Step 5: Persist the chat message
+        log.info("ComprehendChatService: About to call persistChat() with tenantCode={}, userId={}, sessionId={}", 
+                request.getTenantCode(), request.getUserId(), request.getSessionId());
         chatPersistenceService.persistChat(
                 request.getTenantCode(),
                 request.getUserId(),
@@ -136,6 +138,7 @@ public class ComprehendChatService {
                 answer,
                 consumedTokens
         );
+        log.info("ComprehendChatService: persistChat() completed successfully for sessionId={}", request.getSessionId());
 
         // Step 6: Build chat response
         ChatResponse chatResponse = new ChatResponse(answer, false);

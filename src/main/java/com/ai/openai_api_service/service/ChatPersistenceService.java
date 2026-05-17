@@ -5,6 +5,7 @@ import com.ai.openai_api_service.entity.Session;
 import com.ai.openai_api_service.entity.Tenant;
 import com.ai.openai_api_service.entity.User;
 import com.ai.openai_api_service.model.MessageDto;
+import com.ai.openai_api_service.model.SessionTitleUpdateResponse;
 import com.ai.openai_api_service.repository.RequestLogRepository;
 import com.ai.openai_api_service.repository.SessionRepository;
 import com.ai.openai_api_service.repository.TenantRepository;
@@ -87,7 +88,36 @@ public class ChatPersistenceService {
             log.error("Failed to persist chat interaction. sessionId={}, reason={}", sessionId, e.getMessage(), e);
         }
     }
+    public SessionTitleUpdateResponse updateSessionTitle(
+            String tenantId,
+            String userId,
+            String sessionId,
+            String title) {
 
+        Tenant tenant = tenantRepository.findByTenantCode(tenantId)
+                .orElseThrow(() -> new RuntimeException("Tenant not found"));
+
+        User user = userRepository.findByTenantAndUsername(tenant, userId)
+                .orElseThrow(() -> new RuntimeException("User not found"));
+
+        Session session = sessionRepository
+                .findByTenantAndUserAndSessionId(
+                        tenant,
+                        user,
+                        sessionId
+                )
+                .orElseThrow(() -> new RuntimeException("Session not found"));
+
+        session.setTitle(title);
+
+        sessionRepository.save(session);
+
+        return new SessionTitleUpdateResponse(
+                sessionId,
+                title,
+                "Session title updated successfully"
+        );
+    }
     @Transactional(readOnly = true)
     public List<MessageDto> loadHistoryForPrompt(String tenantId, String userId, String sessionId, int maxExchanges) {
         if (maxExchanges <= 0) {
