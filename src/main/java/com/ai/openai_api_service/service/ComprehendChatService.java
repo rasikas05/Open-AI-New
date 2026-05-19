@@ -96,11 +96,10 @@ public class ComprehendChatService {
         String originalUserText = request.getUserMessage();
         String sanitizedUserText = sanitizeTextWithComprehend(originalUserText);
         log.info(
-                "Processing chat request with Python RAG API. tenantCode={}, userId={}, sessionId={}, original='{}', sanitized='{}'",
+                "Processing chat request with Python RAG API. tenantCode={}, userId={}, sessionId={}, sanitized='{}'",
                 request.getTenantCode(),
                 request.getUserId(),
                 request.getSessionId(),
-                originalUserText,
                 sanitizedUserText
         );
 
@@ -211,8 +210,7 @@ public class ComprehendChatService {
     }
 
     private SuggestionResult buildSuggestions(ChatRequest request) {
-        int minCount = Math.max(1, minSuggestionCount);
-        int maxCount = Math.max(minCount, maxSuggestionCount);
+        int maxCount = Math.min(3, Math.max(1, maxSuggestionCount));
 
         if (request == null || request.getUserMessage() == null || request.getUserMessage().isBlank()) {
             return new SuggestionResult(List.of(), List.of());
@@ -226,39 +224,75 @@ public class ComprehendChatService {
             return new SuggestionResult(generic, details);
         }
 
-        Map<String, String> merged = new java.util.LinkedHashMap<>();
-        if (llmEnabled) {
-            String cacheKey = buildCacheKey(request);
-            List<String> cached = suggestionCacheService.get(cacheKey);
-            if (!cached.isEmpty()) {
-                for (String suggestion : cached) {
-                    merged.putIfAbsent(suggestion, "LLM");
-                }
-            } else {
-                List<String> llmSuggestions = suggestionLLMService.suggest(request, minCount, maxCount);
-                if (!llmSuggestions.isEmpty()) {
+        List<String> suggestions = new java.util.ArrayList<>();
+        List<SuggestionDto> details = new java.util.ArrayList<>();
+        boolean ruleMatch = ruleEnabled && suggestionRuleService.isSupportedM3Topic(request.getUserMessage());
+        List<String> ruleSuggestions = ruleMatch
+                ? suggestionRuleService.suggest(request.getUserMessage(), maxCount)
+                : List.of();
+
+        if (ruleMatch && !ruleSuggestions.isEmpty()) {
+            String firstRule = normalizeSuggestionText(ruleSuggestions.get(0));
+            if (firstRule != null && !firstRule.isBlank()) {
+                suggestions.add(firstRule);
+                details.add(new SuggestionDto(firstRule, "RULE"));
+            }
+
+            int llmRequired = maxCount - suggestions.size();
+            if (llmRequired > 0 && llmEnabled) {
+                String cacheKey = buildCacheKey(request);
+                List<String> cached = suggestionCacheService.get(cacheKey);
+                List<String> llmSuggestions = cached.isEmpty()
+                        ? suggestionLLMService.suggest(request, llmRequired, llmRequired)
+                        : cached;
+
+                if (cached.isEmpty() && !llmSuggestions.isEmpty()) {
                     suggestionCacheService.put(cacheKey, llmSuggestions);
-                    for (String suggestion : llmSuggestions) {
-                        merged.putIfAbsent(suggestion, "LLM");
+                }
+
+                for (String suggestion : llmSuggestions) {
+                    if (suggestions.size() >= maxCount) {
+                        break;
                     }
+                    String clean = normalizeSuggestionText(suggestion);
+                    if (clean == null || clean.isBlank() || suggestions.contains(clean)) {
+                        continue;
+                    }
+                    suggestions.add(clean);
+                    details.add(new SuggestionDto(clean, "LLM"));
+                }
+            }
+
+            for (int i = 1; i < ruleSuggestions.size() && suggestions.size() < maxCount; i++) {
+                String clean = normalizeSuggestionText(ruleSuggestions.get(i));
+                if (clean == null || clean.isBlank() || suggestions.contains(clean)) {
+                    continue;
+                }
+                suggestions.add(clean);
+                details.add(new SuggestionDto(clean, "RULE"));
+            }
+        } else {
+            if (llmEnabled) {
+                List<String> llmSuggestions = suggestionLLMService.suggest(request, maxCount, maxCount);
+                for (String suggestion : llmSuggestions) {
+                    if (suggestions.size() >= maxCount) {
+                        break;
+                    }
+                    String clean = normalizeSuggestionText(suggestion);
+                    if (clean == null || clean.isBlank() || suggestions.contains(clean)) {
+                        continue;
+                    }
+                    suggestions.add(clean);
+                    details.add(new SuggestionDto(clean, "LLM"));
                 }
             }
         }
 
-        if (ruleEnabled && merged.size() < maxCount) {
-            List<String> ruleSuggestions = suggestionRuleService.suggest(request.getUserMessage(), maxCount - merged.size());
-            for (String suggestion : ruleSuggestions) {
-                merged.putIfAbsent(suggestion, "RULE");
-            }
-        }
-
-        List<SuggestionDto> details = cleanSuggestionDetails(merged, maxCount);
-        List<String> result = details.stream().map(SuggestionDto::getText).toList();
-        if (details.isEmpty()) {
+        if (suggestions.isEmpty()) {
             log.info("No suggestions generated for tenantCode={}, userId={}, sessionId={}",
                     request.getTenantCode(), request.getUserId(), request.getSessionId());
         }
-        return new SuggestionResult(result, details);
+        return new SuggestionResult(suggestions, details);
     }
 
     private String buildCacheKey(ChatRequest request) {
@@ -291,18 +325,9 @@ public class ComprehendChatService {
         for (Map.Entry<String, String> entry : sourceWithType.entrySet()) {
             String suggestion = entry.getKey();
             String sourceType = entry.getValue();
-            if (suggestion == null) {
+            String clean = normalizeSuggestionText(suggestion);
+            if (clean == null || clean.isBlank()) {
                 continue;
-            }
-            String clean = suggestion.trim().replaceAll("\\s{2,}", " ");
-            if (clean.isBlank()) {
-                continue;
-            }
-            if (clean.length() > 140) {
-                clean = clean.substring(0, 140).trim();
-            }
-            if (!clean.endsWith("?")) {
-                clean = clean + "?";
             }
             boolean alreadyPresent = false;
             for (SuggestionDto item : result) {
@@ -319,6 +344,22 @@ public class ComprehendChatService {
             }
         }
         return result;
+    }
+
+    private String normalizeSuggestionText(String suggestion) {
+        if (suggestion == null) {
+            return null;
+        }
+        String clean = suggestion.trim().replaceAll("\\s{2,}", " ");
+        clean = clean.replaceAll("(?i)^(view|check|track|see|open|go to|search|find)\\s+", "");
+        clean = clean.replaceAll("(?i)^(how to|how does|how do i|describe|explain|show|review|validate|fix|set up|configure|analyze|troubleshoot)\\s+", "");
+        clean = clean.replaceAll("[?.!]+$", "");
+        clean = clean.replaceAll("(?i)\\b(inquiry|processing|management)\\b", "");
+        clean = clean.trim();
+        if (clean.length() > 80) {
+            clean = clean.substring(0, 80).trim();
+        }
+        return clean.replaceAll("\\s{2,}", " ");
     }
 
     private record SuggestionResult(List<String> suggestions, List<SuggestionDto> details) {

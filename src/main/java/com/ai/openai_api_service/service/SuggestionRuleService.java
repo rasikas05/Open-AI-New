@@ -61,14 +61,16 @@ public List<String> genericSuggestions(int maxCount) {
         return List.of();
     }
     List<String> generic = List.of(
-            "Infor M3 order management",
-            "M3 inventory management",
-            "Customer order workflow in M3",
-            "Infor M3 API integration",
-            "M3 invoicing process",
-            "M3 warehouse and facility planning",
-            "M3 item master configuration",
-            "Troubleshooting M3 transaction issues"
+            "Purchase order information",
+            "Ad hoc report creation steps",
+            "PR order process in M3",
+            "M3 PR reference",
+            "PO and PR relationship",
+            "Invoice number series",
+            "Customer order process",
+            "Item master fields",
+            "MI transaction examples",
+            "Invoice posting in AR"
     );
     return generic.subList(0, Math.min(maxCount, generic.size()));
 }
@@ -97,11 +99,11 @@ public List<String> suggest(String latestUserMessage, int maxCount) {
   "delivery",
   "line status")) {
 
-  suggestions.add("Explain customer order creation in OIS100");
-  suggestions.add("How does OIS101 order release work?");
-  suggestions.add("Describe order line status flow in M3");
-  suggestions.add("Validate order pricing and delivery dates");
-  suggestions.add("Troubleshoot customer order delivery issues");
+  suggestions.add("Customer order process");
+  suggestions.add("OIS101 release status");
+  suggestions.add("Order line status");
+  suggestions.add("Order pricing rules");
+  suggestions.add("Delivery schedule details");
   }
 
 /*
@@ -117,11 +119,11 @@ public List<String> suggest(String latestUserMessage, int maxCount) {
   "payer",
   "ship-to")) {
 
-  suggestions.add("How to configure CRS610 customer address");
-  suggestions.add("Set up payer and ship-to in M3");
-  suggestions.add("Explain customer master validation rules");
-  suggestions.add("Review customer address MI fields");
-  suggestions.add("Fix CRS610 customer setup issues");
+  suggestions.add("CRS610 customer address rules");
+  suggestions.add("Payer and ship-to relationships");
+  suggestions.add("Customer master validation");
+  suggestions.add("Customer address MI fields");
+  suggestions.add("Customer setup guidance");
   }
 
 /*
@@ -139,11 +141,11 @@ public List<String> suggest(String latestUserMessage, int maxCount) {
   "facility",
   "costing")) {
 
-  suggestions.add("How to set up MMS200 item master");
-  suggestions.add("Describe warehouse and facility mapping");
-  suggestions.add("Configure item costing and UoM in M3");
-  suggestions.add("Validate item master fields for M3");
-  suggestions.add("Show MMS200 item master best practices");
+  suggestions.add("MMS200 item master rules");
+  suggestions.add("Warehouse and facility mapping");
+  suggestions.add("Item costing and UoM rules");
+  suggestions.add("Item master validation");
+  suggestions.add("Item master configuration");
   }
 
 /*
@@ -159,11 +161,11 @@ public List<String> suggest(String latestUserMessage, int maxCount) {
   "program",
   "panel")) {
 
-  suggestions.add("Show MI transaction examples in M3");
-  suggestions.add("Explain API request structure for M3");
-  suggestions.add("Map MI fields to M3 program panels");
-  suggestions.add("Describe MI response examples in M3");
-  suggestions.add("Troubleshoot M3 panel-to-MI mapping");
+  suggestions.add("MI transaction examples");
+  suggestions.add("M3 API request structure");
+  suggestions.add("MI field to panel mapping");
+  suggestions.add("MI response examples");
+  suggestions.add("Panel-to-MI mapping concepts");
   }
 
 /*
@@ -179,11 +181,11 @@ public List<String> suggest(String latestUserMessage, int maxCount) {
   "customer invoice",
   "supplier invoice")) {
 
-  suggestions.add("Explain customer invoice workflow in M3");
-  suggestions.add("How to process OIS390 invoices");
-  suggestions.add("Describe invoice posting in AR ledger");
-  suggestions.add("How to configure invoice number series in M3");
-  suggestions.add("How does invoice approval work in M3?");
+  suggestions.add("Customer invoice workflow");
+  suggestions.add("OIS390 invoice flow");
+  suggestions.add("Invoice posting in AR");
+  suggestions.add("Invoice number series");
+  suggestions.add("Invoice approval concepts");
   }
 
 /*
@@ -201,11 +203,11 @@ public List<String> suggest(String latestUserMessage, int maxCount) {
   "mandatory",
   "missing")) {
 
-  suggestions.add("Analyze the M3 error root cause");
-  suggestions.add("Validate mandatory fields in M3");
-  suggestions.add("Describe MI API failure handling in M3");
-  suggestions.add("Fix validation errors in M3 transactions");
-  suggestions.add("How to resolve M3 validation issues");
+  suggestions.add("M3 error root cause");
+  suggestions.add("Mandatory fields validation");
+  suggestions.add("MI failure handling");
+  suggestions.add("Validation error fixes");
+  suggestions.add("M3 validation guidance");
   }
 
 /*
@@ -216,11 +218,11 @@ public List<String> suggest(String latestUserMessage, int maxCount) {
   */
   if (suggestions.isEmpty() && containsAny(text, "m3", "infor")) {
 
-  suggestions.add("Explain the M3 process flow");
-  suggestions.add("Describe M3 configuration steps");
-  suggestions.add("Validate M3 setup for this scenario");
-  suggestions.add("Show M3 integration examples");
-  suggestions.add("Explain M3 best practices");
+  suggestions.add("M3 process concepts");
+  suggestions.add("M3 setup topics");
+  suggestions.add("M3 integration examples");
+  suggestions.add("M3 best practices");
+  suggestions.add("M3 configuration concepts");
   }
 
 

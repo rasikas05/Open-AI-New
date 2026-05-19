@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 @Service
 public class ComprehendAnonymizationService {
@@ -59,6 +60,8 @@ public class ComprehendAnonymizationService {
             // Step 1: Detect PII using Comprehend
             log.info("Detecting PII using AWS Comprehend");
             List<PiiEntityDto> comprehendResults = comprehendService.detectPii(text);
+            log.info("AWS Comprehend detected {} entities: {}", comprehendResults.size(),
+                    comprehendResults.stream().map(PiiEntityDto::getType).toList());
 
             // Step 2: Convert Comprehend results to Presidio format
             log.info("Converting {} Comprehend results to Presidio format", comprehendResults.size());
@@ -67,6 +70,9 @@ public class ComprehendAnonymizationService {
             // Step 3: Anonymize using Presidio anonymizer with Comprehend-detected entities
             log.info("Anonymizing text using Presidio with external Comprehend results");
             String sanitizedText = presidioService.sanitizeTextWithExternalResults(text, presidioResults);
+
+            // Step 4: Apply regex fallback for email and invoice/order number patterns
+            sanitizedText = applyFallbackSanitization(text, sanitizedText);
 
             return createResponseMap(text, sanitizedText, comprehendResults);
         } catch (Exception e) {
@@ -78,6 +84,10 @@ public class ComprehendAnonymizationService {
     /**
      * Convert AWS Comprehend PiiEntityDto to Presidio AnalyzerResult format
      */
+    private static final Pattern MARKDOWN_EMAIL_LINK_PATTERN = Pattern.compile("\\[([^\\]]+@[A-Za-z0-9._%+-]+\\.[A-Za-z]{2,})\\]\\(mailto:[^)]+\\)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern EMAIL_PATTERN = Pattern.compile("\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b");
+    private static final Pattern INVOICE_NUMBER_PATTERN = Pattern.compile("(?i)\\b((?:invoice|inv|order|ord|bill|receipt)\\s*(?:no\\.?|number|id)?\\s*[:#]?\\s*)([0-9]{4,})\\b");
+
     private List<PresidioAnalyzerResult> convertToPresidioFormat(List<PiiEntityDto> comprehendEntities) {
         return comprehendEntities.stream()
                 .map(entity -> {
@@ -91,6 +101,25 @@ public class ComprehendAnonymizationService {
                     );
                 })
                 .toList();
+    }
+
+    private String applyFallbackSanitization(String originalText, String sanitizedText) {
+        if (sanitizedText == null) {
+            return originalText;
+        }
+
+        String result = sanitizedText;
+
+        // Replace markdown-formatted email links entirely when present
+        result = MARKDOWN_EMAIL_LINK_PATTERN.matcher(result).replaceAll("[EMAIL]");
+
+        // Replace any remaining plain email addresses
+        result = EMAIL_PATTERN.matcher(result).replaceAll("[EMAIL]");
+
+        // Replace invoice/order-related numeric identifiers
+        result = INVOICE_NUMBER_PATTERN.matcher(result).replaceAll("$1[NUMBER]");
+
+        return result;
     }
 
     /**
