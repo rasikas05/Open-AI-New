@@ -53,27 +53,32 @@ public class ComprehendAnonymizationService {
      */
     public Map<String, Object> detectAndAnonymize(String text) {
         if (!enabled || text == null || text.isBlank()) {
+            log.debug("detectAndAnonymize: disabled or blank text, skipping Comprehend/Presidio flow");
             return createResponseMap(text, text, List.of());
         }
 
         try {
-            // Step 1: Detect PII using Comprehend
             log.info("Detecting PII using AWS Comprehend");
             List<PiiEntityDto> comprehendResults = comprehendService.detectPii(text);
-            log.info("AWS Comprehend detected {} entities: {}", comprehendResults.size(),
-                    comprehendResults.stream().map(PiiEntityDto::getType).toList());
+            log.info("AWS Comprehend detected {} entities", comprehendResults.size());
+            log.debug("Comprehend entities: {}", comprehendResults.stream().map(PiiEntityDto::getType).toList());
 
-            // Step 2: Convert Comprehend results to Presidio format
             log.info("Converting {} Comprehend results to Presidio format", comprehendResults.size());
             List<PresidioAnalyzerResult> presidioResults = convertToPresidioFormat(comprehendResults);
+            log.debug("Presidio external results count={}", presidioResults.size());
 
-            // Step 3: Anonymize using Presidio anonymizer with Comprehend-detected entities
-            log.info("Anonymizing text using Presidio with external Comprehend results");
-            String sanitizedText = presidioService.sanitizeTextWithExternalResults(text, presidioResults);
+            String sanitizedText;
+            if (presidioResults.isEmpty()) {
+                log.info("No Presidio external results produced by Comprehend; invoking Presidio raw anonymization fallback");
+                sanitizedText = presidioService.sanitizeText(text);
+            } else {
+                log.info("Anonymizing text using Presidio with external Comprehend results");
+                sanitizedText = presidioService.sanitizeTextWithExternalResults(text, presidioResults);
+            }
 
-            // Step 4: Apply regex fallback for email and invoice/order number patterns
+            log.debug("Presidio anonymization result='{}'", sanitizedText);
+
             sanitizedText = applyFallbackSanitization(text, sanitizedText);
-
             return createResponseMap(text, sanitizedText, comprehendResults);
         } catch (Exception e) {
             log.error("Error in Comprehend-based anonymization: {}", e.getMessage(), e);
@@ -86,6 +91,7 @@ public class ComprehendAnonymizationService {
      */
     private static final Pattern MARKDOWN_EMAIL_LINK_PATTERN = Pattern.compile("\\[([^\\]]+@[A-Za-z0-9._%+-]+\\.[A-Za-z]{2,})\\]\\(mailto:[^)]+\\)", Pattern.CASE_INSENSITIVE);
     private static final Pattern EMAIL_PATTERN = Pattern.compile("\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b");
+    private static final Pattern PHONE_PATTERN = Pattern.compile("\\b(?:\\+?\\d[\\d\\- ]{7,}\\d)\\b");
     private static final Pattern INVOICE_NUMBER_PATTERN = Pattern.compile("(?i)\\b((?:invoice|inv|order|ord|bill|receipt)\\s*(?:no\\.?|number|id)?\\s*[:#]?\\s*)([0-9]{4,})\\b");
 
     private List<PresidioAnalyzerResult> convertToPresidioFormat(List<PiiEntityDto> comprehendEntities) {
@@ -115,6 +121,9 @@ public class ComprehendAnonymizationService {
 
         // Replace any remaining plain email addresses
         result = EMAIL_PATTERN.matcher(result).replaceAll("[EMAIL]");
+
+        // Replace phone numbers as a fallback
+        result = PHONE_PATTERN.matcher(result).replaceAll("[PHONE]");
 
         // Replace invoice/order-related numeric identifiers
         result = INVOICE_NUMBER_PATTERN.matcher(result).replaceAll("$1[NUMBER]");

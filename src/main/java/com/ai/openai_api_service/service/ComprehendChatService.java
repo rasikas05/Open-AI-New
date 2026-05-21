@@ -92,6 +92,9 @@ public class ComprehendChatService {
             throw new OpenAIException("User message cannot be empty", 400);
         }
 
+        log.info("ComprehendChatService.chat called for tenantCode={}, userId={}, sessionId={}",
+                request.getTenantCode(), request.getUserId(), request.getSessionId());
+
         // Step 1: Sanitize user input with Comprehend
         String originalUserText = request.getUserMessage();
         String sanitizedUserText = sanitizeTextWithComprehend(originalUserText);
@@ -187,14 +190,18 @@ public class ComprehendChatService {
      */
     private String sanitizeTextWithComprehend(String text) {
         if (text == null || text.isBlank()) {
+            log.debug("sanitizeTextWithComprehend: input text is null or blank");
             return text;
         }
 
         try {
             log.info("Sanitizing text with Comprehend-based anonymization");
+            log.debug("Calling ComprehendAnonymizationService.detectAndAnonymize with text='{}'", text);
             Map<String, Object> result = comprehendAnonymizationService.detectAndAnonymize(text);
             Object sanitizedText = result.get("sanitizedText");
-            return sanitizedText != null ? sanitizedText.toString() : text;
+            String sanitized = sanitizedText != null ? sanitizedText.toString() : text;
+            log.debug("Comprehend anonymization returned sanitizedText='{}'", sanitized);
+            return sanitized;
         } catch (Exception e) {
             log.warn("Comprehend anonymization failed, using original text: {}", e.getMessage());
             return text;
@@ -217,7 +224,9 @@ public class ComprehendChatService {
         }
 
         if (!suggestionRuleService.isSupportedM3Topic(request.getUserMessage())) {
-            List<String> generic = suggestionRuleService.genericSuggestions(maxCount);
+            List<String> generic = suggestionRuleService.genericSuggestions(maxCount).stream()
+                    .map(this::toUserCentricSuggestion)
+                    .toList();
             List<SuggestionDto> details = generic.stream()
                     .map(text -> new SuggestionDto(text, "GENERIC"))
                     .toList();
@@ -288,7 +297,9 @@ public class ComprehendChatService {
             }
         }
 
-        if (suggestions.isEmpty()) {
+        if (!suggestions.isEmpty()) {
+            transformSuggestionsToUserCentricForm(suggestions, details, maxCount);
+        } else {
             log.info("No suggestions generated for tenantCode={}, userId={}, sessionId={}",
                     request.getTenantCode(), request.getUserId(), request.getSessionId());
         }
@@ -308,6 +319,46 @@ public class ComprehendChatService {
             return "";
         }
         return value.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
+    }
+
+    private void transformSuggestionsToUserCentricForm(List<String> suggestions, List<SuggestionDto> details, int maxCount) {
+        java.util.Map<String, String> normalized = new java.util.LinkedHashMap<>();
+        for (SuggestionDto detail : details) {
+            String shortText = toUserCentricSuggestion(detail.getText());
+            if (shortText == null || shortText.isBlank() || normalized.containsKey(shortText)) {
+                continue;
+            }
+            normalized.put(shortText, detail.getSource());
+            if (normalized.size() >= maxCount) {
+                break;
+            }
+        }
+        suggestions.clear();
+        details.clear();
+        for (java.util.Map.Entry<String, String> entry : normalized.entrySet()) {
+            suggestions.add(entry.getKey());
+            details.add(new SuggestionDto(entry.getKey(), entry.getValue()));
+            if (suggestions.size() >= maxCount) {
+                break;
+            }
+        }
+    }
+
+    private String toUserCentricSuggestion(String suggestion) {
+        if (suggestion == null) {
+            return null;
+        }
+        String clean = suggestion.trim().replaceAll("\\s{2,}", " ");
+        clean = clean.replaceAll("(?i)\\b(m3|infor)\\b", "").trim();
+        clean = clean.replaceAll("(?i)\\b(workflow|overview|process|concepts|integration|configuration|setup|rules|guidance)\\b", "").trim();
+        if (clean.isBlank()) {
+            clean = suggestion.trim();
+        }
+        String[] words = clean.split("\\s+");
+        if (words.length <= 3) {
+            return clean;
+        }
+        return String.join(" ", java.util.Arrays.copyOf(words, 3));
     }
 
     private ChatRequest copyRequestWithUserMessage(ChatRequest original, String userMessage) {

@@ -62,6 +62,8 @@ public class ComprehendChatController {
 
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("Comprehend Chat request from client_id: {}", clientId);
+        logger.debug("Comprehend chat flow entered for tenantCode={}, userId={}, sessionId={}, message={}",
+                request.getTenantCode(), request.getUserId(), request.getSessionId(), request.getUserMessage());
 
         tenantService.registerUserAndSession(request.getTenantCode(), request.getUserId(), request.getSessionId(), 0);
 
