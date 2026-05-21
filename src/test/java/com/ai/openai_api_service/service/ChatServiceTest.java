@@ -93,15 +93,6 @@ class ChatServiceTest {
         when(openAIService.chat(request))
                 .thenReturn(new ChatResponse("ok", false));
 
-        when(suggestionRuleService.genericSuggestions(anyInt()))
-                .thenReturn(List.of(
-                        "Infor M3 order management",
-                        "M3 inventory management",
-                        "Customer order workflow in M3",
-                        "Infor M3 API integration",
-                        "M3 invoicing process"
-                ));
-
         ChatResponse response = chatService.chat(request);
 
         assertTrue(Boolean.FALSE.equals(response.getLimitExceeded()));

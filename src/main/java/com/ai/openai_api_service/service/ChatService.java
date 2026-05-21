@@ -148,7 +148,20 @@ public class ChatService {
                 details.add(new SuggestionDto(clean, "RULE"));
             }
         } else {
-            if (llmEnabled) {
+            List<String> genericSuggestions = suggestionRuleService.genericSuggestions(maxCount);
+            for (String suggestion : genericSuggestions) {
+                if (suggestions.size() >= maxCount) {
+                    break;
+                }
+                String clean = normalizeSuggestionText(suggestion);
+                if (clean == null || clean.isBlank() || suggestions.contains(clean)) {
+                    continue;
+                }
+                suggestions.add(clean);
+                details.add(new SuggestionDto(clean, "GENERIC"));
+            }
+
+            if (suggestions.isEmpty() && llmEnabled) {
                 List<String> llmSuggestions = suggestionLLMService.suggest(request, maxCount, maxCount);
                 for (String suggestion : llmSuggestions) {
                     if (suggestions.size() >= maxCount) {
@@ -263,7 +276,6 @@ public class ChatService {
         clean = clean.replaceAll("(?i)^(view|check|track|see|open|go to|search|find)\\s+", "");
         clean = clean.replaceAll("(?i)^(how to|how does|how do i|describe|explain|show|review|validate|fix|set up|configure|analyze|troubleshoot)\\s+", "");
         clean = clean.replaceAll("[?.!]+$", "");
-        clean = clean.replaceAll("(?i)\\b(inquiry|processing|management)\\b", "");
         clean = clean.trim();
         if (clean.length() > 80) {
             clean = clean.substring(0, 80).trim();
