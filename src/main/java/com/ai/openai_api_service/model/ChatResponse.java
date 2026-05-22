@@ -1,6 +1,7 @@
 package com.ai.openai_api_service.model;
 
 import java.util.List;
+import java.util.Map;
 
 public class ChatResponse {
 
@@ -9,6 +10,15 @@ public class ChatResponse {
     private boolean truncated;
     private Boolean sanitizationApplied;
     private String sanitizedUserMessage;
+    private List<MessageDto> history;
+    private String actionTaken;
+    private String pendingTool;
+    private Map<String, Object> pendingArgs;
+    private String collectingTool;
+    private Map<String, Object> collectedArgs;
+    private String nextField;
+    private Boolean nextFieldOptional;
+    private Map<String, Object> m3Data;
     private List<String> suggestions;
     private List<SuggestionDto> suggestionDetails;
     private Boolean limitExceeded;
@@ -54,6 +64,78 @@ public class ChatResponse {
 
     public void setSanitizedUserMessage(String sanitizedUserMessage) {
         this.sanitizedUserMessage = sanitizedUserMessage;
+    }
+
+    public List<MessageDto> getHistory() {
+        return history;
+    }
+
+    public void setHistory(List<MessageDto> history) {
+        this.history = history;
+    }
+
+    public String getActionTaken() {
+        return actionTaken;
+    }
+
+    public void setActionTaken(String actionTaken) {
+        this.actionTaken = actionTaken;
+    }
+
+    public String getPendingTool() {
+        return pendingTool;
+    }
+
+    public void setPendingTool(String pendingTool) {
+        this.pendingTool = pendingTool;
+    }
+
+    public Map<String, Object> getPendingArgs() {
+        return pendingArgs;
+    }
+
+    public void setPendingArgs(Map<String, Object> pendingArgs) {
+        this.pendingArgs = pendingArgs;
+    }
+
+    public String getCollectingTool() {
+        return collectingTool;
+    }
+
+    public void setCollectingTool(String collectingTool) {
+        this.collectingTool = collectingTool;
+    }
+
+    public Map<String, Object> getCollectedArgs() {
+        return collectedArgs;
+    }
+
+    public void setCollectedArgs(Map<String, Object> collectedArgs) {
+        this.collectedArgs = collectedArgs;
+    }
+
+    public String getNextField() {
+        return nextField;
+    }
+
+    public void setNextField(String nextField) {
+        this.nextField = nextField;
+    }
+
+    public Boolean getNextFieldOptional() {
+        return nextFieldOptional;
+    }
+
+    public void setNextFieldOptional(Boolean nextFieldOptional) {
+        this.nextFieldOptional = nextFieldOptional;
+    }
+
+    public Map<String, Object> getM3Data() {
+        return m3Data;
+    }
+
+    public void setM3Data(Map<String, Object> m3Data) {
+        this.m3Data = m3Data;
     }
 
     public List<String> getSuggestions() {

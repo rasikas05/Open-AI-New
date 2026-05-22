@@ -1,7 +1,9 @@
 package com.ai.openai_api_service.service;
 
-import com.ai.openai_api_service.model.ChatRequest;
-import com.ai.openai_api_service.model.MessageDto;
+import com.ai.openai_api_service.model.SuggestionCategory;
+import com.ai.openai_api_service.model.SuggestionContext;
+import com.ai.openai_api_service.model.SuggestionItem;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,7 +20,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 @Service
 public class SuggestionLLMService {
@@ -40,13 +41,13 @@ public class SuggestionLLMService {
     @Value("${suggestion.llm.enabled:true}")
     private boolean llmEnabled;
 
-    public List<String> suggest(ChatRequest request, int minCount, int maxCount) {
-        if (!llmEnabled || request == null || apiKey == null || apiKey.isBlank()) {
+    public List<SuggestionItem> suggest(SuggestionContext context, int minCount, int maxCount) {
+        if (!llmEnabled || context == null || apiKey == null || apiKey.isBlank()) {
             return List.of();
         }
 
-        String context = buildContext(request);
-        if (context.isBlank()) {
+        String prompt = buildPrompt(context, minCount, maxCount);
+        if (prompt.isBlank()) {
             return List.of();
         }
 
@@ -55,12 +56,11 @@ public class SuggestionLLMService {
                 "messages", List.of(
                         Map.of(
                                 "role", "system",
-                                "content", "You are an Infor M3 assistant. Generate short user-centric suggestion chips."
+                                "content", "You are an expert Infor M3 assistant. Generate concise, user-centric follow-up suggestions based on the user query, answer, and retrieval context."
                         ),
                         Map.of(
                                 "role", "user",
-                                "content", "Based on this context, generate " + minCount + " to " + maxCount +
-                                        " short, topic-based related search phrases or help topics. Each suggestion must be a concise, end-user learning topic that is AI-ready and domain-relevant. Avoid UI action or navigation tasks, including starting with 'View', 'Check', 'Track', 'See', 'Open', or 'Go to'. Avoid long conversational questions and assistant-style phrasing such as 'Do you want', 'Should I', or 'Would you like'. Do NOT use the words inquiry, processing, or management. Do NOT generate suggestions that assume system execution capabilities or imply exporting files, fetching live ERP data, summarizing database values, retrieving customer records, sending emails, or generating reports. Suggestions should feel like related informational topics users may want to explore next. Output only a JSON array of strings.\n\n" + context
+                                "content", prompt
                         )
                 )
         );
@@ -77,33 +77,59 @@ public class SuggestionLLMService {
                     Map.class
             );
             Map<String, Object> response = responseEntity.getBody();
-            List<String> suggestions = extractContent(response);
-            return suggestions.stream().limit(maxCount).collect(Collectors.toList());
+            return extractSuggestions(response, maxCount);
         } catch (Exception e) {
             log.warn("LLM suggestion generation failed: {}", e.getMessage());
             return List.of();
         }
     }
 
-    private String buildContext(ChatRequest request) {
-        String latest = request.getUserMessage() == null ? "" : request.getUserMessage().trim();
-        List<MessageDto> history = request.getHistory() == null ? List.of() : request.getHistory();
+    private String buildPrompt(SuggestionContext context, int minCount, int maxCount) {
+        String message = context.getUserMessage() == null ? "" : context.getUserMessage().trim();
+        String answer = context.getAnswer() == null ? "" : context.getAnswer().trim();
+        int sourceCount = context.getSources() == null ? 0 : context.getSources().size();
 
-        List<String> contextLines = new ArrayList<>();
-        int from = Math.max(0, history.size() - 2);
-        for (int i = from; i < history.size(); i++) {
-            MessageDto m = history.get(i);
-            if (m.getRole() != null && m.getContent() != null && !m.getContent().isBlank()) {
-                contextLines.add(m.getRole().toLowerCase(Locale.ROOT) + ": " + m.getContent().trim());
-            }
+        StringBuilder builder = new StringBuilder();
+        builder.append("You are an expert Infor M3 business process assistant. Generate practical, task-oriented follow-up suggestions.\n\n");
+        builder.append("User question: ").append(message).append("\n");
+        if (!answer.isBlank()) {
+            builder.append("Assistant answer: ").append(answer).append("\n");
         }
-        if (!latest.isBlank()) {
-            contextLines.add("user: " + latest);
-        }
-        return String.join("\n", contextLines);
+        builder.append("Retrieved source count: ").append(sourceCount).append("\n\n");
+        
+        builder.append("CRITICAL REQUIREMENTS:\n");
+        builder.append("1. Generate ONLY complete, actionable suggestions (minimum 4 words, full sentences)\n");
+        builder.append("2. NEVER generate incomplete phrases ending with: in, of, for, with, and, to, by, from, is, can be, are\n");
+        builder.append("3. Focus on PRACTICAL operations: how-to steps, troubleshooting, API usage, configuration, navigation\n");
+        builder.append("4. AVOID generic topics like 'Customer order process', 'Purchase order information', 'Explore X'\n");
+        builder.append("5. AVOID marketing or informational topics unrelated to actual tasks\n");
+        builder.append("6. Ensure each suggestion helps the user continue their workflow naturally\n");
+        builder.append("7. Each suggestion must be a COMPLETE thought, not a fragment\n\n");
+        
+        builder.append("GOOD EXAMPLES:\n");
+        builder.append("- 'How to monitor purchase order status in PPS200'\n");
+        builder.append("- 'Common reasons for delayed purchase orders'\n");
+        builder.append("- 'How to approve customer orders in OIS100'\n");
+        builder.append("- 'Which APIs are related to OIS100'\n");
+        builder.append("- 'Troubleshoot delivery receipt issues'\n\n");
+        
+        builder.append("BAD EXAMPLES (DO NOT GENERATE):\n");
+        builder.append("- 'How to track purchase order in' (incomplete)\n");
+        builder.append("- 'Benefits of ad' (fragment)\n");
+        builder.append("- 'Customer order process' (generic)\n");
+        builder.append("- 'Explore order' (vague)\n\n");
+        
+        builder.append("Generate between ").append(minCount).append(" and ").append(maxCount)
+                .append(" suggestions. Output ONLY a valid JSON array of objects with:\n")
+                .append("- text: complete, actionable suggestion (not a fragment)\n")
+                .append("- category: one of FOLLOW_UP, TROUBLESHOOTING, CONFIGURATION, API_RELATED, BEST_PRACTICE\n")
+                .append("- relevance_score: number from 0.0 to 1.0\n\n")
+                .append("Ensure ALL suggestions are complete sentences with proper structure. Do not include markdown or explanations.\n");
+        
+        return builder.toString();
     }
 
-    private List<String> extractContent(Map<String, Object> response) {
+    private List<SuggestionItem> extractSuggestions(Map<String, Object> response, int maxCount) {
         if (response == null) {
             return List.of();
         }
@@ -124,11 +150,107 @@ public class SuggestionLLMService {
         if (content.isBlank()) {
             return List.of();
         }
+
         try {
-            return objectMapper.readValue(content, objectMapper.getTypeFactory().constructCollectionType(List.class, String.class));
-        } catch (Exception e) {
-            log.warn("Failed to parse LLM response as JSON array: {}", e.getMessage());
+            List<Map<String, Object>> rawItems = objectMapper.readValue(
+                    content,
+                    new TypeReference<>() {
+                    }
+            );
+            List<SuggestionItem> items = new ArrayList<>();
+            for (Map<String, Object> raw : rawItems) {
+                if (raw == null) {
+                    continue;
+                }
+                String text = raw.getOrDefault("text", "").toString().trim();
+                String categoryText = raw.getOrDefault("category", "GENERIC").toString();
+                double score = parseScore(raw.get("relevance_score"));
+                SuggestionCategory category = SuggestionCategory.fromString(categoryText);
+                
+                // Filter out incomplete or low-quality suggestions
+                if (!isCompleteAndValid(text)) {
+                    log.debug("Filtered incomplete LLM suggestion: {}", text);
+                    continue;
+                }
+                
+                items.add(new SuggestionItem(text, category, score, "LLM"));
+                if (items.size() >= maxCount) {
+                    break;
+                }
+            }
+            return items;
+        } catch (Exception parseError) {
+            log.warn("LLM suggestion parsing failed, trying fallback parse as string list: {}", parseError.getMessage());
+        }
+
+        try {
+            List<String> rawTexts = objectMapper.readValue(content, new TypeReference<>() {
+            });
+            List<SuggestionItem> items = new ArrayList<>();
+            for (String rawText : rawTexts) {
+                if (rawText == null || rawText.isBlank()) {
+                    continue;
+                }
+                rawText = rawText.trim();
+                if (!isCompleteAndValid(rawText)) {
+                    log.debug("Filtered incomplete fallback suggestion: {}", rawText);
+                    continue;
+                }
+                items.add(new SuggestionItem(rawText, SuggestionCategory.RELATED_TOPIC, 0.55d, "LLM"));
+                if (items.size() >= maxCount) {
+                    break;
+                }
+            }
+            return items;
+        } catch (Exception fallbackError) {
+            log.warn("LLM fallback parsing also failed: {}", fallbackError.getMessage());
             return List.of();
         }
+    }
+    
+    private boolean isCompleteAndValid(String text) {
+        try {
+            if (text == null || text.isBlank()) {
+                return false;
+            }
+            
+            String trimmed = text.trim();
+            if (trimmed.isEmpty()) {
+                return false;
+            }
+            
+            // Minimum 4 words and reasonable length
+            String[] words = trimmed.split("\\s+");
+            int wordCount = words.length;
+            if (trimmed.length() < 15 || wordCount < 4) {
+                log.debug("LLM suggestion filtered (too short): chars={}, words={}, text={}", trimmed.length(), wordCount, text);
+                return false;
+            }
+            
+            // Check for incomplete phrase endings
+            String lower = trimmed.toLowerCase(Locale.ROOT);
+            if (lower.matches(".*\\b(in|of|for|with|and|to|by|from|is|can be|are)\\s*$")) {
+                log.debug("LLM suggestion filtered (incomplete ending): {}", text);
+                return false;
+            }
+            
+            return true;
+        } catch (Exception e) {
+            log.error("Error validating LLM suggestion: {}", text, e);
+            return false;
+        }
+    }
+
+    private double parseScore(Object rawScore) {
+        if (rawScore instanceof Number number) {
+            return Math.max(0.0d, Math.min(1.0d, number.doubleValue()));
+        }
+        if (rawScore != null) {
+            try {
+                return Math.max(0.0d, Math.min(1.0d, Double.parseDouble(rawScore.toString())));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return 0.5d;
     }
 }

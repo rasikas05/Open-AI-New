@@ -27,7 +27,7 @@ public class PythonRagService {
     @Value("${python-rag.api.base-url:http://localhost:8083}")
     private String pythonRagBaseUrl;
 
-    @Value("${python-rag.api.endpoint:/query}")
+    @Value("${python-rag.api.endpoint:/chat}")
     private String pythonRagEndpoint;
 
     @Value("${python-rag.api.timeout-ms:30000}")
@@ -47,9 +47,9 @@ public class PythonRagService {
     }
 
     /**
-     * Query the Python RAG API with the provided question and optional parameters.
-     *
-     * @param question         The user's question
+    * Query the Python RAG API with the provided message and optional parameters.
+    *
+    * @param message          The user's message
      * @param topK             Number of chunks per sub-query (optional, defaults to 5)
      * @param finalLimit       Max chunks after merge/rank (optional, defaults to 8)
      * @param deliverable      Filter by deliverable (optional)
@@ -60,7 +60,7 @@ public class PythonRagService {
      * @throws OpenAIException if the API call fails
      */
     public PythonQueryResponse query(
-            String question,
+            String message,
             Integer topK,
             Integer finalLimit,
             String deliverable,
@@ -75,13 +75,13 @@ public class PythonRagService {
             );
         }
 
-        if (question == null || question.isBlank()) {
-            throw new OpenAIException("Question cannot be empty", 400);
+        if (message == null || message.isBlank()) {
+            throw new OpenAIException("Message cannot be empty", 400);
         }
 
         // Build request with defaults
         PythonQueryRequest queryRequest = new PythonQueryRequest();
-        queryRequest.setQuestion(question);
+        queryRequest.setMessage(message);
         queryRequest.setTopK(topK != null ? topK : defaultTopK);
         queryRequest.setFinalLimit(finalLimit != null ? finalLimit : defaultFinalLimit);
         queryRequest.setDeliverable(deliverable);
@@ -107,8 +107,8 @@ public class PythonRagService {
             );
         }
 
-        if (queryRequest == null || queryRequest.getQuestion() == null || queryRequest.getQuestion().isBlank()) {
-            throw new OpenAIException("Question cannot be empty", 400);
+        if (queryRequest == null || queryRequest.getMessage() == null || queryRequest.getMessage().isBlank()) {
+            throw new OpenAIException("Message cannot be empty", 400);
         }
 
         // Apply defaults if not set
@@ -133,9 +133,9 @@ public class PythonRagService {
 
         String url = buildPythonRagUrl();
         log.info(
-                "Calling Python RAG API. url={}, question='{}', topK={}, finalLimit={}, deliverable={}, programIds={}, docVersion={}, skipRewrite={}",
+                "Calling Python RAG API. url={}, message='{}', topK={}, finalLimit={}, deliverable={}, programIds={}, docVersion={}, skipRewrite={}",
                 url,
-                queryRequest.getQuestion(),
+                queryRequest.getMessage(),
                 queryRequest.getTopK(),
                 queryRequest.getFinalLimit(),
                 queryRequest.getDeliverable(),
@@ -165,10 +165,10 @@ public class PythonRagService {
             }
 
             log.info(
-                    "Python RAG API call successful. url={}, responseTime={}ms, answer_length={}, sources_count={}, retrievedChunks={}, model={}, usage={}",
+                    "Python RAG API call successful. url={}, responseTime={}ms, reply_length={}, sources_count={}, retrievedChunks={}, model={}, usage={}",
                     url,
                     responseTime,
-                    response.getAnswer() != null ? response.getAnswer().length() : 0,
+                    response.getReply() != null ? response.getReply().length() : 0,
                     response.getSources() != null ? response.getSources().size() : 0,
                     response.getRetrievedChunks(),
                     response.getModel(),

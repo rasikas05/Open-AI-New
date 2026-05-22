@@ -255,6 +255,8 @@ public class OpenAIService {
         log.info("OpenAIService: persistChat() completed successfully for sessionId={}", request.getSessionId());
 
         ChatResponse chatResponse = new ChatResponse(content, truncated);
+        chatResponse.setHistory(request.getHistory());
+        chatResponse.setActionTaken("gpt_infor");
         chatResponse.setSanitizationApplied(!Objects.equals(originalUserText, modelReadyUserText));
         if (includeSanitizationDebug) {
             chatResponse.setSanitizedUserMessage(modelReadyUserText);

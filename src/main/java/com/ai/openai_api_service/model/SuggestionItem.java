@@ -1,24 +1,22 @@
 package com.ai.openai_api_service.model;
 
-public class SuggestionDto {
+public class SuggestionItem {
 
     private String text;
-    private String source;
     private SuggestionCategory category;
-    private Double score;
+    private double score;
+    private String source;
 
-    public SuggestionDto() {
+    public SuggestionItem() {
+        this.category = SuggestionCategory.GENERIC;
+        this.score = 0.5d;
     }
 
-    public SuggestionDto(String text, String source) {
-        this(text, source, SuggestionCategory.GENERIC, null);
-    }
-
-    public SuggestionDto(String text, String source, SuggestionCategory category, Double score) {
+    public SuggestionItem(String text, SuggestionCategory category, double score, String source) {
         this.text = text;
-        this.source = source;
         this.category = category == null ? SuggestionCategory.GENERIC : category;
         this.score = score;
+        this.source = source;
     }
 
     public String getText() {
@@ -29,14 +27,6 @@ public class SuggestionDto {
         this.text = text;
     }
 
-    public String getSource() {
-        return source;
-    }
-
-    public void setSource(String source) {
-        this.source = source;
-    }
-
     public SuggestionCategory getCategory() {
         return category;
     }
@@ -45,11 +35,19 @@ public class SuggestionDto {
         this.category = category;
     }
 
-    public Double getScore() {
+    public double getScore() {
         return score;
     }
 
-    public void setScore(Double score) {
+    public void setScore(double score) {
         this.score = score;
+    }
+
+    public String getSource() {
+        return source;
+    }
+
+    public void setSource(String source) {
+        this.source = source;
     }
 }

@@ -3,6 +3,7 @@ package com.ai.openai_api_service.service;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.TokenUsageDto;
+import com.ai.openai_api_service.model.SuggestionResult;
 import com.ai.openai_api_service.service.PresidioService;
 import java.util.List;
 import org.junit.jupiter.api.Test;
@@ -30,13 +31,7 @@ class ChatServiceTest {
     private PresidioService presidioService;
 
     @Mock
-    private SuggestionRuleService suggestionRuleService;
-
-    @Mock
-    private SuggestionLLMService suggestionLLMService;
-
-    @Mock
-    private SuggestionCacheService suggestionCacheService;
+    private SuggestionEngineService suggestionEngineService;
 
     @Mock
     private TenantQuotaService tenantQuotaService;
@@ -92,6 +87,8 @@ class ChatServiceTest {
 
         when(openAIService.chat(request))
                 .thenReturn(new ChatResponse("ok", false));
+        when(suggestionEngineService.generateSuggestions(any()))
+                .thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = chatService.chat(request);
 
@@ -119,15 +116,12 @@ class ChatServiceTest {
 
         when(openAIService.chat(request))
                 .thenReturn(new ChatResponse("I'm here to help with questions related to Infor M3 ERP. If you have any queries about Infor M3 modules, processes, or troubleshooting, please let me know!", false));
-
-        when(suggestionRuleService.genericSuggestions(anyInt()))
-                .thenReturn(List.of(
+        when(suggestionEngineService.generateSuggestions(any()))
+                .thenReturn(new SuggestionResult(List.of(
                         "Infor M3 order management",
                         "M3 inventory management",
-                        "Customer order workflow in M3",
-                        "Infor M3 API integration",
-                        "M3 invoicing process"
-                ));
+                        "Customer order workflow in M3"
+                ), List.of()));
 
         ChatResponse response = chatService.chat(request);
 
@@ -136,7 +130,6 @@ class ChatServiceTest {
         assertEquals("Infor M3 order management", response.getSuggestions().get(0));
 
         verify(openAIService).chat(request);
-        verify(suggestionLLMService, never()).suggest(any(), anyInt(), anyInt());
-        verify(suggestionRuleService, never()).suggest(any(), anyInt());
+        verify(suggestionEngineService).generateSuggestions(any());
     }
 }

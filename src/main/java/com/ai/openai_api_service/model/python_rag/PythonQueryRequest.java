@@ -1,5 +1,6 @@
 package com.ai.openai_api_service.model.python_rag;
 
+import com.ai.openai_api_service.model.MessageDto;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -12,7 +13,8 @@ import java.util.List;
 @AllArgsConstructor
 public class PythonQueryRequest {
 
-    private String question;
+    private String message;
+    private List<MessageDto> history;
 
     @JsonProperty("top_k")
     private Integer topK = 5;
