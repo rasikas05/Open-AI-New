@@ -346,13 +346,17 @@ public class ChatPersistenceService {
 
         for (RequestLog row : rows) {
 
-            if (row.getSanitizedText() != null &&
-                    !row.getSanitizedText().isBlank()) {
+            // Use originalText for UI display; sanitizedText is only for internal processing/debugging
+            String userMessageContent = row.getOriginalText() != null && !row.getOriginalText().isBlank()
+                    ? row.getOriginalText()
+                    : row.getSanitizedText();
+
+            if (userMessageContent != null && !userMessageContent.isBlank()) {
 
                 messages.add(
                     new MessageDto(
                             "user",
-                            row.getSanitizedText(),
+                            userMessageContent,
                             row.getSanitizedFlag(),
                             null
                     )
