@@ -10,6 +10,8 @@ public class SessionMessageDto {
     private String originalText;
     private String sanitizedText;
     private String openaiResponse;
+    private Boolean sanitizedFlag;
+    private String actionTaken;
     private Integer tokensUsed;
     private LocalDateTime createdAt;
 
@@ -23,6 +25,8 @@ public class SessionMessageDto {
             String originalText,
             String sanitizedText,
             String openaiResponse,
+            Boolean sanitizedFlag,
+            String actionTaken,
             Integer tokensUsed,
             LocalDateTime createdAt
     ) {
@@ -32,6 +36,8 @@ public class SessionMessageDto {
         this.originalText = originalText;
         this.sanitizedText = sanitizedText;
         this.openaiResponse = openaiResponse;
+        this.sanitizedFlag = sanitizedFlag;
+        this.actionTaken = actionTaken;
         this.tokensUsed = tokensUsed;
         this.createdAt = createdAt;
     }
@@ -82,6 +88,22 @@ public class SessionMessageDto {
 
     public void setOpenaiResponse(String openaiResponse) {
         this.openaiResponse = openaiResponse;
+    }
+
+    public Boolean getSanitizedFlag() {
+        return sanitizedFlag;
+    }
+
+    public void setSanitizedFlag(Boolean sanitizedFlag) {
+        this.sanitizedFlag = sanitizedFlag;
+    }
+
+    public String getActionTaken() {
+        return actionTaken;
+    }
+
+    public void setActionTaken(String actionTaken) {
+        this.actionTaken = actionTaken;
     }
 
     public Integer getTokensUsed() {

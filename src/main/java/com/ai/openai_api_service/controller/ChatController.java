@@ -167,6 +167,8 @@ public class ChatController {
                         message.getOriginalText(),
                         message.getSanitizedText(),
                         message.getOpenaiResponse(),
+                        message.getSanitizedFlag(),
+                        message.getActionTaken(),
                         message.getTokensUsed(),
                         message.getCreatedAt()
                 ))

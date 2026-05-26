@@ -23,6 +23,10 @@ public class RequestLog {
     @Lob
     @Column(name = "sanitized_text", columnDefinition = "TEXT")
     private String sanitizedText;
+    @Column(name = "action_taken", length = 255)
+    private String actionTaken;
+    @Column(name = "sanitized_flag", columnDefinition = "BIT(1)")
+    private Boolean sanitizedFlag;
     @Lob
     @Column(name = "openai_response", columnDefinition = "TEXT")
     private String openaiResponse;
@@ -69,6 +73,22 @@ public class RequestLog {
 
     public void setSanitizedText(String sanitizedText) {
         this.sanitizedText = sanitizedText;
+    }
+
+    public String getActionTaken() {
+        return actionTaken;
+    }
+
+    public void setActionTaken(String actionTaken) {
+        this.actionTaken = actionTaken;
+    }
+
+    public Boolean getSanitizedFlag() {
+        return sanitizedFlag;
+    }
+
+    public void setSanitizedFlag(Boolean sanitizedFlag) {
+        this.sanitizedFlag = sanitizedFlag;
     }
 
     public String getOpenaiResponse() {

@@ -124,6 +124,7 @@ public class ComprehendChatService {
         }
 
         // Step 5: Persist the chat message
+        boolean sanitizedFlag = !Objects.equals(originalUserText, sanitizedUserText);
         log.info("ComprehendChatService: About to call persistChat() with tenantCode={}, userId={}, sessionId={}", 
                 request.getTenantCode(), request.getUserId(), request.getSessionId());
         chatPersistenceService.persistChat(
@@ -133,7 +134,9 @@ public class ComprehendChatService {
                 originalUserText,
                 sanitizedUserText,
                 replyText,
-                consumedTokens
+                consumedTokens,
+                pythonResponse.getActionTaken(),
+                sanitizedFlag
         );
         log.info("ComprehendChatService: persistChat() completed successfully for sessionId={}", request.getSessionId());
 

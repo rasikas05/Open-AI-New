@@ -241,6 +241,7 @@ public class OpenAIService {
             return blocked;
         }
         
+        boolean sanitizedFlag = !Objects.equals(originalUserText, modelReadyUserText);
         log.info("OpenAIService: About to call persistChat() with tenantCode={}, userId={}, sessionId={}", 
                 request.getTenantCode(), request.getUserId(), request.getSessionId());
         chatPersistenceService.persistChat(
@@ -250,7 +251,9 @@ public class OpenAIService {
                 originalUserText,
                 modelReadyUserText,
                 content,
-                consumedTokens
+                consumedTokens,
+                "gpt_infor",
+                sanitizedFlag
         );
         log.info("OpenAIService: persistChat() completed successfully for sessionId={}", request.getSessionId());
 

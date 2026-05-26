@@ -18,12 +18,22 @@ public class MessageDto {
     @Schema(example = "Summarize this in 30 words.")
     private String content;
 
+    private Boolean sanitizedFlag;
+    private String actionTaken;
+
     public MessageDto() {
     }
 
     public MessageDto(String role, String content) {
         this.role = role;
         this.content = content;
+    }
+
+    public MessageDto(String role, String content, Boolean sanitizedFlag, String actionTaken) {
+        this.role = role;
+        this.content = content;
+        this.sanitizedFlag = sanitizedFlag;
+        this.actionTaken = actionTaken;
     }
 
     public String getRole() {
@@ -40,6 +50,22 @@ public class MessageDto {
 
     public void setContent(String content) {
         this.content = content;
+    }
+
+    public Boolean getSanitizedFlag() {
+        return sanitizedFlag;
+    }
+
+    public void setSanitizedFlag(Boolean sanitizedFlag) {
+        this.sanitizedFlag = sanitizedFlag;
+    }
+
+    public String getActionTaken() {
+        return actionTaken;
+    }
+
+    public void setActionTaken(String actionTaken) {
+        this.actionTaken = actionTaken;
     }
 }
 
