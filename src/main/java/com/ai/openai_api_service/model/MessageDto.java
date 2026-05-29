@@ -1,9 +1,25 @@
 package com.ai.openai_api_service.model;
 
+import io.swagger.v3.oas.annotations.media.Schema;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+
 public class MessageDto {
 
+    @NotBlank(message = "history.role is required")
+    @Pattern(
+            regexp = "system|user|assistant",
+            message = "history.role must be one of: system, user, assistant"
+    )
+    @Schema(example = "user", allowableValues = {"system", "user", "assistant"})
     private String role;
+
+    @NotBlank(message = "history.content is required")
+    @Schema(example = "Summarize this in 30 words.")
     private String content;
+
+    private Boolean sanitizedFlag;
+    private String actionTaken;
 
     public MessageDto() {
     }
@@ -11,6 +27,13 @@ public class MessageDto {
     public MessageDto(String role, String content) {
         this.role = role;
         this.content = content;
+    }
+
+    public MessageDto(String role, String content, Boolean sanitizedFlag, String actionTaken) {
+        this.role = role;
+        this.content = content;
+        this.sanitizedFlag = sanitizedFlag;
+        this.actionTaken = actionTaken;
     }
 
     public String getRole() {
@@ -27,6 +50,22 @@ public class MessageDto {
 
     public void setContent(String content) {
         this.content = content;
+    }
+
+    public Boolean getSanitizedFlag() {
+        return sanitizedFlag;
+    }
+
+    public void setSanitizedFlag(Boolean sanitizedFlag) {
+        this.sanitizedFlag = sanitizedFlag;
+    }
+
+    public String getActionTaken() {
+        return actionTaken;
+    }
+
+    public void setActionTaken(String actionTaken) {
+        this.actionTaken = actionTaken;
     }
 }
 

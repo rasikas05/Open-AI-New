@@ -1,12 +1,17 @@
 package com.ai.openai_api_service.service;
 
+import com.ai.openai_api_service.exception.TenantQuotaExceededException;
 import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.MessageDto;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.HttpClientErrorException;
@@ -15,12 +20,19 @@ import org.springframework.web.client.RestTemplate;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Arrays;
 
 @Service
 public class OpenAIService {
+    private static final Logger log = LoggerFactory.getLogger(OpenAIService.class);
 
     private final RestTemplate restTemplate;
+    private final PresidioService presidioService;
+    private final ChatPersistenceService chatPersistenceService;
+    private final TenantQuotaService tenantQuotaService;
 
     @Value("${openai.api.key}")
     private String apiKey;
@@ -31,25 +43,116 @@ public class OpenAIService {
     @Value("${openai.api.url}")
     private String openaiUrl;
 
-    public OpenAIService() {
+    @Value("${openai.assistant.system-prompt.enabled:true}")
+    private boolean systemPromptEnabled;
+
+    @Value("${openai.assistant.system-prompt:}")
+    private String systemPrompt;
+
+    @Value("${openai.input.remove-anonymization-placeholders:true}")
+    private boolean removeAnonymizationPlaceholders;
+
+    @Value("${openai.response.include-sanitization-debug:false}")
+    private boolean includeSanitizationDebug;
+
+    @Value("${chat.history.load-from-db:true}")
+    private boolean loadHistoryFromDb;
+
+    @Value("${chat.history.max-exchanges:10}")
+    private int maxHistoryExchanges;
+
+    @Value("${chat.history.allow-client-history:false}")
+    private boolean allowClientHistory;
+
+    public OpenAIService(
+            PresidioService presidioService,
+            ChatPersistenceService chatPersistenceService,
+            TenantQuotaService tenantQuotaService
+    ) {
         this.restTemplate = new RestTemplate();
+        this.presidioService = presidioService;
+        this.chatPersistenceService = chatPersistenceService;
+        this.tenantQuotaService = tenantQuotaService;
     }
 
     public ChatResponse chat(ChatRequest request) {
-        List<Map<String, String>> messages = new ArrayList<>();
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new OpenAIException(
+                    "OpenAI API key is missing. Set OPENAI_API_KEY env var or openai.api.key property.",
+                    401
+            );
+        }
 
-        if (request.getHistory() != null) {
-            for (MessageDto message : request.getHistory()) {
+        List<Map<String, String>> messages = new ArrayList<>();
+        if (systemPromptEnabled && systemPrompt != null && !systemPrompt.isBlank()) {
+            Map<String, String> systemMessage = new HashMap<>();
+            systemMessage.put("role", "system");
+            systemMessage.put("content", systemPrompt.trim());
+            messages.add(systemMessage);
+        }
+
+        // Choose history source:
+        // 1) If client sends non-empty `history`, prefer it (so the model uses the context you pass in).
+        // 2) Otherwise fall back to DB history (when enabled).
+        List<MessageDto> clientHistory = request.getHistory() != null ? request.getHistory() : List.of();
+        boolean hasClientHistory = allowClientHistory && !clientHistory.isEmpty();
+
+        List<MessageDto> sourceHistory;
+        if (hasClientHistory) {
+            sourceHistory = clientHistory;
+        } else if (loadHistoryFromDb) {
+            sourceHistory = chatPersistenceService.loadHistoryForPrompt(
+                    request.getTenantCode(),
+                    request.getUserId(),
+                    request.getSessionId(),
+                    maxHistoryExchanges
+            );
+        } else {
+            sourceHistory = List.of();
+        }
+
+        // Safety cap to avoid sending very large histories into the model.
+        if (sourceHistory != null && sourceHistory.size() > maxHistoryExchanges) {
+            int fromIndex = Math.max(0, sourceHistory.size() - maxHistoryExchanges);
+            sourceHistory = sourceHistory.subList(fromIndex, sourceHistory.size());
+        }
+        int historyCount = sourceHistory != null ? sourceHistory.size() : 0;
+
+        if (sourceHistory != null) {
+            for (MessageDto message : sourceHistory) {
+                String role = message.getRole() == null ? null : message.getRole().trim().toLowerCase(Locale.ROOT);
+                String content = message.getContent() == null ? null : message.getContent().trim();
+                if (!isValidRole(role) || content == null || content.isBlank()) {
+                    throw new OpenAIException(
+                            "Invalid history item. role must be system/user/assistant and content must be non-empty.",
+                            400
+                    );
+                }
                 Map<String, String> map = new HashMap<>();
-                map.put("role", message.getRole());
-                map.put("content", message.getContent());
+                map.put("role", role);
+                map.put("content", "user".equals(role)
+                        ? prepareUserContentForOpenAi(presidioService.sanitizeText(content))
+                        : content);
                 messages.add(map);
             }
         }
 
+        String originalUserText = request.getUserMessage();
+        String sanitizedUserText = presidioService.sanitizeText(originalUserText);
+        String modelReadyUserText = prepareUserContentForOpenAi(sanitizedUserText);
+        log.info(
+                "Preparing OpenAI call. tenantCode={}, userId={}, sessionId={}, historyCount={}, original='{}', modelReady='{}'",
+                request.getTenantCode(),
+                request.getUserId(),
+                request.getSessionId(),
+                historyCount,
+                originalUserText,
+                modelReadyUserText
+        );
+
         Map<String, String> userMessage = new HashMap<>();
         userMessage.put("role", "user");
-        userMessage.put("content", request.getUserMessage());
+        userMessage.put("content", modelReadyUserText);
         messages.add(userMessage);
 
         Map<String, Object> body = new HashMap<>();
@@ -64,9 +167,32 @@ public class OpenAIService {
 
         Map<String, Object> response;
         try {
-            response = restTemplate.postForObject(openaiUrl, entity, Map.class);
+            ResponseEntity<Map> responseEntity = restTemplate.exchange(
+                    openaiUrl,
+                    HttpMethod.POST,
+                    entity,
+                    Map.class
+            );
+            response = responseEntity.getBody();
         } catch (HttpClientErrorException e) {
             int code = e.getStatusCode().value();
+            HttpHeaders h = e.getResponseHeaders();
+            if (h != null) {
+                // OpenAI includes useful rate-limit headers on 429; logging them removes guesswork.
+                log.warn("OpenAI x-ratelimit-limit-requests={}", h.getFirst("x-ratelimit-limit-requests"));
+                log.warn("OpenAI x-ratelimit-remaining-requests={}", h.getFirst("x-ratelimit-remaining-requests"));
+                log.warn("OpenAI x-ratelimit-reset-requests={}", h.getFirst("x-ratelimit-reset-requests"));
+                log.warn("OpenAI x-ratelimit-limit-tokens={}", h.getFirst("x-ratelimit-limit-tokens"));
+                log.warn("OpenAI x-ratelimit-remaining-tokens={}", h.getFirst("x-ratelimit-remaining-tokens"));
+                log.warn("OpenAI x-ratelimit-reset-tokens={}", h.getFirst("x-ratelimit-reset-tokens"));
+            } else {
+                log.warn("OpenAI error response headers are empty.");
+            }
+
+            String errorBody = e.getResponseBodyAsString();
+            // MUST log full body for 429 diagnosis (quota vs rate limit).
+            log.warn("OpenAI error status={} body={}", e.getStatusCode(), errorBody);
+
             String msg = code == 401
                     ? "OpenAI API key is invalid or missing. Check openai.api.key in application.properties (no quotes)."
                     : "OpenAI API error: " + code + " " + e.getStatusText();
@@ -101,7 +227,74 @@ public class OpenAIService {
             truncated = true;
         }
 
-        return new ChatResponse(content, truncated);
+        Integer totalTokens = extractTotalTokens(response);
+        int consumedTokens = totalTokens != null ? totalTokens : 0;
+        String usageReferenceId = request.getSessionId() + ":" + System.currentTimeMillis();
+        try {
+            tenantQuotaService.recordUsage(request.getTenantCode(), consumedTokens, usageReferenceId);
+        } catch (TenantQuotaExceededException e) {
+            ChatResponse blocked = new ChatResponse("Token limit reached for this tenant. Please top up to continue.", false);
+            blocked.setLimitExceeded(true);
+            blocked.setUsage(e.getUsage());
+            blocked.setBlockReason("LIMIT_EXCEEDED");
+            blocked.setUpgradeOptions(Arrays.asList("Buy 100 tokens", "Buy 500 tokens", "Buy 5000 tokens"));
+            return blocked;
+        }
+        
+        boolean sanitizedFlag = !Objects.equals(originalUserText, modelReadyUserText);
+        log.info("OpenAIService: About to call persistChat() with tenantCode={}, userId={}, sessionId={}", 
+                request.getTenantCode(), request.getUserId(), request.getSessionId());
+        chatPersistenceService.persistChat(
+                request.getTenantCode(),
+                request.getUserId(),
+                request.getSessionId(),
+                originalUserText,
+                modelReadyUserText,
+                content,
+                consumedTokens,
+                "gpt_infor",
+                sanitizedFlag
+        );
+        log.info("OpenAIService: persistChat() completed successfully for sessionId={}", request.getSessionId());
+
+        ChatResponse chatResponse = new ChatResponse(content, truncated);
+        chatResponse.setHistory(request.getHistory());
+        chatResponse.setActionTaken("gpt_infor");
+        chatResponse.setSanitizationApplied(!Objects.equals(originalUserText, modelReadyUserText));
+        if (includeSanitizationDebug) {
+            chatResponse.setSanitizedUserMessage(modelReadyUserText);
+        }
+        return chatResponse;
+    }
+
+    private boolean isValidRole(String role) {
+        return "system".equals(role) || "user".equals(role) || "assistant".equals(role);
+    }
+
+    private Integer extractTotalTokens(Map<String, Object> response) {
+        Object usageObj = response.get("usage");
+        if (!(usageObj instanceof Map<?, ?> usageMap)) {
+            return null;
+        }
+        Object totalTokens = usageMap.get("total_tokens");
+        if (totalTokens instanceof Number n) {
+            return n.intValue();
+        }
+        return null;
+    }
+
+    private String prepareUserContentForOpenAi(String sanitizedText) {
+        if (sanitizedText == null) {
+            return null;
+        }
+        if (!removeAnonymizationPlaceholders) {
+            return sanitizedText;
+        }
+        String withoutTags = sanitizedText
+                .replaceAll("<[A-Z_]+>", " ")
+                .replaceAll("\\s{2,}", " ")
+                .trim();
+        return withoutTags.isBlank() ? sanitizedText : withoutTags;
     }
 }
 
