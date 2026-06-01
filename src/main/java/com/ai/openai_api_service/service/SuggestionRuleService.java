@@ -52,7 +52,13 @@ public boolean isSupportedM3Topic(String latestUserMessage) {
             "inventory",
             "delivery",
             "order",
-            "customer"
+            "customer",
+            "ad hoc",
+            "ad hoc report",
+            "virtual fields",
+            "ahs110",
+            "ahs112",
+            "cms100"
     );
 }
 

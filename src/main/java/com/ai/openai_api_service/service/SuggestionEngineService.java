@@ -14,10 +14,18 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @Service
 public class SuggestionEngineService {
+    private static final Pattern PROGRAM_PATTERN = Pattern.compile("\\b(?:AHS|CMS|OIS|MMS|CRS)\\d{3}\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern VIRTUAL_FIELDS_PATTERN = Pattern.compile("\\bvirtual fields?\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern AD_HOC_REPORT_PATTERN = Pattern.compile("\\bad hoc report(?: designer)?\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern INFORMATION_BROWSER_PATTERN = Pattern.compile("\\binformation browser\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern USERS_ROLES_PATTERN = Pattern.compile("\\busers?\\s*(?:and|&)\\s*roles?\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern METADATA_PATTERN = Pattern.compile("\\bmetadata\\b", Pattern.CASE_INSENSITIVE);
 
     private static final Logger log = LoggerFactory.getLogger(SuggestionEngineService.class);
 
@@ -56,30 +64,162 @@ public class SuggestionEngineService {
             return new SuggestionResult(List.of(), List.of());
         }
 
-        int targetCount = Math.max(1, Math.min(maxCount, Math.max(minCount, maxCount)));
         String userMessage = context.getUserMessage().trim();
-        boolean supportedTopic = ruleEnabled && suggestionRuleService.isSupportedM3Topic(userMessage);
+        List<String> extractedTopics = extractTopics(context);
+        boolean supportedTopic = ruleEnabled && (suggestionRuleService.isSupportedM3Topic(userMessage) || !extractedTopics.isEmpty());
+        if (!supportedTopic) {
+            return new SuggestionResult(List.of(), List.of());
+        }
 
-        List<SuggestionItem> ruleItems = supportedTopic ? buildRuleItems(userMessage, targetCount) : List.of();
-        List<SuggestionItem> genericItems = buildGenericItems(targetCount);
+        int targetCount = Math.max(1, Math.min(maxCount, Math.max(minCount, maxCount)));
+        List<SuggestionItem> topicItems = buildTopicBasedItems(context, targetCount);
+        List<SuggestionItem> ruleItems = buildRuleItems(userMessage, targetCount);
         List<SuggestionItem> llmItems = llmEnabled ? getLlmSuggestions(context, targetCount) : List.of();
 
         List<SuggestionItem> merged = new ArrayList<>();
-        if (!ruleItems.isEmpty()) {
-            merged.addAll(ruleItems.stream().limit(1).collect(Collectors.toList()));
+        if (!topicItems.isEmpty()) {
+            merged.addAll(topicItems);
             merged.addAll(llmItems);
-            merged.addAll(ruleItems.stream().skip(1).collect(Collectors.toList()));
-        } else {
-            merged.addAll(genericItems);
+        } else if (!ruleItems.isEmpty()) {
+            merged.addAll(ruleItems);
             merged.addAll(llmItems);
         }
 
-        if (merged.isEmpty() && !genericItems.isEmpty()) {
-            merged = new ArrayList<>(genericItems);
+        if (merged.isEmpty()) {
+            merged.addAll(buildGenericItems(targetCount));
         }
 
         List<SuggestionItem> ranked = normalizeAndRankSuggestions(merged, targetCount);
         return mapToResult(ranked);
+    }
+
+    private List<SuggestionItem> buildTopicBasedItems(SuggestionContext context, int maxCount) {
+        List<String> topics = extractTopics(context);
+        if (topics.isEmpty()) {
+            return List.of();
+        }
+
+        List<SuggestionItem> topicItems = new ArrayList<>();
+        for (String topic : topics) {
+            for (String suggestion : buildSuggestionsForTopic(topic)) {
+                if (topicItems.size() >= maxCount) {
+                    break;
+                }
+                topicItems.add(new SuggestionItem(suggestion, SuggestionCategory.RELATED_TOPIC, 0.95d, "TOPIC"));
+            }
+            if (topicItems.size() >= maxCount) {
+                break;
+            }
+        }
+        return topicItems;
+    }
+
+    private List<String> extractTopics(SuggestionContext context) {
+        if (context == null) {
+            return List.of();
+        }
+        StringBuilder combined = new StringBuilder();
+        if (context.getUserMessage() != null) {
+            combined.append(context.getUserMessage()).append(" ");
+        }
+        if (context.getAnswer() != null) {
+            combined.append(context.getAnswer()).append(" ");
+        }
+        String text = combined.toString().trim();
+        if (text.isBlank()) {
+            return List.of();
+        }
+
+        List<String> topics = new ArrayList<>();
+        addUniqueTopic(topics, parsePattern(text, AD_HOC_REPORT_PATTERN, "Ad Hoc Report"));
+        addUniqueTopic(topics, parsePattern(text, INFORMATION_BROWSER_PATTERN, "Information Browser"));
+        addUniqueTopic(topics, parsePattern(text, VIRTUAL_FIELDS_PATTERN, "Virtual Fields"));
+        addUniqueTopic(topics, parsePattern(text, USERS_ROLES_PATTERN, "Users and Roles"));
+        addUniqueTopic(topics, parsePattern(text, METADATA_PATTERN, "Metadata"));
+
+        Matcher programMatcher = PROGRAM_PATTERN.matcher(text);
+        while (programMatcher.find()) {
+            addUniqueTopic(topics, programMatcher.group().toUpperCase(Locale.ROOT));
+        }
+        return topics;
+    }
+
+    private String parsePattern(String text, Pattern pattern, String canonicalTopic) {
+        if (text == null || pattern == null) {
+            return null;
+        }
+        Matcher matcher = pattern.matcher(text);
+        if (matcher.find()) {
+            return canonicalTopic;
+        }
+        return null;
+    }
+
+    private void addUniqueTopic(List<String> topics, String topic) {
+        if (topic == null || topic.isBlank()) {
+            return;
+        }
+        String normalized = topic.trim();
+        for (String existing : topics) {
+            if (existing.equalsIgnoreCase(normalized)) {
+                return;
+            }
+        }
+        topics.add(normalized);
+    }
+
+    private List<String> buildSuggestionsForTopic(String topic) {
+        if (topic == null || topic.isBlank()) {
+            return List.of();
+        }
+        String lower = topic.toLowerCase(Locale.ROOT);
+        if (lower.equals("ad hoc report")) {
+            return List.of(
+                    "How do I create an Ad Hoc report?",
+                    "How do I preview results before generating an Ad Hoc report?",
+                    "How are Ad Hoc reports linked to users and roles?"
+            );
+        }
+        if (lower.contains("ad hoc report designer")) {
+            return List.of(
+                    "How do I use the Ad Hoc Report Designer to build a report?",
+                    "What are the advantages of using AHS112 for Ad Hoc reports?"
+            );
+        }
+        if (lower.equals("information browser")) {
+            return List.of(
+                    "How do I use CMS100 to configure Ad Hoc reports?",
+                    "What is the role of Information Browser in Ad Hoc reporting?"
+            );
+        }
+        if (lower.equals("virtual fields")) {
+            return List.of(
+                    "How do virtual fields work in Ad Hoc reports?",
+                    "When should I use virtual fields in an Ad Hoc report?"
+            );
+        }
+        if (lower.equals("users and roles")) {
+            return List.of(
+                    "How are Ad Hoc reports linked to users and roles?",
+                    "Can I override Ad Hoc report settings for individual users?"
+            );
+        }
+        if (lower.equals("metadata")) {
+            return List.of(
+                    "What metadata is automatically created when an Ad Hoc report is saved?",
+                    "How can metadata values be used in Ad Hoc report configuration?"
+            );
+        }
+        if (PROGRAM_PATTERN.matcher(topic).matches()) {
+            return List.of(
+                    "What is " + topic + " used for?",
+                    "How does " + topic + " fit into Ad Hoc reporting?"
+            );
+        }
+        return List.of(
+                "How does " + topic + " relate to the current Ad Hoc report topic?",
+                "What should I know about " + topic + " when working with Ad Hoc reports?"
+        );
     }
 
     private List<SuggestionItem> buildRuleItems(String latestUserMessage, int maxCount) {
@@ -499,6 +639,7 @@ public class SuggestionEngineService {
             return 99;
         }
         return switch (source.toUpperCase(Locale.ROOT)) {
+            case "TOPIC" -> 5;
             case "RULE" -> 10;
             case "LLM" -> 20;
             case "GENERIC" -> 30;
