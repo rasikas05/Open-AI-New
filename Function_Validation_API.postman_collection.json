@@ -1,0 +1,298 @@
+{
+  "info": {
+    "_postman_id": "function-validation-api-collection",
+    "name": "Function Validation API",
+    "description": "Function Validation API - Validate multiple Function IDs against FUNCTION_MASTER table",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Test 1 - Mixed Valid and Invalid",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"functionIds\": [\n    \"MMS001\",\n    \"MMS200\",\n    \"OIS100\",\n    \"INVALID001\"\n  ]\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8080/api/functions/validate",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "api",
+            "functions",
+            "validate"
+          ]
+        },
+        "description": "Validate a mix of valid and invalid function IDs"
+      },
+      "response": []
+    },
+    {
+      "name": "Test 2 - All Valid",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"functionIds\": [\n    \"MMS001\",\n    \"MMS200\"\n  ]\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8080/api/functions/validate",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "api",
+            "functions",
+            "validate"
+          ]
+        },
+        "description": "Validate all valid function IDs"
+      },
+      "response": []
+    },
+    {
+      "name": "Test 3 - All Invalid",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"functionIds\": [\n    \"INVALID001\",\n    \"INVALID002\",\n    \"INVALID003\"\n  ]\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8080/api/functions/validate",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "api",
+            "functions",
+            "validate"
+          ]
+        },
+        "description": "Validate all invalid function IDs"
+      },
+      "response": []
+    },
+    {
+      "name": "Test 4 - Empty List",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"functionIds\": []\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8080/api/functions/validate",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "api",
+            "functions",
+            "validate"
+          ]
+        },
+        "description": "Validate with empty list"
+      },
+      "response": []
+    },
+    {
+      "name": "Test 5 - With Duplicates",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"functionIds\": [\n    \"MMS001\",\n    \"MMS001\",\n    \"MMS200\",\n    \"MMS200\"\n  ]\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8080/api/functions/validate",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "api",
+            "functions",
+            "validate"
+          ]
+        },
+        "description": "Validate with duplicate function IDs"
+      },
+      "response": []
+    },
+    {
+      "name": "Test 6 - Single Valid",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"functionIds\": [\n    \"MMS001\"\n  ]\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8080/api/functions/validate",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "api",
+            "functions",
+            "validate"
+          ]
+        },
+        "description": "Validate single valid function ID"
+      },
+      "response": []
+    },
+    {
+      "name": "Test 7 - Single Invalid",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"functionIds\": [\n    \"INVALID001\"\n  ]\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8080/api/functions/validate",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "api",
+            "functions",
+            "validate"
+          ]
+        },
+        "description": "Validate single invalid function ID"
+      },
+      "response": []
+    },
+    {
+      "name": "Test 8 - With Null Values",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"functionIds\": [\n    \"MMS001\",\n    null,\n    \"MMS200\"\n  ]\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8080/api/functions/validate",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "api",
+            "functions",
+            "validate"
+          ]
+        },
+        "description": "Validate with null values in list"
+      },
+      "response": []
+    },
+    {
+      "name": "Test 9 - With Blank Values",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"functionIds\": [\n    \"MMS001\",\n    \"\",\n    \"MMS200\"\n  ]\n}"
+        },
+        "url": {
+          "raw": "http://localhost:8080/api/functions/validate",
+          "protocol": "http",
+          "host": [
+            "localhost"
+          ],
+          "port": "8080",
+          "path": [
+            "api",
+            "functions",
+            "validate"
+          ]
+        },
+        "description": "Validate with blank values in list"
+      },
+      "response": []
+    }
+  ]
+}
