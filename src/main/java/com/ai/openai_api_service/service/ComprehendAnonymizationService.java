@@ -82,7 +82,14 @@ public class ComprehendAnonymizationService {
             return createResponseMap(text, sanitizedText, comprehendResults);
         } catch (Exception e) {
             log.error("Error in Comprehend-based anonymization: {}", e.getMessage(), e);
-            throw new IllegalStateException("Comprehend anonymization failed: " + e.getMessage(), e);
+            try {
+                log.warn("Comprehend unavailable; falling back to Presidio-only anonymization");
+                String sanitizedText = presidioService.sanitizeTextSafe(text);
+                return createResponseMap(text, sanitizedText, List.of());
+            } catch (Exception presidioError) {
+                log.warn("Presidio fallback failed, using original text: {}", presidioError.getMessage());
+                return createResponseMap(text, text, List.of());
+            }
         }
     }
 

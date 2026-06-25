@@ -32,6 +32,16 @@ public class RequestLog {
     private String openaiResponse;
     @Column(name = "tokens_used")
     private int tokensUsed;
+    @Column(name = "prompt_tokens")
+    private Integer promptTokens;
+    @Column(name = "completion_tokens")
+    private Integer completionTokens;
+    @Column(name = "openai_model", length = 64)
+    private String openaiModel;
+    @Column(name = "retrieval_reason", length = 64)
+    private String retrievalReason;
+    @Column(name = "retrieval_time_ms")
+    private Integer retrievalTimeMs;
     @Column(name = "created_at")
     private LocalDateTime createdAt = LocalDateTime.now();
     // getters/setters
@@ -105,6 +115,46 @@ public class RequestLog {
 
     public void setTokensUsed(int tokensUsed) {
         this.tokensUsed = tokensUsed;
+    }
+
+    public Integer getPromptTokens() {
+        return promptTokens;
+    }
+
+    public void setPromptTokens(Integer promptTokens) {
+        this.promptTokens = promptTokens;
+    }
+
+    public Integer getCompletionTokens() {
+        return completionTokens;
+    }
+
+    public void setCompletionTokens(Integer completionTokens) {
+        this.completionTokens = completionTokens;
+    }
+
+    public String getOpenaiModel() {
+        return openaiModel;
+    }
+
+    public void setOpenaiModel(String openaiModel) {
+        this.openaiModel = openaiModel;
+    }
+
+    public String getRetrievalReason() {
+        return retrievalReason;
+    }
+
+    public void setRetrievalReason(String retrievalReason) {
+        this.retrievalReason = retrievalReason;
+    }
+
+    public Integer getRetrievalTimeMs() {
+        return retrievalTimeMs;
+    }
+
+    public void setRetrievalTimeMs(Integer retrievalTimeMs) {
+        this.retrievalTimeMs = retrievalTimeMs;
     }
 
     public LocalDateTime getCreatedAt() {

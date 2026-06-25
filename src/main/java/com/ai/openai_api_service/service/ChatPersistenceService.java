@@ -5,6 +5,7 @@ import com.ai.openai_api_service.entity.Session;
 import com.ai.openai_api_service.entity.Tenant;
 import com.ai.openai_api_service.entity.User;
 import com.ai.openai_api_service.model.MessageDto;
+import com.ai.openai_api_service.model.OpenAIUsage;
 import com.ai.openai_api_service.model.SessionTitleUpdateResponse;
 import com.ai.openai_api_service.repository.RequestLogRepository;
 import com.ai.openai_api_service.repository.SessionRepository;
@@ -61,8 +62,39 @@ public class ChatPersistenceService {
             String actionTaken,
             Boolean sanitizedFlag
     ) {
+        OpenAIUsage usage = new OpenAIUsage();
+        usage.setTotalTokens(requestTokensUsed != null ? requestTokensUsed : 0);
+        persistChat(
+                tenantId,
+                userId,
+                sessionId,
+                originalText,
+                sanitizedText,
+                openAiResponse,
+                usage,
+                actionTaken,
+                sanitizedFlag,
+                null,
+                null
+        );
+    }
 
+    @Transactional
+    public void persistChat(
+            String tenantId,
+            String userId,
+            String sessionId,
+            String originalText,
+            String sanitizedText,
+            String openAiResponse,
+            OpenAIUsage openAiUsage,
+            String actionTaken,
+            Boolean sanitizedFlag,
+            String retrievalReason,
+            Integer retrievalTimeMs
+    ) {
         try {
+            int consumed = resolveConsumedTokens(openAiUsage, null);
 
             log.info(
                     "Starting persistChat for tenantId={}, userId={}, sessionId={}",
@@ -143,10 +175,6 @@ public class ChatPersistenceService {
                 );
             }
 
-            int consumed = requestTokensUsed != null
-                    ? requestTokensUsed
-                    : 0;
-
             Integer existingTokens = session.getTokensUsed();
 
             if (existingTokens == null) {
@@ -174,6 +202,13 @@ public class ChatPersistenceService {
             message.setSanitizedFlag(sanitizedFlag);
             message.setOpenaiResponse(openAiResponse);
             message.setTokensUsed(consumed);
+            if (openAiUsage != null) {
+                message.setPromptTokens(openAiUsage.getPromptTokens());
+                message.setCompletionTokens(openAiUsage.getCompletionTokens());
+                message.setOpenaiModel(openAiUsage.getModel());
+            }
+            message.setRetrievalReason(retrievalReason);
+            message.setRetrievalTimeMs(retrievalTimeMs);
 
             RequestLog savedMessage = requestLogRepository.save(message);
 
@@ -193,6 +228,13 @@ public class ChatPersistenceService {
                     e
             );
         }
+    }
+
+    private int resolveConsumedTokens(OpenAIUsage openAiUsage, Integer legacyTokens) {
+        if (openAiUsage != null && openAiUsage.getTotalTokens() != null) {
+            return openAiUsage.getTotalTokens();
+        }
+        return legacyTokens != null ? legacyTokens : 0;
     }
 
     private String generateSessionTitle(String text) {
