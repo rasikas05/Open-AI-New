@@ -30,4 +30,7 @@ public class PythonRetrievalRequest {
 
     @JsonProperty("skip_rewrite")
     private Boolean skipRewrite = false;
+
+    @JsonProperty("queries")
+    private List<String> queries;
 }

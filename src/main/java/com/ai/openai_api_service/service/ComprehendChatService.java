@@ -5,6 +5,7 @@ import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.OpenAIUsage;
+import com.ai.openai_api_service.model.QueryRewriteResult;
 import com.ai.openai_api_service.model.SuggestionContext;
 import com.ai.openai_api_service.model.SuggestionResult;
 import com.ai.openai_api_service.model.python_rag.ChunkItem;
@@ -56,8 +57,8 @@ public class ComprehendChatService {
     @Value("${openai.response.include-sanitization-debug:false}")
     private boolean includeSanitizationDebug;
 
-    @Value("${python-rag.api.skip-rewrite-default:true}")
-    private boolean skipRewriteDefault;
+    @Value("${rag.query-rewrite.enabled:false}")
+    private boolean queryRewriteEnabled;
 
     @Value("${rag.fallback-on-no-answer:true}")
     private boolean ragFallbackOnNoAnswer;
@@ -112,7 +113,7 @@ public class ComprehendChatService {
         if (ROUTE_LIVE.equalsIgnoreCase(route)) {
             chatResponse = handleLiveRoute(workingRequest, sanitizedUserText);
         } else {
-            DocRouteResult docResult = handleDocumentationRoute(workingRequest, sanitizedUserText);
+            DocRouteResult docResult = handleDocumentationRoute(workingRequest, originalUserText, sanitizedUserText);
             chatResponse = docResult.chatResponse();
             sourcesForSuggestions = docResult.sources();
             retrievalReason = docResult.retrievalReason();
@@ -190,15 +191,28 @@ public class ComprehendChatService {
         return chatResponse;
     }
 
-    private DocRouteResult handleDocumentationRoute(ChatRequest request, String sanitizedUserText) {
+    private DocRouteResult handleDocumentationRoute(
+            ChatRequest request,
+            String originalUserText,
+            String sanitizedUserText
+    ) {
         PythonQueryRequest ragRequest = new PythonQueryRequest();
         ragRequest.setMessage(sanitizedUserText);
         ragRequest.setHistory(request.getHistory());
-        ragRequest.setSkipRewrite(skipRewriteDefault);
+
+        List<String> searchQueries;
+        OpenAIUsage rewriteUsage = null;
+        if (queryRewriteEnabled) {
+            QueryRewriteResult rewriteResult = openAIService.rewriteQueries(sanitizedUserText);
+            searchQueries = rewriteResult.queries();
+            rewriteUsage = rewriteResult.usage();
+        } else {
+            searchQueries = List.of(sanitizedUserText);
+        }
 
         PythonRetrievalResponse retrieval;
         try {
-            retrieval = pythonRagService.retrieve(ragRequest);
+            retrieval = pythonRagService.retrieve(sanitizedUserText, searchQueries, ragRequest);
         } catch (OpenAIException e) {
             log.warn(
                     "Python retrieval call failed (status={}), falling back to OpenAI: {}",
@@ -206,17 +220,23 @@ public class ComprehendChatService {
                     e.getMessage()
             );
             ChatResponse chatResponse = openAIService.chatWithoutPersistence(request);
+            if (rewriteUsage != null) {
+                chatResponse.setOpenAiUsage(mergeUsage(rewriteUsage, chatResponse.getOpenAiUsage()));
+            }
             return new DocRouteResult(chatResponse, List.of(), "retrieval_error", null, null);
         }
 
         String reason = retrieval.getRetrievalReason();
         log.info(
-                "Retrieval completed. reason={}, retrievalTimeMs={}, maxScore={}, promptChunkCount={}, error={}",
+                "Doc retrieval: original=\"{}\" sanitized=\"{}\" rewrittenQueries={} reason={} maxScore={} promptChunkCount={} chunkCount={} queryRewriteEnabled={}",
+                originalUserText,
+                sanitizedUserText,
+                searchQueries,
                 reason,
-                retrieval.getRetrievalTimeMs(),
                 retrieval.getMaxScore(),
                 retrieval.getPromptChunkCount(),
-                retrieval.getError()
+                retrieval.getTotal(),
+                queryRewriteEnabled
         );
 
         ChatResponse chatResponse;
@@ -225,6 +245,9 @@ public class ComprehendChatService {
                     ? retrieval.getPromptChunks()
                     : List.of();
             chatResponse = openAIService.chatWithRagContext(request, promptChunks);
+            if (rewriteUsage != null) {
+                chatResponse.setOpenAiUsage(mergeUsage(rewriteUsage, chatResponse.getOpenAiUsage()));
+            }
             if (ragFallbackOnNoAnswer && isRagInsufficientAnswer(chatResponse.getReply())) {
                 log.info("RAG grounded answer insufficient, falling back to OpenAI general knowledge");
                 OpenAIUsage ragUsage = chatResponse.getOpenAiUsage();
@@ -237,6 +260,9 @@ public class ComprehendChatService {
                 log.warn("Retrieval error from Python, falling back to OpenAI: {}", retrieval.getError());
             }
             chatResponse = openAIService.chatWithoutPersistence(request);
+            if (rewriteUsage != null) {
+                chatResponse.setOpenAiUsage(mergeUsage(rewriteUsage, chatResponse.getOpenAiUsage()));
+            }
         }
 
         return new DocRouteResult(

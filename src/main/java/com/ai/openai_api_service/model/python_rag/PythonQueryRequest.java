@@ -31,5 +31,5 @@ public class PythonQueryRequest {
     private String docVersion;
 
     @JsonProperty("skip_rewrite")
-    private Boolean skipRewrite = false;
+    private Boolean skipRewrite = true;
 }

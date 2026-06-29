@@ -7,6 +7,7 @@ import com.ai.openai_api_service.model.OpenAIUsage;
 import com.ai.openai_api_service.model.SuggestionResult;
 import com.ai.openai_api_service.model.TokenUsageDto;
 import com.ai.openai_api_service.model.python_rag.ChunkItem;
+import com.ai.openai_api_service.model.QueryRewriteResult;
 import com.ai.openai_api_service.model.python_rag.PythonRetrievalResponse;
 import com.ai.openai_api_service.model.python_rag.PythonRouteResponse;
 import com.ai.openai_api_service.service.TenantQuotaService.QuotaCheckResult;
@@ -30,6 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
@@ -58,7 +60,7 @@ class ComprehendChatServiceTest {
     @BeforeEach
     void setUp() {
         ReflectionTestUtils.setField(comprehendChatService, "ragFallbackOnNoAnswer", true);
-        ReflectionTestUtils.setField(comprehendChatService, "skipRewriteDefault", true);
+        ReflectionTestUtils.setField(comprehendChatService, "queryRewriteEnabled", false);
     }
 
     @Test
@@ -73,7 +75,7 @@ class ComprehendChatServiceTest {
         retrieval.setMaxScore(0.62f);
         ChunkItem chunk = new ChunkItem("chunk text", 0.62f, "Title", "http://example.com", List.of("CRS610"), null, null, null);
         retrieval.setPromptChunks(List.of(chunk));
-        when(pythonRagService.retrieve(any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
 
         OpenAIUsage usage = new OpenAIUsage(10, 20, 30, "gpt-4.1");
         ChatResponse openAiResponse = new ChatResponse("grounded answer", false);
@@ -104,7 +106,7 @@ class ComprehendChatServiceTest {
         PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
         retrieval.setRetrievalReason("below_prompt_threshold");
         retrieval.setPromptChunks(List.of());
-        when(pythonRagService.retrieve(any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
 
         OpenAIUsage usage = new OpenAIUsage(5, 5, 10, "gpt-4.1");
         ChatResponse openAiResponse = new ChatResponse("fallback answer", false);
@@ -157,7 +159,7 @@ class ComprehendChatServiceTest {
         retrieval.setMaxScore(0.64f);
         ChunkItem chunk = new ChunkItem("chunk text", 0.64f, "Title", "http://example.com", List.of("OIS100"), null, null, null);
         retrieval.setPromptChunks(List.of(chunk));
-        when(pythonRagService.retrieve(any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
 
         OpenAIUsage ragUsage = new OpenAIUsage(3000, 20, 3020, "gpt-4.1");
         ChatResponse ragResponse = new ChatResponse(
@@ -190,7 +192,7 @@ class ComprehendChatServiceTest {
         stubQuotaAllowed();
         stubSanitize();
         when(pythonRagService.route("how to create customer")).thenReturn(new PythonRouteResponse("rag"));
-        when(pythonRagService.retrieve(any())).thenThrow(
+        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenThrow(
                 new OpenAIException("Python RAG API timeout after 180000ms", 504)
         );
 
@@ -218,7 +220,7 @@ class ComprehendChatServiceTest {
         PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
         retrieval.setRetrievalReason("no_matches");
         retrieval.setPromptChunks(List.of());
-        when(pythonRagService.retrieve(any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
 
         OpenAIUsage usage = new OpenAIUsage(8, 12, 20, "gpt-4.1");
         ChatResponse openAiResponse = new ChatResponse("general m3 answer", false);
@@ -247,7 +249,7 @@ class ComprehendChatServiceTest {
         retrieval.setRetrievalReason("retrieval_error");
         retrieval.setError("Qdrant down");
         retrieval.setPromptChunks(List.of());
-        when(pythonRagService.retrieve(any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
 
         OpenAIUsage usage = new OpenAIUsage(6, 4, 10, "gpt-4.1");
         ChatResponse openAiResponse = new ChatResponse("fallback after qdrant error", false);
@@ -270,7 +272,7 @@ class ComprehendChatServiceTest {
         stubQuotaAllowed();
         stubSanitize();
         when(pythonRagService.route("how to create customer")).thenReturn(new PythonRouteResponse("rag"));
-        when(pythonRagService.retrieve(any())).thenThrow(
+        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenThrow(
                 new OpenAIException("Python RAG API connection refused: WinError 10061", 503)
         );
 
@@ -321,7 +323,7 @@ class ComprehendChatServiceTest {
         PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
         retrieval.setRetrievalReason("below_prompt_threshold");
         retrieval.setPromptChunks(List.of());
-        when(pythonRagService.retrieve(any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
 
         ChatResponse openAiResponse = new ChatResponse("answer", false);
         openAiResponse.setActionTaken("gpt_infor");
@@ -333,7 +335,7 @@ class ComprehendChatServiceTest {
 
         assertTrue(response.getSanitizationApplied());
         verify(pythonRagService).route(eq(sanitized));
-        verify(pythonRagService).retrieve(any());
+        verify(pythonRagService).retrieve(eq(sanitized), eq(List.of(sanitized)), any());
     }
 
     @Test
@@ -347,7 +349,7 @@ class ComprehendChatServiceTest {
         PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
         retrieval.setRetrievalReason("below_prompt_threshold");
         retrieval.setPromptChunks(List.of());
-        when(pythonRagService.retrieve(any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
 
         ChatResponse openAiResponse = new ChatResponse("still works", false);
         openAiResponse.setActionTaken("gpt_infor");
@@ -374,7 +376,7 @@ class ComprehendChatServiceTest {
         retrieval.setMaxScore(0.71f);
         ChunkItem chunk = new ChunkItem("chunk", 0.71f, "CRS780", "http://docs/crs780", List.of("CRS780"), null, null, null);
         retrieval.setPromptChunks(List.of(chunk));
-        when(pythonRagService.retrieve(any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
 
         OpenAIUsage usage = new OpenAIUsage(100, 50, 150, "gpt-4.1");
         ChatResponse openAiResponse = new ChatResponse("configure in CRS780", false);
@@ -420,6 +422,59 @@ class ComprehendChatServiceTest {
         assertEquals(22, parsed.getCompletionTokens());
         assertEquals(33, parsed.getTotalTokens());
         assertEquals("gpt-4.1", parsed.getModel());
+    }
+
+    @Test
+    void documentationRoute_queryRewriteDisabled_usesSanitizedQueryOnly() {
+        ReflectionTestUtils.setField(comprehendChatService, "queryRewriteEnabled", false);
+        stubQuotaAllowed();
+        stubSanitize();
+        when(pythonRagService.route("pricing issue")).thenReturn(new PythonRouteResponse("rag"));
+
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("below_prompt_threshold");
+        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
+
+        ChatResponse fallback = new ChatResponse("fallback", false);
+        fallback.setActionTaken("gpt_infor");
+        when(openAIService.chatWithoutPersistence(any())).thenReturn(fallback);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        comprehendChatService.chat(baseRequest("pricing issue"));
+
+        verify(openAIService, never()).rewriteQueries(anyString());
+        verify(pythonRagService).retrieve(eq("pricing issue"), eq(List.of("pricing issue")), any());
+    }
+
+    @Test
+    void documentationRoute_queryRewriteEnabled_callsSpringRewriteAndRetrieve() {
+        ReflectionTestUtils.setField(comprehendChatService, "queryRewriteEnabled", true);
+        stubQuotaAllowed();
+        stubSanitize();
+        when(pythonRagService.route("pricing issue")).thenReturn(new PythonRouteResponse("rag"));
+
+        List<String> rewritten = List.of("customer pricing configuration", "price list setup");
+        OpenAIUsage rewriteUsage = new OpenAIUsage(8, 4, 12, "gpt-4.1");
+        when(openAIService.rewriteQueries("pricing issue")).thenReturn(new QueryRewriteResult(rewritten, rewriteUsage));
+
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("below_prompt_threshold");
+        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
+
+        OpenAIUsage answerUsage = new OpenAIUsage(5, 5, 10, "gpt-4.1");
+        ChatResponse fallback = new ChatResponse("fallback", false);
+        fallback.setActionTaken("gpt_infor");
+        fallback.setOpenAiUsage(answerUsage);
+        when(openAIService.chatWithoutPersistence(any())).thenReturn(fallback);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("pricing issue"));
+
+        verify(openAIService).rewriteQueries("pricing issue");
+        verify(pythonRagService).retrieve(eq("pricing issue"), eq(rewritten), any());
+        assertEquals(13, response.getOpenAiUsage().getPromptTokens());
+        assertEquals(9, response.getOpenAiUsage().getCompletionTokens());
+        assertEquals(22, response.getOpenAiUsage().getTotalTokens());
     }
 
     private void stubQuotaAllowed() {

@@ -151,7 +151,7 @@ public class PythonRagService {
     }
 
     /**
-     * Retrieve documentation chunks with threshold metadata (no answer LLM).
+     * Retrieve documentation chunks (legacy callers without pre-computed queries).
      */
     public PythonRetrievalResponse retrieve(PythonQueryRequest queryRequest) {
         ensureEnabled();
@@ -173,6 +173,41 @@ public class PythonRagService {
                 "Calling Python RAG retrieval API. url={}, query='{}', topK={}, finalLimit={}",
                 url,
                 retrievalRequest.getQuery(),
+                retrievalRequest.getTopK(),
+                retrievalRequest.getFinalLimit()
+        );
+        return postForEntity(url, retrievalRequest, PythonRetrievalResponse.class, "retrieval");
+    }
+
+    /**
+     * Retrieve using pre-computed search queries from Spring (comprehend doc path).
+     * Always skips Python-side rewrite; queries are embedded and searched directly.
+     */
+    public PythonRetrievalResponse retrieve(String query, java.util.List<String> searchQueries, PythonQueryRequest queryRequest) {
+        ensureEnabled();
+        if (query == null || query.isBlank()) {
+            throw new OpenAIException("Message cannot be empty", 400);
+        }
+        if (searchQueries == null || searchQueries.isEmpty()) {
+            throw new OpenAIException("Search queries cannot be empty", 400);
+        }
+
+        PythonRetrievalRequest retrievalRequest = new PythonRetrievalRequest();
+        retrievalRequest.setQuery(query);
+        retrievalRequest.setQueries(searchQueries);
+        retrievalRequest.setTopK(queryRequest.getTopK() != null ? queryRequest.getTopK() : defaultTopK);
+        retrievalRequest.setFinalLimit(queryRequest.getFinalLimit() != null ? queryRequest.getFinalLimit() : defaultFinalLimit);
+        retrievalRequest.setDeliverable(queryRequest.getDeliverable());
+        retrievalRequest.setProgramIds(queryRequest.getProgramIds());
+        retrievalRequest.setDocVersion(queryRequest.getDocVersion());
+        retrievalRequest.setSkipRewrite(true);
+
+        String url = buildUrl(pythonRetrievalEndpoint);
+        log.info(
+                "Calling Python RAG retrieval API. url={}, query='{}', queryCount={}, topK={}, finalLimit={}, skipRewrite=true",
+                url,
+                retrievalRequest.getQuery(),
+                searchQueries.size(),
                 retrievalRequest.getTopK(),
                 retrievalRequest.getFinalLimit()
         );

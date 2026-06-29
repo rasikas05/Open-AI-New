@@ -7,7 +7,10 @@ import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.MessageDto;
 import com.ai.openai_api_service.model.OpenAIUsage;
+import com.ai.openai_api_service.model.QueryRewriteResult;
 import com.ai.openai_api_service.model.python_rag.ChunkItem;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -30,21 +33,61 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Arrays;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Service
 public class OpenAIService {
     private static final Logger log = LoggerFactory.getLogger(OpenAIService.class);
 
     private static final String RAG_SYSTEM_PROMPT = """
-            You are an Infor M3 expert assistant. Your role is to provide accurate, helpful answers about M3 ERP system based ONLY on the provided documentation context.
+            You are an Infor M3 consultant assistant specializing in Finance, Manufacturing, and localization (country-specific setup).
+
+            Your role is to answer questions using ONLY the documentation context provided below. Do not use general M3 knowledge outside that context.
 
             STRICT RULES:
-            1. Use ONLY the provided context to answer questions. Do not use prior knowledge about M3.
-            2. If the answer is not present in the context, respond with: "This information is not available in the current documentation. Please refer to the official Infor M3 documentation or contact your M3 administrator."
-            3. When referencing M3 programs, always include the program ID (e.g., CRS610, OIS100).
-            4. Provide step-by-step instructions when the context includes procedural information.
-            5. Cite the source document when possible.
-            6. Be concise but thorough. Do not add information beyond what the context provides.""";
+            1. Use ONLY the provided context. Never mix documentation with general knowledge in the same answer.
+            2. When referencing M3 programs, always include the program ID (e.g., CRS610, OIS100).
+            3. Provide step-by-step instructions when the context includes procedural information.
+            4. Cite the source document when possible.
+
+            OUTPUT RULES:
+            - If the documentation fully answers the question: provide a clear, structured answer.
+            - If the documentation partially answers: state what is documented and explicitly state what is not covered in the supplied documentation.
+            - If the documentation does not contain the answer: respond with exactly: "This information is not available in the current documentation. Please refer to the official Infor M3 documentation or contact your M3 administrator."
+
+            Be concise but thorough. Do not add information beyond what the context provides.""";
+
+    private static final int MAX_REWRITTEN_QUERIES = 3;
+    private static final Pattern MARKDOWN_JSON_FENCE = Pattern.compile("```(?:json)?\\s*([\\s\\S]*?)```");
+
+    private static final String REWRITE_SYSTEM_PROMPT = """
+            You are an Infor M3 documentation search specialist covering Finance, Manufacturing, and localization. \
+            Your only job is to produce optimized vector-search queries. Never answer the user. \
+            Output ONLY a valid JSON array of strings.""";
+
+    private static final String REWRITE_USER_PROMPT_TEMPLATE = """
+            Transform the user input into 2-3 optimized search queries for Infor M3 documentation retrieval.
+
+            Consultant focus:
+            - Finance (GL, AR, AP, pricing, invoicing)
+            - Manufacturing (production, BOM, routing, shop floor)
+            - Localization (country-specific setup, tax, regulatory fields)
+
+            Rules:
+            - Do NOT answer the question. Output search queries only.
+            - Remove conversational filler; keep queries short and keyword-rich.
+            - Preserve program IDs, panel names, table names, and transaction codes verbatim (e.g. OIS100, CRS610, MMS001, panel G).
+            - Each query must target a different retrieval angle (configuration, process flow, troubleshooting) — not paraphrases of the same phrase.
+            - Expand vague terms into M3 concepts only when the user gives no specific identifiers.
+
+            User Input:
+            %s
+
+            Output:
+            Return ONLY a JSON array of 2-3 strings.""";
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     private RestTemplate restTemplate;
     private final PresidioService presidioService;
@@ -164,6 +207,62 @@ public class OpenAIService {
         return toChatResponse(request, result, "rag", request.getUserMessage(), modelReadyUserText);
     }
 
+    /**
+     * CLEAR Prompt 1 — rewrite sanitized user text into 2-3 search queries for Python retrieval.
+     * Falls back to a single-query list on parse or API failure.
+     */
+    public QueryRewriteResult rewriteQueries(String sanitizedQuery) {
+        validateApiKey();
+        if (sanitizedQuery == null || sanitizedQuery.isBlank()) {
+            throw new OpenAIException("Sanitized query cannot be empty for rewrite", 400);
+        }
+
+        List<Map<String, String>> messages = List.of(
+                Map.of("role", "system", "content", REWRITE_SYSTEM_PROMPT),
+                Map.of("role", "user", "content", REWRITE_USER_PROMPT_TEMPLATE.formatted(sanitizedQuery))
+        );
+
+        try {
+            OpenAiCallResult result = callOpenAi(messages, 0.3, 256);
+            List<String> queries = parseQueriesFromLlm(result.content());
+            if (queries.size() > MAX_REWRITTEN_QUERIES) {
+                queries = queries.subList(0, MAX_REWRITTEN_QUERIES);
+            }
+            log.info("Query rewrite produced {} search queries", queries.size());
+            return new QueryRewriteResult(queries, result.usage());
+        } catch (Exception e) {
+            log.warn("Query rewriting failed: {}. Falling back to original sanitized query.", e.getMessage());
+            OpenAIUsage fallbackUsage = new OpenAIUsage(0, 0, 0, model);
+            return new QueryRewriteResult(List.of(sanitizedQuery), fallbackUsage);
+        }
+    }
+
+    List<String> parseQueriesFromLlm(String content) {
+        if (content == null || content.isBlank()) {
+            throw new OpenAIException("Empty rewrite response from OpenAI", 502);
+        }
+        String cleaned = content.strip();
+        Matcher matcher = MARKDOWN_JSON_FENCE.matcher(cleaned);
+        if (matcher.find()) {
+            cleaned = matcher.group(1).strip();
+        }
+        try {
+            List<String> parsed = objectMapper.readValue(cleaned, new TypeReference<List<String>>() {});
+            List<String> queries = parsed.stream()
+                    .filter(q -> q != null && !q.isBlank())
+                    .map(String::strip)
+                    .toList();
+            if (queries.isEmpty()) {
+                throw new OpenAIException("No valid queries in rewrite response", 502);
+            }
+            return new ArrayList<>(queries);
+        } catch (OpenAIException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new OpenAIException("Failed to parse rewrite response as JSON array: " + e.getMessage(), 502);
+        }
+    }
+
     private ChatResponse toChatResponse(
             ChatRequest request,
             OpenAiCallResult result,
@@ -261,9 +360,19 @@ public class OpenAIService {
     }
 
     private OpenAiCallResult callOpenAi(List<Map<String, String>> messages) {
+        return callOpenAi(messages, null, null);
+    }
+
+    private OpenAiCallResult callOpenAi(List<Map<String, String>> messages, Double temperature, Integer maxTokens) {
         Map<String, Object> body = new HashMap<>();
         body.put("model", model);
         body.put("messages", messages);
+        if (temperature != null) {
+            body.put("temperature", temperature);
+        }
+        if (maxTokens != null) {
+            body.put("max_tokens", maxTokens);
+        }
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
@@ -417,7 +526,9 @@ public class OpenAIService {
     private String buildRagUserPrompt(String context, String question) {
         return "Context from M3 Documentation:\n" + context + "\n\n---\n\n"
                 + "Question: " + question + "\n\n"
-                + "Provide a clear, accurate answer based ONLY on the context above.";
+                + "Answer using ONLY the context above. Cite sources when present. "
+                + "If the context is partial, say what is documented and what is missing. "
+                + "If the context does not answer the question, use the exact not-available phrase from your instructions.";
     }
 
     private boolean isValidRole(String role) {
