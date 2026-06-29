@@ -1,5 +1,6 @@
 package com.ai.openai_api_service.service;
 
+import com.ai.openai_api_service.config.RestTemplateFactory;
 import com.ai.openai_api_service.model.PresidioAnalyzerResult;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
@@ -12,6 +13,8 @@ import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import jakarta.annotation.PostConstruct;
 
 import java.util.HashMap;
 import java.util.List;
@@ -36,7 +39,15 @@ public class PresidioService {
     @Value("${presidio.api.key.header:x-api-key}")
     private String apiKeyHeader;
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    @Value("${presidio.api.timeout-ms:15000}")
+    private int presidioTimeoutMs;
+
+    private RestTemplate restTemplate;
+
+    @PostConstruct
+    void initRestTemplate() {
+        this.restTemplate = RestTemplateFactory.create(presidioTimeoutMs);
+    }
 
     public Map<?, ?> analyzeRaw(String text) {
         Map<String, Object> analyzeReq = new HashMap<>();
@@ -72,6 +83,17 @@ public class PresidioService {
     }
 
     public String sanitizeText(String text) {
+        return sanitizeTextInternal(text, false);
+    }
+
+    /**
+     * Sanitize text but return the original on Presidio failure instead of throwing.
+     */
+    public String sanitizeTextSafe(String text) {
+        return sanitizeTextInternal(text, true);
+    }
+
+    private String sanitizeTextInternal(String text, boolean failSoft) {
         if (!enabled || text == null || text.isBlank()) {
             return text;
         }
@@ -124,8 +146,16 @@ public class PresidioService {
 
             String errorBody = e.getResponseBodyAsString();
             log.warn("Presidio error status={} body={}", e.getStatusCode(), errorBody);
+            if (failSoft) {
+                log.warn("Presidio soft-fail: returning original text");
+                return text;
+            }
             throw new IllegalStateException("Presidio call failed: " + e.getStatusCode() + " body=" + errorBody, e);
         } catch (RestClientException e) {
+            if (failSoft) {
+                log.warn("Presidio soft-fail: returning original text ({})", e.getMessage());
+                return text;
+            }
             throw new IllegalStateException("Presidio call failed: " + e.getMessage(), e);
         }
     }

@@ -14,6 +14,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -27,6 +28,22 @@ class ComprehendAnonymizationServiceTest {
 
     @InjectMocks
     private ComprehendAnonymizationService service;
+
+    @Test
+    void comprehendFailure_fallsBackToPresidioSafe() {
+        String originalText = "how to configure purchase settings";
+        when(comprehendService.detectPii(originalText))
+                .thenThrow(new RuntimeException("Comprehend IAM denied"));
+        when(presidioService.sanitizeTextSafe(originalText))
+                .thenReturn("how to configure purchase settings");
+
+        ReflectionTestUtils.setField(service, "enabled", true);
+
+        Map<String, Object> result = service.detectAndAnonymize(originalText);
+
+        assertEquals("how to configure purchase settings", result.get("sanitizedText"));
+        verify(presidioService).sanitizeTextSafe(originalText);
+    }
 
     @Test
     void shouldFallbackMaskEmailAndInvoiceNumber() {

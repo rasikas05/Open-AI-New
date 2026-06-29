@@ -1,6 +1,5 @@
 package com.ai.openai_api_service.model.python_rag;
 
-import com.ai.openai_api_service.model.MessageDto;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.AllArgsConstructor;
 import lombok.Data;
@@ -11,10 +10,9 @@ import java.util.List;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
-public class PythonQueryRequest {
+public class PythonRetrievalRequest {
 
-    private String message;
-    private List<MessageDto> history;
+    private String query;
 
     @JsonProperty("top_k")
     private Integer topK = 5;
@@ -31,5 +29,8 @@ public class PythonQueryRequest {
     private String docVersion;
 
     @JsonProperty("skip_rewrite")
-    private Boolean skipRewrite = true;
+    private Boolean skipRewrite = false;
+
+    @JsonProperty("queries")
+    private List<String> queries;
 }

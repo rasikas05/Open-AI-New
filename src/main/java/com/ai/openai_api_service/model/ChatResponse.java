@@ -25,6 +25,10 @@ public class ChatResponse {
     private TokenUsageDto usage;
     private List<String> upgradeOptions;
     private String blockReason;
+    private OpenAIUsage openAiUsage;
+    private String retrievalReason;
+    private Integer retrievalTimeMs;
+    private Float maxScore;
 
     public ChatResponse() {
     }
@@ -184,6 +188,38 @@ public class ChatResponse {
 
     public void setBlockReason(String blockReason) {
         this.blockReason = blockReason;
+    }
+
+    public OpenAIUsage getOpenAiUsage() {
+        return openAiUsage;
+    }
+
+    public void setOpenAiUsage(OpenAIUsage openAiUsage) {
+        this.openAiUsage = openAiUsage;
+    }
+
+    public String getRetrievalReason() {
+        return retrievalReason;
+    }
+
+    public void setRetrievalReason(String retrievalReason) {
+        this.retrievalReason = retrievalReason;
+    }
+
+    public Integer getRetrievalTimeMs() {
+        return retrievalTimeMs;
+    }
+
+    public void setRetrievalTimeMs(Integer retrievalTimeMs) {
+        this.retrievalTimeMs = retrievalTimeMs;
+    }
+
+    public Float getMaxScore() {
+        return maxScore;
+    }
+
+    public void setMaxScore(Float maxScore) {
+        this.maxScore = maxScore;
     }
 }
 
