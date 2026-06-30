@@ -103,9 +103,16 @@ public class ComprehendChatService {
 
         PythonRouteResponse routeResponse = pythonRagService.route(sanitizedUserText);
         String route = routeResponse != null ? routeResponse.getRoute() : "rag";
+        log.info(
+                "Comprehend route decision: route='{}', handler='{}', message='{}'",
+                route,
+                ROUTE_LIVE.equalsIgnoreCase(route) ? "live/python-chat" : "documentation/retrieval",
+                sanitizedUserText
+        );
 
         ChatResponse chatResponse;
         List<SourceItem> sourcesForSuggestions = null;
+        List<SourceItem> responseSources = null;
         String retrievalReason = null;
         Integer retrievalTimeMs = null;
         Float maxScore = null;
@@ -115,7 +122,8 @@ public class ComprehendChatService {
         } else {
             DocRouteResult docResult = handleDocumentationRoute(workingRequest, originalUserText, sanitizedUserText);
             chatResponse = docResult.chatResponse();
-            sourcesForSuggestions = docResult.sources();
+            sourcesForSuggestions = docResult.sourcesForSuggestions();
+            responseSources = docResult.responseSources();
             retrievalReason = docResult.retrievalReason();
             retrievalTimeMs = docResult.retrievalTimeMs();
             maxScore = docResult.maxScore();
@@ -157,6 +165,9 @@ public class ComprehendChatService {
         chatResponse.setRetrievalReason(retrievalReason);
         chatResponse.setRetrievalTimeMs(retrievalTimeMs);
         chatResponse.setMaxScore(maxScore);
+        if (responseSources != null) {
+            chatResponse.setSources(responseSources);
+        }
         chatResponse.setSanitizationApplied(sanitizedFlag);
         if (includeSanitizationDebug) {
             chatResponse.setSanitizedUserMessage(sanitizedUserText);
@@ -166,6 +177,16 @@ public class ComprehendChatService {
         SuggestionResult suggestionResult = suggestionEngineService.generateSuggestions(context);
         chatResponse.setSuggestions(suggestionResult.getSuggestions());
         chatResponse.setSuggestionDetails(suggestionResult.getDetails());
+
+        log.info(
+                "Spring chat complete | session={} | route={} | action={} | retrievalReason={} | collecting={} | tokens={}",
+                request.getSessionId(),
+                route,
+                chatResponse.getActionTaken(),
+                retrievalReason,
+                chatResponse.getCollectingTool(),
+                consumedTokens
+        );
 
         return chatResponse;
     }
@@ -188,6 +209,9 @@ public class ComprehendChatService {
         chatResponse.setNextField(pythonResponse.getNextField());
         chatResponse.setNextFieldOptional(pythonResponse.getNextFieldOptional());
         chatResponse.setM3Data(pythonResponse.getM3Data());
+        if (pythonResponse.getSources() != null && !pythonResponse.getSources().isEmpty()) {
+            chatResponse.setSources(pythonResponse.getSources());
+        }
         return chatResponse;
     }
 
@@ -223,7 +247,7 @@ public class ComprehendChatService {
             if (rewriteUsage != null) {
                 chatResponse.setOpenAiUsage(mergeUsage(rewriteUsage, chatResponse.getOpenAiUsage()));
             }
-            return new DocRouteResult(chatResponse, List.of(), "retrieval_error", null, null);
+            return new DocRouteResult(chatResponse, List.of(), List.of(), "retrieval_error", null, null);
         }
 
         String reason = retrieval.getRetrievalReason();
@@ -239,11 +263,13 @@ public class ComprehendChatService {
                 queryRewriteEnabled
         );
 
+        List<ChunkItem> promptChunks = retrieval.getPromptChunks() != null
+                ? retrieval.getPromptChunks()
+                : List.of();
+        List<SourceItem> responseSources = toChunkSources(promptChunks);
+
         ChatResponse chatResponse;
         if (RETRIEVAL_READY.equals(reason)) {
-            List<ChunkItem> promptChunks = retrieval.getPromptChunks() != null
-                    ? retrieval.getPromptChunks()
-                    : List.of();
             chatResponse = openAIService.chatWithRagContext(request, promptChunks);
             if (rewriteUsage != null) {
                 chatResponse.setOpenAiUsage(mergeUsage(rewriteUsage, chatResponse.getOpenAiUsage()));
@@ -267,11 +293,27 @@ public class ComprehendChatService {
 
         return new DocRouteResult(
                 chatResponse,
-                toSourceItems(retrieval.getPromptChunks()),
+                toSourceItems(promptChunks),
+                responseSources,
                 reason,
                 retrieval.getRetrievalTimeMs(),
                 retrieval.getMaxScore()
         );
+    }
+
+    private List<SourceItem> toChunkSources(List<ChunkItem> chunks) {
+        if (chunks == null || chunks.isEmpty()) {
+            return List.of();
+        }
+        List<SourceItem> sources = new ArrayList<>();
+        for (ChunkItem chunk : chunks) {
+            String url = chunk.getSource() != null ? chunk.getSource() : "";
+            if (url.isBlank()) {
+                continue;
+            }
+            sources.add(new SourceItem(url, chunk.getTitle(), chunk.getScore()));
+        }
+        return sources;
     }
 
     private List<SourceItem> toSourceItems(List<ChunkItem> chunks) {
@@ -353,7 +395,8 @@ public class ComprehendChatService {
 
     private record DocRouteResult(
             ChatResponse chatResponse,
-            List<SourceItem> sources,
+            List<SourceItem> sourcesForSuggestions,
+            List<SourceItem> responseSources,
             String retrievalReason,
             Integer retrievalTimeMs,
             Float maxScore

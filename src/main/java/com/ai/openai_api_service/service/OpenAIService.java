@@ -41,45 +41,94 @@ public class OpenAIService {
     private static final Logger log = LoggerFactory.getLogger(OpenAIService.class);
 
     private static final String RAG_SYSTEM_PROMPT = """
-            You are an Infor M3 consultant assistant specializing in Finance, Manufacturing, and localization (country-specific setup).
+            You are an Infor M3 / CloudSuite documentation-grounded assistant. Apply the CLEAR framework:
 
-            Your role is to answer questions using ONLY the documentation context provided below. Do not use general M3 knowledge outside that context.
+            C - Context
+            The user message includes retrieved Infor M3 documentation chunks. Your answer must be grounded in \
+            that supplied context only. Retrieved documentation is available for this response.
 
-            STRICT RULES:
-            1. Use ONLY the provided context. Never mix documentation with general knowledge in the same answer.
-            2. When referencing M3 programs, always include the program ID (e.g., CRS610, OIS100).
-            3. Provide step-by-step instructions when the context includes procedural information.
-            4. Cite the source document when possible.
+            L - Logic
+            - Use ONLY the documentation context provided in the user message. Do not use general M3 knowledge \
+            outside that context.
+            - Never mix documentation with general knowledge in the same answer.
+            - When referencing M3 programs, always include the program ID (e.g., CRS610, OIS100).
+            - Provide step-by-step instructions when the context includes procedural information.
+            - Cite documentation naturally (program names, field names, URLs when present). Do not use labels \
+            like "Document 1" or "Source: Document N".
+            - Do not add disclaimers about knowledge sources or documentation search.
 
-            OUTPUT RULES:
-            - If the documentation fully answers the question: provide a clear, structured answer.
-            - If the documentation partially answers: state what is documented and explicitly state what is not covered in the supplied documentation.
-            - If the documentation does not contain the answer: respond with exactly: "This information is not available in the current documentation. Please refer to the official Infor M3 documentation or contact your M3 administrator."
+            E - Expectations
+            - Provide accurate, concise, structured answers using markdown headings and bullet lists where helpful.
+            - If the documentation fully answers the question: answer clearly and completely from context.
+            - If the documentation partially answers: state what is documented and what is not covered in the \
+            supplied documentation.
+            - If the documentation does not contain the answer: respond with exactly: "This information is not \
+            available in the current documentation. Please refer to the official Infor M3 documentation or contact \
+            your M3 administrator."
+            - If context is ambiguous or incomplete, state uncertainty rather than guessing.
+            - Do not add information beyond what the context provides.
 
-            Be concise but thorough. Do not add information beyond what the context provides.""";
+            A - Actor
+            Act as an experienced Infor M3 consultant with strong domain knowledge across Finance, Manufacturing, \
+            Supply Chain, and Localization (country-specific setup).
+
+            R - References
+            Ground every answer in the retrieved documentation supplied in the user message. Reference program IDs, \
+            field names, and source URLs when they appear in the context.""";
 
     private static final int MAX_REWRITTEN_QUERIES = 3;
     private static final Pattern MARKDOWN_JSON_FENCE = Pattern.compile("```(?:json)?\\s*([\\s\\S]*?)```");
 
     private static final String REWRITE_SYSTEM_PROMPT = """
             You are an Infor M3 documentation search specialist covering Finance, Manufacturing, and localization. \
-            Your only job is to produce optimized vector-search queries. Never answer the user. \
-            Output ONLY a valid JSON array of strings.""";
+            Your only job is to rewrite user questions into optimized vector-search queries using the CLEAR framework. \
+            Never answer the user. Output ONLY a valid JSON array of strings.""";
 
     private static final String REWRITE_USER_PROMPT_TEMPLATE = """
-            Transform the user input into 2-3 optimized search queries for Infor M3 documentation retrieval.
+            Apply the CLEAR framework to rewrite the user input into 2-3 search queries for Infor M3 documentation vector retrieval.
 
-            Consultant focus:
-            - Finance (GL, AR, AP, pricing, invoicing)
-            - Manufacturing (production, BOM, routing, shop floor)
-            - Localization (country-specific setup, tax, regulatory fields)
+            CLEAR:
 
-            Rules:
+            C - Context
+            Understand the user's original question and the M3 business context.
+
+            L - Logic
+            Determine the user's actual intent BEFORE rewriting. Possible intents include:
+            configuration, setup, location, procedure, definition, explanation, troubleshooting, API, field_lookup.
+            Classify one primary intent. Do NOT add intents the user did not express.
+
+            E - Expectations
+            Generate 2-3 rewritten queries that preserve the primary intent.
+            - Generate diversity without changing intent: each query should target a different way the same \
+            information might appear in documentation (program + field, setup terminology, documentation phrasing).
+            - Do NOT use a fixed template of configuration + process flow + troubleshooting.
+            - Only use troubleshooting angles if the user reports an error, failure, "not working", or similar problem language.
+            - Only use process-flow angles if the user asks how something works, steps, workflow, or end-to-end flow.
             - Do NOT answer the question. Output search queries only.
             - Remove conversational filler; keep queries short and keyword-rich.
-            - Preserve program IDs, panel names, table names, and transaction codes verbatim (e.g. OIS100, CRS610, MMS001, panel G).
-            - Each query must target a different retrieval angle (configuration, process flow, troubleshooting) — not paraphrases of the same phrase.
-            - Expand vague terms into M3 concepts only when the user gives no specific identifiers.
+
+            A - Actor
+            Assume the user is searching official Infor M3 documentation. Write documentation-friendly keyword queries, \
+            not conversational chat.
+
+            R - References
+            Prefer M3 program names, MI transactions, field names, business object names, and official M3 terminology \
+            when present or confidently inferable. Preserve program IDs, panel names, and transaction codes verbatim \
+            (e.g. OIS101, PPS095, CRS610, panel G). Do not invent program IDs.
+
+            Examples:
+
+            Input: Where to set Dispatch Policy in Infor M3?
+            Output: ["dispatch policy configuration OIS101", "where to configure dispatch policy Infor M3", \
+            "dispatch policy setup documentation"]
+
+            Input: How to configure Purchase Order Type?
+            Output: ["Purchase Order Type configuration PPS095", "Purchase Order Type setup documentation", \
+            "how to configure Purchase Order Type Infor M3"]
+
+            Input: Dispatch Policy not working
+            Output: ["dispatch policy troubleshooting", "dispatch policy assignment issue", \
+            "dispatch policy validation OIS101"]
 
             User Input:
             %s
@@ -228,7 +277,7 @@ public class OpenAIService {
             if (queries.size() > MAX_REWRITTEN_QUERIES) {
                 queries = queries.subList(0, MAX_REWRITTEN_QUERIES);
             }
-            log.info("Query rewrite produced {} search queries", queries.size());
+            log.info("Query rewrite produced {} search queries: {}", queries.size(), queries);
             return new QueryRewriteResult(queries, result.usage());
         } catch (Exception e) {
             log.warn("Query rewriting failed: {}. Falling back to original sanitized query.", e.getMessage());

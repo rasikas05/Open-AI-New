@@ -1,5 +1,7 @@
 package com.ai.openai_api_service.model;
 
+import com.ai.openai_api_service.model.python_rag.SourceItem;
+
 import java.util.List;
 import java.util.Map;
 
@@ -29,6 +31,7 @@ public class ChatResponse {
     private String retrievalReason;
     private Integer retrievalTimeMs;
     private Float maxScore;
+    private List<SourceItem> sources;
 
     public ChatResponse() {
     }
@@ -220,6 +223,14 @@ public class ChatResponse {
 
     public void setMaxScore(Float maxScore) {
         this.maxScore = maxScore;
+    }
+
+    public List<SourceItem> getSources() {
+        return sources;
+    }
+
+    public void setSources(List<SourceItem> sources) {
+        this.sources = sources;
     }
 }
 

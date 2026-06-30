@@ -91,6 +91,11 @@ class ComprehendChatServiceTest {
         assertEquals("rag", response.getActionTaken());
         assertEquals("ready_for_grounding", response.getRetrievalReason());
         assertNotNull(response.getOpenAiUsage());
+        assertNotNull(response.getSources());
+        assertEquals(1, response.getSources().size());
+        assertEquals("http://example.com", response.getSources().get(0).getUrl());
+        assertEquals("Title", response.getSources().get(0).getTitle());
+        assertEquals(0.62f, response.getSources().get(0).getScore());
         verify(openAIService).chatWithRagContext(any(), eq(List.of(chunk)));
         verify(openAIService, never()).chatWithoutPersistence(any());
         verify(pythonRagService, never()).query(any());
@@ -119,8 +124,38 @@ class ComprehendChatServiceTest {
 
         assertEquals("fallback answer", response.getReply());
         assertEquals("gpt_infor", response.getActionTaken());
+        assertNotNull(response.getSources());
+        assertTrue(response.getSources().isEmpty());
         verify(openAIService).chatWithoutPersistence(any());
         verify(openAIService, never()).chatWithRagContext(any(), any());
+    }
+
+    @Test
+    void documentationRoute_readyForGrounding_returnsPerChunkSourcesWithoutDedup() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(pythonRagService.route("pricing issue")).thenReturn(new PythonRouteResponse("rag"));
+
+        ChunkItem chunk1 = new ChunkItem("chunk one", 0.72f, "Title A", "http://example.com/doc", List.of("CRS610"), null, null, null);
+        ChunkItem chunk2 = new ChunkItem("chunk two", 0.55f, "Title B", "http://example.com/doc", List.of("CRS610"), null, null, null);
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        retrieval.setMaxScore(0.72f);
+        retrieval.setPromptChunks(List.of(chunk1, chunk2));
+        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
+
+        ChatResponse openAiResponse = new ChatResponse("grounded answer", false);
+        openAiResponse.setActionTaken("rag");
+        when(openAIService.chatWithRagContext(any(), anyList())).thenReturn(openAiResponse);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("pricing issue"));
+
+        assertEquals(2, response.getSources().size());
+        assertEquals("http://example.com/doc", response.getSources().get(0).getUrl());
+        assertEquals(0.72f, response.getSources().get(0).getScore());
+        assertEquals("http://example.com/doc", response.getSources().get(1).getUrl());
+        assertEquals(0.55f, response.getSources().get(1).getScore());
     }
 
     @Test

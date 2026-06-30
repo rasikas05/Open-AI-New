@@ -147,7 +147,15 @@ public class PythonRagService {
         String url = buildUrl(pythonRouteEndpoint);
         PythonRouteRequest body = new PythonRouteRequest(message);
         log.info("Calling Python RAG route API. url={}, message='{}'", url, message);
-        return postForEntity(url, body, PythonRouteResponse.class, "route");
+        PythonRouteResponse response = postForEntity(url, body, PythonRouteResponse.class, "route");
+        String selectedRoute = response.getRoute() != null ? response.getRoute() : "rag";
+        log.info(
+                "Python RAG route selected: route='{}', nextStep='{}', message='{}'",
+                selectedRoute,
+                "live".equalsIgnoreCase(selectedRoute) ? "python/chat" : "python/retrieval",
+                message
+        );
+        return response;
     }
 
     /**
@@ -255,6 +263,12 @@ public class PythonRagService {
             }
 
             log.info("Python RAG {} API call successful. url={}, responseTime={}ms", operation, url, responseTime);
+            log.info(
+                    "Python RAG {} | {}ms | {}",
+                    operation,
+                    responseTime,
+                    summarizeResponse(response, operation)
+            );
             return response;
 
         } catch (HttpClientErrorException e) {
@@ -280,6 +294,45 @@ public class PythonRagService {
                     500
             );
         }
+    }
+
+    private String summarizeResponse(Object response, String operation) {
+        if (response instanceof PythonRouteResponse routeResponse) {
+            String route = routeResponse.getRoute() != null ? routeResponse.getRoute() : "rag";
+            String next = "live".equalsIgnoreCase(route) ? "chat" : "retrieval";
+            return "route=" + route + " next=" + next;
+        }
+        if (response instanceof PythonQueryResponse chatResponse) {
+            StringBuilder summary = new StringBuilder();
+            if (chatResponse.getActionTaken() != null) {
+                summary.append("action=").append(chatResponse.getActionTaken());
+            }
+            if (chatResponse.getCollectingTool() != null) {
+                if (summary.length() > 0) {
+                    summary.append(' ');
+                }
+                summary.append("collecting=").append(chatResponse.getCollectingTool());
+                if (chatResponse.getNextField() != null) {
+                    summary.append(" field=").append(chatResponse.getNextField());
+                }
+            }
+            if (chatResponse.getPendingTool() != null) {
+                if (summary.length() > 0) {
+                    summary.append(' ');
+                }
+                summary.append("pending=").append(chatResponse.getPendingTool());
+            }
+            return summary.length() > 0 ? summary.toString() : "chat ok";
+        }
+        if (response instanceof PythonRetrievalResponse retrievalResponse) {
+            return String.format(
+                    "reason=%s maxScore=%s chunks=%s",
+                    retrievalResponse.getRetrievalReason(),
+                    retrievalResponse.getMaxScore(),
+                    retrievalResponse.getPromptChunkCount()
+            );
+        }
+        return "ok";
     }
 
     private void handleHttpError(String url, String operation, long startTime, HttpClientErrorException e) {

@@ -79,6 +79,12 @@ public class ComprehendAnonymizationService {
             log.debug("Presidio anonymization result='{}'", sanitizedText);
 
             sanitizedText = applyFallbackSanitization(text, sanitizedText);
+            boolean changed = !text.equals(sanitizedText);
+            log.info(
+                    "Presidio sanitize complete | comprehendEntities={} | textChanged={}",
+                    comprehendResults.size(),
+                    changed
+            );
             return createResponseMap(text, sanitizedText, comprehendResults);
         } catch (Exception e) {
             log.error("Error in Comprehend-based anonymization: {}", e.getMessage(), e);
