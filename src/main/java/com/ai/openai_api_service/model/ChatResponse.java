@@ -32,6 +32,10 @@ public class ChatResponse {
     private Integer retrievalTimeMs;
     private Float maxScore;
     private List<SourceItem> sources;
+    private String lexIntent;
+    private String lexDialogAction;
+    private String lexSlotToElicit;
+    private M3RequestDto m3Request;
 
     public ChatResponse() {
     }
@@ -231,6 +235,38 @@ public class ChatResponse {
 
     public void setSources(List<SourceItem> sources) {
         this.sources = sources;
+    }
+
+    public String getLexIntent() {
+        return lexIntent;
+    }
+
+    public void setLexIntent(String lexIntent) {
+        this.lexIntent = lexIntent;
+    }
+
+    public String getLexDialogAction() {
+        return lexDialogAction;
+    }
+
+    public void setLexDialogAction(String lexDialogAction) {
+        this.lexDialogAction = lexDialogAction;
+    }
+
+    public String getLexSlotToElicit() {
+        return lexSlotToElicit;
+    }
+
+    public void setLexSlotToElicit(String lexSlotToElicit) {
+        this.lexSlotToElicit = lexSlotToElicit;
+    }
+
+    public M3RequestDto getM3Request() {
+        return m3Request;
+    }
+
+    public void setM3Request(M3RequestDto m3Request) {
+        this.m3Request = m3Request;
     }
 }
 

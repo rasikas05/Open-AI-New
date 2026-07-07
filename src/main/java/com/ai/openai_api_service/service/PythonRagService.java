@@ -2,6 +2,8 @@ package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.config.RestTemplateFactory;
 import com.ai.openai_api_service.exception.OpenAIException;
+import com.ai.openai_api_service.model.python_rag.M3ExecuteRequest;
+import com.ai.openai_api_service.model.python_rag.M3ExecuteResponse;
 import com.ai.openai_api_service.model.python_rag.PythonQueryRequest;
 import com.ai.openai_api_service.model.python_rag.PythonQueryResponse;
 import com.ai.openai_api_service.model.python_rag.PythonRetrievalRequest;
@@ -40,6 +42,9 @@ public class PythonRagService {
 
     @Value("${python-rag.api.route-endpoint:/route}")
     private String pythonRouteEndpoint;
+
+    @Value("${python-rag.api.m3-execute-endpoint:/m3/execute}")
+    private String pythonM3ExecuteEndpoint;
 
     @Value("${python-rag.api.timeout-ms:180000}")
     private int timeoutMs;
@@ -156,6 +161,20 @@ public class PythonRagService {
                 message
         );
         return response;
+    }
+
+    /**
+     * Execute a live M3 tool via Python (Lex fulfillment path).
+     */
+    public M3ExecuteResponse executeLiveIntent(String toolName, java.util.Map<String, Object> args) {
+        ensureEnabled();
+        if (toolName == null || toolName.isBlank()) {
+            throw new OpenAIException("Tool name cannot be empty", 400);
+        }
+        String url = buildUrl(pythonM3ExecuteEndpoint);
+        M3ExecuteRequest body = new M3ExecuteRequest(toolName, args != null ? args : java.util.Map.of());
+        log.info("Calling Python M3 execute API. url={}, tool='{}', args={}", url, toolName, args);
+        return postForEntity(url, body, M3ExecuteResponse.class, "m3-execute");
     }
 
     /**
@@ -330,6 +349,14 @@ public class PythonRagService {
                     retrievalResponse.getRetrievalReason(),
                     retrievalResponse.getMaxScore(),
                     retrievalResponse.getPromptChunkCount()
+            );
+        }
+        if (response instanceof M3ExecuteResponse executeResponse) {
+            return String.format(
+                    "tool=%s action=%s error=%s",
+                    executeResponse.getTool(),
+                    executeResponse.getActionTaken(),
+                    executeResponse.getError()
             );
         }
         return "ok";
