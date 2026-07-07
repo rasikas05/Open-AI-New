@@ -2,6 +2,8 @@ package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.config.RestTemplateFactory;
 import com.ai.openai_api_service.exception.OpenAIException;
+import com.ai.openai_api_service.model.python_rag.M3ExecuteRequest;
+import com.ai.openai_api_service.model.python_rag.M3ExecuteResponse;
 import com.ai.openai_api_service.model.python_rag.PythonQueryRequest;
 import com.ai.openai_api_service.model.python_rag.PythonQueryResponse;
 import com.ai.openai_api_service.model.python_rag.PythonRetrievalRequest;
@@ -40,6 +42,9 @@ public class PythonRagService {
 
     @Value("${python-rag.api.route-endpoint:/route}")
     private String pythonRouteEndpoint;
+
+    @Value("${python-rag.api.m3-execute-endpoint:/m3/execute}")
+    private String pythonM3ExecuteEndpoint;
 
     @Value("${python-rag.api.timeout-ms:180000}")
     private int timeoutMs;
@@ -147,7 +152,29 @@ public class PythonRagService {
         String url = buildUrl(pythonRouteEndpoint);
         PythonRouteRequest body = new PythonRouteRequest(message);
         log.info("Calling Python RAG route API. url={}, message='{}'", url, message);
-        return postForEntity(url, body, PythonRouteResponse.class, "route");
+        PythonRouteResponse response = postForEntity(url, body, PythonRouteResponse.class, "route");
+        String selectedRoute = response.getRoute() != null ? response.getRoute() : "rag";
+        log.info(
+                "Python RAG route selected: route='{}', nextStep='{}', message='{}'",
+                selectedRoute,
+                "live".equalsIgnoreCase(selectedRoute) ? "python/chat" : "python/retrieval",
+                message
+        );
+        return response;
+    }
+
+    /**
+     * Execute a live M3 tool via Python (Lex fulfillment path).
+     */
+    public M3ExecuteResponse executeLiveIntent(String toolName, java.util.Map<String, Object> args) {
+        ensureEnabled();
+        if (toolName == null || toolName.isBlank()) {
+            throw new OpenAIException("Tool name cannot be empty", 400);
+        }
+        String url = buildUrl(pythonM3ExecuteEndpoint);
+        M3ExecuteRequest body = new M3ExecuteRequest(toolName, args != null ? args : java.util.Map.of());
+        log.info("Calling Python M3 execute API. url={}, tool='{}', args={}", url, toolName, args);
+        return postForEntity(url, body, M3ExecuteResponse.class, "m3-execute");
     }
 
     /**
@@ -255,6 +282,12 @@ public class PythonRagService {
             }
 
             log.info("Python RAG {} API call successful. url={}, responseTime={}ms", operation, url, responseTime);
+            log.info(
+                    "Python RAG {} | {}ms | {}",
+                    operation,
+                    responseTime,
+                    summarizeResponse(response, operation)
+            );
             return response;
 
         } catch (HttpClientErrorException e) {
@@ -280,6 +313,53 @@ public class PythonRagService {
                     500
             );
         }
+    }
+
+    private String summarizeResponse(Object response, String operation) {
+        if (response instanceof PythonRouteResponse routeResponse) {
+            String route = routeResponse.getRoute() != null ? routeResponse.getRoute() : "rag";
+            String next = "live".equalsIgnoreCase(route) ? "chat" : "retrieval";
+            return "route=" + route + " next=" + next;
+        }
+        if (response instanceof PythonQueryResponse chatResponse) {
+            StringBuilder summary = new StringBuilder();
+            if (chatResponse.getActionTaken() != null) {
+                summary.append("action=").append(chatResponse.getActionTaken());
+            }
+            if (chatResponse.getCollectingTool() != null) {
+                if (summary.length() > 0) {
+                    summary.append(' ');
+                }
+                summary.append("collecting=").append(chatResponse.getCollectingTool());
+                if (chatResponse.getNextField() != null) {
+                    summary.append(" field=").append(chatResponse.getNextField());
+                }
+            }
+            if (chatResponse.getPendingTool() != null) {
+                if (summary.length() > 0) {
+                    summary.append(' ');
+                }
+                summary.append("pending=").append(chatResponse.getPendingTool());
+            }
+            return summary.length() > 0 ? summary.toString() : "chat ok";
+        }
+        if (response instanceof PythonRetrievalResponse retrievalResponse) {
+            return String.format(
+                    "reason=%s maxScore=%s chunks=%s",
+                    retrievalResponse.getRetrievalReason(),
+                    retrievalResponse.getMaxScore(),
+                    retrievalResponse.getPromptChunkCount()
+            );
+        }
+        if (response instanceof M3ExecuteResponse executeResponse) {
+            return String.format(
+                    "tool=%s action=%s error=%s",
+                    executeResponse.getTool(),
+                    executeResponse.getActionTaken(),
+                    executeResponse.getError()
+            );
+        }
+        return "ok";
     }
 
     private void handleHttpError(String url, String operation, long startTime, HttpClientErrorException e) {

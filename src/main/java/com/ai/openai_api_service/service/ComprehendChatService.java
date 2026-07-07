@@ -8,6 +8,7 @@ import com.ai.openai_api_service.model.OpenAIUsage;
 import com.ai.openai_api_service.model.QueryRewriteResult;
 import com.ai.openai_api_service.model.SuggestionContext;
 import com.ai.openai_api_service.model.SuggestionResult;
+import com.ai.openai_api_service.model.lex.LexRecognizeResult;
 import com.ai.openai_api_service.model.python_rag.ChunkItem;
 import com.ai.openai_api_service.model.python_rag.PythonQueryRequest;
 import com.ai.openai_api_service.model.python_rag.PythonQueryResponse;
@@ -53,6 +54,8 @@ public class ComprehendChatService {
     private final SuggestionEngineService suggestionEngineService;
     private final PythonRagService pythonRagService;
     private final OpenAIService openAIService;
+    private final LexService lexService;
+    private final LexFulfillmentService lexFulfillmentService;
 
     @Value("${openai.response.include-sanitization-debug:false}")
     private boolean includeSanitizationDebug;
@@ -69,7 +72,9 @@ public class ComprehendChatService {
             TenantQuotaService tenantQuotaService,
             SuggestionEngineService suggestionEngineService,
             PythonRagService pythonRagService,
-            OpenAIService openAIService
+            OpenAIService openAIService,
+            LexService lexService,
+            LexFulfillmentService lexFulfillmentService
     ) {
         this.comprehendAnonymizationService = comprehendAnonymizationService;
         this.chatPersistenceService = chatPersistenceService;
@@ -77,6 +82,8 @@ public class ComprehendChatService {
         this.suggestionEngineService = suggestionEngineService;
         this.pythonRagService = pythonRagService;
         this.openAIService = openAIService;
+        this.lexService = lexService;
+        this.lexFulfillmentService = lexFulfillmentService;
     }
 
     public ChatResponse chat(ChatRequest request) {
@@ -101,21 +108,48 @@ public class ComprehendChatService {
                 sanitizedUserText
         );
 
-        PythonRouteResponse routeResponse = pythonRagService.route(sanitizedUserText);
+        PythonRouteResponse routeResponse = pythonRagService.route(originalUserText);
         String route = routeResponse != null ? routeResponse.getRoute() : "rag";
+        log.info(
+                "Comprehend route decision: route='{}', handler='{}', original='{}', sanitized='{}'",
+                route,
+                ROUTE_LIVE.equalsIgnoreCase(route)
+                        ? (lexService.isEnabled() ? "live/lex" : "live/python-chat")
+                        : "documentation/retrieval",
+                originalUserText,
+                sanitizedUserText
+        );
 
         ChatResponse chatResponse;
         List<SourceItem> sourcesForSuggestions = null;
+        List<SourceItem> responseSources = null;
         String retrievalReason = null;
         Integer retrievalTimeMs = null;
         Float maxScore = null;
 
         if (ROUTE_LIVE.equalsIgnoreCase(route)) {
-            chatResponse = handleLiveRoute(workingRequest, sanitizedUserText);
+            if (lexService.isEnabled()) {
+                LexLiveRouteResult lexResult = handleLexLiveRoute(
+                        request,
+                        originalUserText,
+                        sanitizedUserText
+                );
+                chatResponse = lexResult.chatResponse();
+                if (lexResult.fallbackToDoc()) {
+                    sourcesForSuggestions = lexResult.sourcesForSuggestions();
+                    responseSources = lexResult.responseSources();
+                    retrievalReason = lexResult.retrievalReason();
+                    retrievalTimeMs = lexResult.retrievalTimeMs();
+                    maxScore = lexResult.maxScore();
+                }
+            } else {
+                chatResponse = handleLiveRoute(workingRequest, sanitizedUserText);
+            }
         } else {
             DocRouteResult docResult = handleDocumentationRoute(workingRequest, originalUserText, sanitizedUserText);
             chatResponse = docResult.chatResponse();
-            sourcesForSuggestions = docResult.sources();
+            sourcesForSuggestions = docResult.sourcesForSuggestions();
+            responseSources = docResult.responseSources();
             retrievalReason = docResult.retrievalReason();
             retrievalTimeMs = docResult.retrievalTimeMs();
             maxScore = docResult.maxScore();
@@ -157,6 +191,9 @@ public class ComprehendChatService {
         chatResponse.setRetrievalReason(retrievalReason);
         chatResponse.setRetrievalTimeMs(retrievalTimeMs);
         chatResponse.setMaxScore(maxScore);
+        if (responseSources != null) {
+            chatResponse.setSources(responseSources);
+        }
         chatResponse.setSanitizationApplied(sanitizedFlag);
         if (includeSanitizationDebug) {
             chatResponse.setSanitizedUserMessage(sanitizedUserText);
@@ -167,7 +204,57 @@ public class ComprehendChatService {
         chatResponse.setSuggestions(suggestionResult.getSuggestions());
         chatResponse.setSuggestionDetails(suggestionResult.getDetails());
 
+        log.info(
+                "Spring chat complete | session={} | route={} | action={} | retrievalReason={} | collecting={} | tokens={}",
+                request.getSessionId(),
+                route,
+                chatResponse.getActionTaken(),
+                retrievalReason,
+                chatResponse.getCollectingTool(),
+                consumedTokens
+        );
+
         return chatResponse;
+    }
+
+    private LexLiveRouteResult handleLexLiveRoute(
+            ChatRequest request,
+            String originalUserText,
+            String sanitizedUserText
+    ) {
+        String lexSessionId = lexService.buildLexSessionId(request);
+        LexRecognizeResult lexResult = lexService.recognizeText(lexSessionId, originalUserText);
+
+        if (lexResult.isFallbackIntent()) {
+            log.info("Lex fallback to RAG on live route for session={}", request.getSessionId());
+            DocRouteResult docResult = handleDocumentationRoute(request, originalUserText, sanitizedUserText);
+            return LexLiveRouteResult.fallback(docResult);
+        }
+
+        if (lexResult.isElicitSlot()) {
+            ChatResponse chatResponse = new ChatResponse(lexResult.firstMessage(), false);
+            chatResponse.setActionTaken("lex_elicit_slot");
+            chatResponse.setLexIntent(lexResult.getIntentName());
+            chatResponse.setLexDialogAction(lexResult.getDialogActionType());
+            chatResponse.setLexSlotToElicit(lexResult.getSlotToElicit());
+            return LexLiveRouteResult.lex(chatResponse);
+        }
+
+        if (lexResult.isReadyForFulfillment()) {
+            ChatResponse chatResponse = lexFulfillmentService.fulfill(lexResult);
+            chatResponse.setLexIntent(lexResult.getIntentName());
+            chatResponse.setLexDialogAction(lexResult.getDialogActionType());
+            return LexLiveRouteResult.lex(chatResponse);
+        }
+
+        log.warn(
+                "Unexpected Lex state: intent='{}' state='{}' dialogAction='{}', falling back to Python /chat",
+                lexResult.getIntentName(),
+                lexResult.getIntentState(),
+                lexResult.getDialogActionType()
+        );
+        ChatRequest workingRequest = copyRequestWithUserMessage(request, sanitizedUserText);
+        return LexLiveRouteResult.lex(handleLiveRoute(workingRequest, sanitizedUserText));
     }
 
     private ChatResponse handleLiveRoute(ChatRequest request, String sanitizedUserText) {
@@ -188,6 +275,9 @@ public class ComprehendChatService {
         chatResponse.setNextField(pythonResponse.getNextField());
         chatResponse.setNextFieldOptional(pythonResponse.getNextFieldOptional());
         chatResponse.setM3Data(pythonResponse.getM3Data());
+        if (pythonResponse.getSources() != null && !pythonResponse.getSources().isEmpty()) {
+            chatResponse.setSources(pythonResponse.getSources());
+        }
         return chatResponse;
     }
 
@@ -223,7 +313,7 @@ public class ComprehendChatService {
             if (rewriteUsage != null) {
                 chatResponse.setOpenAiUsage(mergeUsage(rewriteUsage, chatResponse.getOpenAiUsage()));
             }
-            return new DocRouteResult(chatResponse, List.of(), "retrieval_error", null, null);
+            return new DocRouteResult(chatResponse, List.of(), List.of(), "retrieval_error", null, null);
         }
 
         String reason = retrieval.getRetrievalReason();
@@ -239,11 +329,13 @@ public class ComprehendChatService {
                 queryRewriteEnabled
         );
 
+        List<ChunkItem> promptChunks = retrieval.getPromptChunks() != null
+                ? retrieval.getPromptChunks()
+                : List.of();
+        List<SourceItem> responseSources = toChunkSources(promptChunks);
+
         ChatResponse chatResponse;
         if (RETRIEVAL_READY.equals(reason)) {
-            List<ChunkItem> promptChunks = retrieval.getPromptChunks() != null
-                    ? retrieval.getPromptChunks()
-                    : List.of();
             chatResponse = openAIService.chatWithRagContext(request, promptChunks);
             if (rewriteUsage != null) {
                 chatResponse.setOpenAiUsage(mergeUsage(rewriteUsage, chatResponse.getOpenAiUsage()));
@@ -267,11 +359,27 @@ public class ComprehendChatService {
 
         return new DocRouteResult(
                 chatResponse,
-                toSourceItems(retrieval.getPromptChunks()),
+                toSourceItems(promptChunks),
+                responseSources,
                 reason,
                 retrieval.getRetrievalTimeMs(),
                 retrieval.getMaxScore()
         );
+    }
+
+    private List<SourceItem> toChunkSources(List<ChunkItem> chunks) {
+        if (chunks == null || chunks.isEmpty()) {
+            return List.of();
+        }
+        List<SourceItem> sources = new ArrayList<>();
+        for (ChunkItem chunk : chunks) {
+            String url = chunk.getSource() != null ? chunk.getSource() : "";
+            if (url.isBlank()) {
+                continue;
+            }
+            sources.add(new SourceItem(url, chunk.getTitle(), chunk.getScore()));
+        }
+        return sources;
     }
 
     private List<SourceItem> toSourceItems(List<ChunkItem> chunks) {
@@ -353,11 +461,38 @@ public class ComprehendChatService {
 
     private record DocRouteResult(
             ChatResponse chatResponse,
-            List<SourceItem> sources,
+            List<SourceItem> sourcesForSuggestions,
+            List<SourceItem> responseSources,
             String retrievalReason,
             Integer retrievalTimeMs,
             Float maxScore
     ) {
+    }
+
+    private record LexLiveRouteResult(
+            ChatResponse chatResponse,
+            boolean fallbackToDoc,
+            List<SourceItem> sourcesForSuggestions,
+            List<SourceItem> responseSources,
+            String retrievalReason,
+            Integer retrievalTimeMs,
+            Float maxScore
+    ) {
+        static LexLiveRouteResult lex(ChatResponse chatResponse) {
+            return new LexLiveRouteResult(chatResponse, false, null, null, null, null, null);
+        }
+
+        static LexLiveRouteResult fallback(DocRouteResult docResult) {
+            return new LexLiveRouteResult(
+                    docResult.chatResponse(),
+                    true,
+                    docResult.sourcesForSuggestions(),
+                    docResult.responseSources(),
+                    docResult.retrievalReason(),
+                    docResult.retrievalTimeMs(),
+                    docResult.maxScore()
+            );
+        }
     }
 
     private boolean isRagInsufficientAnswer(String reply) {

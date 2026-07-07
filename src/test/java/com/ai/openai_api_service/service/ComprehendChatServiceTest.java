@@ -2,10 +2,12 @@ package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.ChatRequest;
+import com.ai.openai_api_service.model.M3RequestDto;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.OpenAIUsage;
 import com.ai.openai_api_service.model.SuggestionResult;
 import com.ai.openai_api_service.model.TokenUsageDto;
+import com.ai.openai_api_service.model.lex.LexRecognizeResult;
 import com.ai.openai_api_service.model.python_rag.ChunkItem;
 import com.ai.openai_api_service.model.QueryRewriteResult;
 import com.ai.openai_api_service.model.python_rag.PythonRetrievalResponse;
@@ -27,6 +29,7 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -53,6 +56,10 @@ class ComprehendChatServiceTest {
     private PythonRagService pythonRagService;
     @Mock
     private OpenAIService openAIService;
+    @Mock
+    private LexService lexService;
+    @Mock
+    private LexFulfillmentService lexFulfillmentService;
 
     @InjectMocks
     private ComprehendChatService comprehendChatService;
@@ -89,8 +96,14 @@ class ComprehendChatServiceTest {
 
         assertEquals("grounded answer", response.getReply());
         assertEquals("rag", response.getActionTaken());
+        assertNull(response.getM3Request());
         assertEquals("ready_for_grounding", response.getRetrievalReason());
         assertNotNull(response.getOpenAiUsage());
+        assertNotNull(response.getSources());
+        assertEquals(1, response.getSources().size());
+        assertEquals("http://example.com", response.getSources().get(0).getUrl());
+        assertEquals("Title", response.getSources().get(0).getTitle());
+        assertEquals(0.62f, response.getSources().get(0).getScore());
         verify(openAIService).chatWithRagContext(any(), eq(List.of(chunk)));
         verify(openAIService, never()).chatWithoutPersistence(any());
         verify(pythonRagService, never()).query(any());
@@ -119,8 +132,38 @@ class ComprehendChatServiceTest {
 
         assertEquals("fallback answer", response.getReply());
         assertEquals("gpt_infor", response.getActionTaken());
+        assertNotNull(response.getSources());
+        assertTrue(response.getSources().isEmpty());
         verify(openAIService).chatWithoutPersistence(any());
         verify(openAIService, never()).chatWithRagContext(any(), any());
+    }
+
+    @Test
+    void documentationRoute_readyForGrounding_returnsPerChunkSourcesWithoutDedup() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(pythonRagService.route("pricing issue")).thenReturn(new PythonRouteResponse("rag"));
+
+        ChunkItem chunk1 = new ChunkItem("chunk one", 0.72f, "Title A", "http://example.com/doc", List.of("CRS610"), null, null, null);
+        ChunkItem chunk2 = new ChunkItem("chunk two", 0.55f, "Title B", "http://example.com/doc", List.of("CRS610"), null, null, null);
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        retrieval.setMaxScore(0.72f);
+        retrieval.setPromptChunks(List.of(chunk1, chunk2));
+        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
+
+        ChatResponse openAiResponse = new ChatResponse("grounded answer", false);
+        openAiResponse.setActionTaken("rag");
+        when(openAIService.chatWithRagContext(any(), anyList())).thenReturn(openAiResponse);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("pricing issue"));
+
+        assertEquals(2, response.getSources().size());
+        assertEquals("http://example.com/doc", response.getSources().get(0).getUrl());
+        assertEquals(0.72f, response.getSources().get(0).getScore());
+        assertEquals("http://example.com/doc", response.getSources().get(1).getUrl());
+        assertEquals(0.55f, response.getSources().get(1).getScore());
     }
 
     @Test
@@ -313,12 +356,12 @@ class ComprehendChatServiceTest {
     }
 
     @Test
-    void piiSanitization_sendsSanitizedTextToPythonRoute() {
+    void piiSanitization_routesOnOriginalText_retrievesOnSanitized() {
         stubQuotaAllowed();
         String original = "Contact John at john@example.com about CRS900";
         String sanitized = "Contact [Name] at [EMAIL] about CRS900";
         stubSanitizeWithPii(original, sanitized);
-        when(pythonRagService.route(sanitized)).thenReturn(new PythonRouteResponse("rag"));
+        when(pythonRagService.route(original)).thenReturn(new PythonRouteResponse("rag"));
 
         PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
         retrieval.setRetrievalReason("below_prompt_threshold");
@@ -334,8 +377,9 @@ class ComprehendChatServiceTest {
         ChatResponse response = comprehendChatService.chat(baseRequest(original));
 
         assertTrue(response.getSanitizationApplied());
-        verify(pythonRagService).route(eq(sanitized));
+        verify(pythonRagService).route(eq(original));
         verify(pythonRagService).retrieve(eq(sanitized), eq(List.of(sanitized)), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
     }
 
     @Test
@@ -475,6 +519,159 @@ class ComprehendChatServiceTest {
         assertEquals(13, response.getOpenAiUsage().getPromptTokens());
         assertEquals(9, response.getOpenAiUsage().getCompletionTokens());
         assertEquals(22, response.getOpenAiUsage().getTotalTokens());
+    }
+
+    @Test
+    void ragRoute_neverCallsLex() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(pythonRagService.route("how to configure dispatch policy")).thenReturn(new PythonRouteResponse("rag"));
+
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("below_prompt_threshold");
+        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
+
+        ChatResponse fallback = new ChatResponse("doc answer", false);
+        fallback.setActionTaken("gpt_infor");
+        when(openAIService.chatWithoutPersistence(any())).thenReturn(fallback);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        comprehendChatService.chat(baseRequest("how to configure dispatch policy"));
+
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void liveRoute_lexDisabled_usesPythonChat() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(false);
+        when(pythonRagService.route("show customer C001")).thenReturn(new PythonRouteResponse("live"));
+        when(pythonRagService.query(any())).thenAnswer(invocation -> {
+            com.ai.openai_api_service.model.python_rag.PythonQueryResponse response =
+                    new com.ai.openai_api_service.model.python_rag.PythonQueryResponse();
+            response.setReply("legacy live answer");
+            response.setActionTaken("read");
+            return response;
+        });
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("show customer C001"));
+
+        assertEquals("legacy live answer", response.getReply());
+        verify(pythonRagService).query(any());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void liveRoute_lexElicitSlot_returnsPrompt() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("show customer details")).thenReturn(new PythonRouteResponse("live"));
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "InProgress",
+                "ElicitSlot",
+                "CustomerNumber",
+                Map.of(),
+                List.of("What is the customer number?")
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "show customer details")).thenReturn(lexResult);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("show customer details"));
+
+        assertEquals("What is the customer number?", response.getReply());
+        assertEquals("lex_elicit_slot", response.getActionTaken());
+        assertEquals("GetCustomer", response.getLexIntent());
+        assertEquals("CustomerNumber", response.getLexSlotToElicit());
+        assertNull(response.getM3Request());
+        verify(pythonRagService, never()).query(any());
+        verify(pythonRagService, never()).executeLiveIntent(anyString(), any());
+        verify(lexFulfillmentService, never()).fulfill(any());
+    }
+
+    @Test
+    void liveRoute_lexReadyForFulfillment_callsFulfillment() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("show customer CSU001")).thenReturn(new PythonRouteResponse("live"));
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "CSU001"),
+                List.of()
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "show customer CSU001")).thenReturn(lexResult);
+
+        M3RequestDto m3Request = new M3RequestDto(true, "CRS610MI", "GetBasicData", Map.of("CUNO", "CSU001"));
+        ChatResponse fulfillResponse = new ChatResponse("Looking up customer CSU001...", false);
+        fulfillResponse.setActionTaken("read");
+        fulfillResponse.setM3Request(m3Request);
+        when(lexFulfillmentService.fulfill(lexResult)).thenReturn(fulfillResponse);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("show customer CSU001"));
+
+        assertEquals("read", response.getActionTaken());
+        assertEquals("Looking up customer CSU001...", response.getReply());
+        assertNotNull(response.getM3Request());
+        assertTrue(response.getM3Request().isExecute());
+        assertEquals("CRS610MI", response.getM3Request().getProgram());
+        assertEquals("GetBasicData", response.getM3Request().getTransaction());
+        assertEquals("CSU001", response.getM3Request().getParams().get("CUNO"));
+        assertNull(response.getM3Data());
+        verify(lexFulfillmentService).fulfill(lexResult);
+        verify(pythonRagService, never()).query(any());
+        verify(pythonRagService, never()).executeLiveIntent(anyString(), any());
+    }
+
+    @Test
+    void liveRoute_lexFallbackIntent_routesToRag() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("show customer")).thenReturn(new PythonRouteResponse("live"));
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "FallbackIntent",
+                "Fulfilled",
+                null,
+                null,
+                Map.of(),
+                List.of()
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "show customer")).thenReturn(lexResult);
+
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        ChunkItem chunk = new ChunkItem("chunk", 0.65f, "Title", "http://example.com", List.of(), null, null, null);
+        retrieval.setPromptChunks(List.of(chunk));
+        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
+
+        ChatResponse ragResponse = new ChatResponse("rag answer", false);
+        ragResponse.setActionTaken("rag");
+        when(openAIService.chatWithRagContext(any(), anyList())).thenReturn(ragResponse);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("show customer"));
+
+        assertEquals("rag answer", response.getReply());
+        assertEquals("ready_for_grounding", response.getRetrievalReason());
+        assertNull(response.getM3Request());
+        verify(lexFulfillmentService, never()).fulfill(any());
+        verify(pythonRagService, never()).query(any());
+        verify(pythonRagService, never()).executeLiveIntent(anyString(), any());
+        verify(openAIService).chatWithRagContext(any(), anyList());
     }
 
     private void stubQuotaAllowed() {
