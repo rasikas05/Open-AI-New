@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -36,6 +37,43 @@ class LexFulfillmentServiceTest {
         assertTrue(response.getM3Request().isExecute());
         assertEquals("CRS610MI", response.getM3Request().getProgram());
         assertEquals("GetBasicData", response.getM3Request().getTransaction());
+        assertEquals("107685", response.getM3Request().getParams().get("CUNO"));
+    }
+
+    @Test
+    void fulfill_invalidCustomerNumber_returnsFriendlyMessageWithoutM3Request() {
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "107685-NUMBER"),
+                java.util.List.of()
+        );
+
+        ChatResponse response = fulfillmentService.fulfill(lexResult);
+
+        assertEquals("lex_invalid_slot", response.getActionTaken());
+        assertEquals("GetCustomer", response.getLexIntent());
+        assertFalse(response.getReply().contains("Looking up customer"));
+        assertTrue(response.getReply().contains("valid customer number"));
+        assertNull(response.getM3Request());
+    }
+
+    @Test
+    void fulfill_stripsTrailingNumberLabelBeforeM3Request() {
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "107685 number"),
+                java.util.List.of()
+        );
+
+        ChatResponse response = fulfillmentService.fulfill(lexResult);
+
+        assertEquals("Looking up customer 107685...", response.getReply());
         assertEquals("107685", response.getM3Request().getParams().get("CUNO"));
     }
 

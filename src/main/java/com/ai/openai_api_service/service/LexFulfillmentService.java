@@ -1,5 +1,6 @@
 package com.ai.openai_api_service.service;
 
+import com.ai.openai_api_service.exception.InvalidLexSlotException;
 import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.M3RequestDto;
@@ -20,6 +21,22 @@ public class LexFulfillmentService {
     }
 
     public ChatResponse fulfill(LexRecognizeResult lexResult) {
+        try {
+            return fulfillMapped(lexResult);
+        } catch (InvalidLexSlotException e) {
+            log.info(
+                    "Lex fulfillment rejected invalid slot: intent='{}' message='{}'",
+                    lexResult.getIntentName(),
+                    e.getUserMessage()
+            );
+            ChatResponse chatResponse = new ChatResponse(e.getUserMessage(), false);
+            chatResponse.setActionTaken("lex_invalid_slot");
+            chatResponse.setLexIntent(lexResult.getIntentName());
+            return chatResponse;
+        }
+    }
+
+    private ChatResponse fulfillMapped(LexRecognizeResult lexResult) {
         LexIntentMapper.MappedM3Request mapped = lexIntentMapper.map(lexResult)
                 .orElseThrow(() -> new OpenAIException(
                         "No M3 mapping for Lex intent: " + lexResult.getIntentName(),
