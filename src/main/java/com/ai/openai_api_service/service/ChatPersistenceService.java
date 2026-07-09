@@ -4,6 +4,7 @@ import com.ai.openai_api_service.entity.RequestLog;
 import com.ai.openai_api_service.entity.Session;
 import com.ai.openai_api_service.entity.Tenant;
 import com.ai.openai_api_service.entity.User;
+import com.ai.openai_api_service.model.LiveHistoryAuditMetadata;
 import com.ai.openai_api_service.model.MessageDto;
 import com.ai.openai_api_service.model.OpenAIUsage;
 import com.ai.openai_api_service.model.SessionTitleUpdateResponse;
@@ -75,6 +76,7 @@ public class ChatPersistenceService {
                 actionTaken,
                 sanitizedFlag,
                 null,
+                null,
                 null
         );
     }
@@ -92,6 +94,37 @@ public class ChatPersistenceService {
             Boolean sanitizedFlag,
             String retrievalReason,
             Integer retrievalTimeMs
+    ) {
+        persistChat(
+                tenantId,
+                userId,
+                sessionId,
+                originalText,
+                sanitizedText,
+                openAiResponse,
+                openAiUsage,
+                actionTaken,
+                sanitizedFlag,
+                retrievalReason,
+                retrievalTimeMs,
+                null
+        );
+    }
+
+    @Transactional
+    public void persistChat(
+            String tenantId,
+            String userId,
+            String sessionId,
+            String originalText,
+            String sanitizedText,
+            String openAiResponse,
+            OpenAIUsage openAiUsage,
+            String actionTaken,
+            Boolean sanitizedFlag,
+            String retrievalReason,
+            Integer retrievalTimeMs,
+            LiveHistoryAuditMetadata auditMetadata
     ) {
         try {
             int consumed = resolveConsumedTokens(openAiUsage, null);
@@ -209,6 +242,11 @@ public class ChatPersistenceService {
             }
             message.setRetrievalReason(retrievalReason);
             message.setRetrievalTimeMs(retrievalTimeMs);
+            if (auditMetadata != null) {
+                message.setLexIntent(auditMetadata.lexIntent());
+                message.setBusinessObject(auditMetadata.businessObject());
+                message.setBusinessIdentifier(auditMetadata.businessIdentifier());
+            }
 
             RequestLog savedMessage = requestLogRepository.save(message);
 

@@ -42,6 +42,12 @@ public class RequestLog {
     private String retrievalReason;
     @Column(name = "retrieval_time_ms")
     private Integer retrievalTimeMs;
+    @Column(name = "lex_intent", length = 64)
+    private String lexIntent;
+    @Column(name = "business_object", length = 64)
+    private String businessObject;
+    @Column(name = "business_identifier", length = 128)
+    private String businessIdentifier;
     @Column(name = "created_at")
     private LocalDateTime createdAt = LocalDateTime.now();
     // getters/setters
@@ -155,6 +161,30 @@ public class RequestLog {
 
     public void setRetrievalTimeMs(Integer retrievalTimeMs) {
         this.retrievalTimeMs = retrievalTimeMs;
+    }
+
+    public String getLexIntent() {
+        return lexIntent;
+    }
+
+    public void setLexIntent(String lexIntent) {
+        this.lexIntent = lexIntent;
+    }
+
+    public String getBusinessObject() {
+        return businessObject;
+    }
+
+    public void setBusinessObject(String businessObject) {
+        this.businessObject = businessObject;
+    }
+
+    public String getBusinessIdentifier() {
+        return businessIdentifier;
+    }
+
+    public void setBusinessIdentifier(String businessIdentifier) {
+        this.businessIdentifier = businessIdentifier;
     }
 
     public LocalDateTime getCreatedAt() {
