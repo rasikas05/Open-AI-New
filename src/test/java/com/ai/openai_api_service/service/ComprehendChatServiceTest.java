@@ -658,7 +658,7 @@ class ComprehendChatServiceTest {
     }
 
     @Test
-    void liveRoute_lexFallbackIntent_routesToRag() {
+    void liveRoute_lexFallbackIntent_returnsClarification() {
         stubQuotaAllowed();
         stubSanitize();
         when(lexService.isEnabled()).thenReturn(true);
@@ -674,27 +674,51 @@ class ComprehendChatServiceTest {
                 List.of()
         );
         when(lexService.recognizeText("tenant1:user1:session1", "show customer")).thenReturn(lexResult);
-
-        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
-        retrieval.setRetrievalReason("ready_for_grounding");
-        ChunkItem chunk = new ChunkItem("chunk", 0.65f, "Title", "http://example.com", List.of(), null, null, null);
-        retrieval.setPromptChunks(List.of(chunk));
-        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
-
-        ChatResponse ragResponse = new ChatResponse("rag answer", false);
-        ragResponse.setActionTaken("rag");
-        when(openAIService.chatWithRagContext(any(), anyList())).thenReturn(ragResponse);
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("show customer"));
 
-        assertEquals("rag answer", response.getReply());
-        assertEquals("ready_for_grounding", response.getRetrievalReason());
+        assertEquals(ComprehendChatService.LEX_FALLBACK_CLARIFICATION_MESSAGE, response.getReply());
+        assertEquals("lex_fallback", response.getActionTaken());
+        assertNull(response.getM3Request());
+        assertNull(response.getRetrievalReason());
+        verify(lexFulfillmentService, never()).fulfill(any());
+        verify(pythonRagService, never()).query(any());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any());
+        verify(pythonRagService, never()).executeLiveIntent(anyString(), any());
+        verify(openAIService, never()).chatWithRagContext(any(), anyList());
+        verify(openAIService, never()).chatWithoutPersistence(any());
+    }
+
+    @Test
+    void liveRoute_unexpectedLexState_returnsClarification() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("show customer Y00111")).thenReturn(new PythonRouteResponse("live"));
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "InProgress",
+                "ConfirmIntent",
+                null,
+                Map.of("CustomerNumber", "Y00111"),
+                List.of()
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "show customer Y00111")).thenReturn(lexResult);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("show customer Y00111"));
+
+        assertEquals(ComprehendChatService.LEX_FALLBACK_CLARIFICATION_MESSAGE, response.getReply());
+        assertEquals("lex_fallback", response.getActionTaken());
         assertNull(response.getM3Request());
         verify(lexFulfillmentService, never()).fulfill(any());
         verify(pythonRagService, never()).query(any());
-        verify(pythonRagService, never()).executeLiveIntent(anyString(), any());
-        verify(openAIService).chatWithRagContext(any(), anyList());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any());
+        verify(openAIService, never()).chatWithRagContext(any(), anyList());
+        verify(openAIService, never()).chatWithoutPersistence(any());
     }
 
     private void stubQuotaAllowed() {

@@ -36,6 +36,11 @@ public class ComprehendChatService {
     private static final String RETRIEVAL_READY = "ready_for_grounding";
     private static final String RETRIEVAL_RAG_NO_ANSWER = "rag_no_answer_fallback";
     private static final String ROUTE_LIVE = "live";
+    static final String LEX_FALLBACK_CLARIFICATION_MESSAGE =
+            "I couldn't understand your request. Please provide more details or rephrase your request.\n\n"
+                    + "Examples:\n"
+                    + "• Show customer Y00111\n"
+                    + "• Get customer details for Y00111";
     private static final List<String> RAG_INSUFFICIENT_SIGNALS = List.of(
             "not available in the current documentation",
             "not available in the context",
@@ -239,9 +244,7 @@ public class ComprehendChatService {
         LexRecognizeResult lexResult = lexService.recognizeText(lexSessionId, originalUserText);
 
         if (lexResult.isFallbackIntent()) {
-            log.info("Lex fallback to RAG on live route for session={}", request.getSessionId());
-            DocRouteResult docResult = handleDocumentationRoute(request, originalUserText, sanitizedUserText);
-            return LexLiveRouteResult.fallback(docResult);
+            return lexFallbackRouteResult(request, lexResult);
         }
 
         if (lexResult.isElicitSlot()) {
@@ -260,14 +263,24 @@ public class ComprehendChatService {
             return LexLiveRouteResult.lex(chatResponse);
         }
 
-        log.warn(
-                "Unexpected Lex state: intent='{}' state='{}' dialogAction='{}', falling back to Python /chat",
+        return lexFallbackRouteResult(request, lexResult);
+    }
+
+    private LexLiveRouteResult lexFallbackRouteResult(ChatRequest request, LexRecognizeResult lexResult) {
+        log.info(
+                "Lex could not resolve a supported live intent for session={} intent='{}' state='{}' dialogAction='{}'",
+                request.getSessionId(),
                 lexResult.getIntentName(),
                 lexResult.getIntentState(),
                 lexResult.getDialogActionType()
         );
-        ChatRequest workingRequest = copyRequestWithUserMessage(request, sanitizedUserText);
-        return LexLiveRouteResult.lex(handleLiveRoute(workingRequest, sanitizedUserText));
+        return LexLiveRouteResult.lex(buildLexFallbackResponse());
+    }
+
+    private ChatResponse buildLexFallbackResponse() {
+        ChatResponse chatResponse = new ChatResponse(LEX_FALLBACK_CLARIFICATION_MESSAGE, false);
+        chatResponse.setActionTaken("lex_fallback");
+        return chatResponse;
     }
 
     private ChatResponse handleLiveRoute(ChatRequest request, String sanitizedUserText) {
