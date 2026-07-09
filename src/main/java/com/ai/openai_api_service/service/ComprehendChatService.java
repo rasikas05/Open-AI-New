@@ -4,6 +4,8 @@ import com.ai.openai_api_service.exception.TenantQuotaExceededException;
 import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
+import com.ai.openai_api_service.model.LiveHistoryAuditMetadata;
+import com.ai.openai_api_service.model.LiveHistoryResult;
 import com.ai.openai_api_service.model.OpenAIUsage;
 import com.ai.openai_api_service.model.QueryRewriteResult;
 import com.ai.openai_api_service.model.SuggestionContext;
@@ -56,6 +58,7 @@ public class ComprehendChatService {
     private final OpenAIService openAIService;
     private final LexService lexService;
     private final LexFulfillmentService lexFulfillmentService;
+    private final LiveHistorySummaryBuilder liveHistorySummaryBuilder;
 
     @Value("${openai.response.include-sanitization-debug:false}")
     private boolean includeSanitizationDebug;
@@ -74,7 +77,8 @@ public class ComprehendChatService {
             PythonRagService pythonRagService,
             OpenAIService openAIService,
             LexService lexService,
-            LexFulfillmentService lexFulfillmentService
+            LexFulfillmentService lexFulfillmentService,
+            LiveHistorySummaryBuilder liveHistorySummaryBuilder
     ) {
         this.comprehendAnonymizationService = comprehendAnonymizationService;
         this.chatPersistenceService = chatPersistenceService;
@@ -84,6 +88,7 @@ public class ComprehendChatService {
         this.openAIService = openAIService;
         this.lexService = lexService;
         this.lexFulfillmentService = lexFulfillmentService;
+        this.liveHistorySummaryBuilder = liveHistorySummaryBuilder;
     }
 
     public ChatResponse chat(ChatRequest request) {
@@ -174,18 +179,26 @@ public class ComprehendChatService {
         }
 
         boolean sanitizedFlag = !Objects.equals(originalUserText, sanitizedUserText);
+        LiveHistoryResult liveHistory = liveHistorySummaryBuilder.build(chatResponse).orElse(null);
+        String replyForPersistence = liveHistory != null
+                ? liveHistory.summaryText()
+                : chatResponse.getReply();
+        LiveHistoryAuditMetadata auditMetadata = liveHistory != null
+                ? liveHistory.auditMetadata()
+                : null;
         chatPersistenceService.persistChat(
                 request.getTenantCode(),
                 request.getUserId(),
                 request.getSessionId(),
                 originalUserText,
                 sanitizedUserText,
-                chatResponse.getReply(),
+                replyForPersistence,
                 openAiUsage,
                 chatResponse.getActionTaken(),
                 sanitizedFlag,
                 retrievalReason,
-                retrievalTimeMs
+                retrievalTimeMs,
+                auditMetadata
         );
 
         chatResponse.setRetrievalReason(retrievalReason);

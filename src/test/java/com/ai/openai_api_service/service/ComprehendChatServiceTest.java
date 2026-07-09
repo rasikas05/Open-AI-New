@@ -2,6 +2,7 @@ package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.ChatRequest;
+import com.ai.openai_api_service.model.LiveHistoryAuditMetadata;
 import com.ai.openai_api_service.model.M3RequestDto;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.OpenAIUsage;
@@ -19,6 +20,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
@@ -37,6 +39,8 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.ArgumentMatchers.nullable;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -60,6 +64,8 @@ class ComprehendChatServiceTest {
     private LexService lexService;
     @Mock
     private LexFulfillmentService lexFulfillmentService;
+    @Spy
+    private LiveHistorySummaryBuilder liveHistorySummaryBuilder = new LiveHistorySummaryBuilder();
 
     @InjectMocks
     private ComprehendChatService comprehendChatService;
@@ -351,7 +357,7 @@ class ComprehendChatServiceTest {
         verify(tenantQuotaService, never()).recordUsage(anyString(), anyInt(), anyString());
         verify(chatPersistenceService, never()).persistChat(
                 anyString(), anyString(), anyString(), anyString(), anyString(),
-                anyString(), any(), anyString(), anyBoolean(), anyString(), any()
+                anyString(), any(), anyString(), anyBoolean(), anyString(), any(), any()
         );
     }
 
@@ -443,7 +449,8 @@ class ComprehendChatServiceTest {
                 eq("rag"),
                 eq(false),
                 eq("ready_for_grounding"),
-                eq(88)
+                eq(88),
+                isNull()
         );
         assertEquals(100, usageCaptor.getValue().getPromptTokens());
         assertEquals(50, usageCaptor.getValue().getCompletionTokens());
@@ -632,6 +639,22 @@ class ComprehendChatServiceTest {
         verify(lexFulfillmentService).fulfill(lexResult);
         verify(pythonRagService, never()).query(any());
         verify(pythonRagService, never()).executeLiveIntent(anyString(), any());
+        String expectedHistorySummary =
+                "Viewed customer CSU001.\n\n" + LiveHistorySummaryBuilder.FOOTER;
+        verify(chatPersistenceService).persistChat(
+                eq("tenant1"),
+                eq("user1"),
+                eq("session1"),
+                eq("show customer CSU001"),
+                eq("show customer CSU001"),
+                eq(expectedHistorySummary),
+                nullable(OpenAIUsage.class),
+                eq("read"),
+                eq(false),
+                isNull(),
+                isNull(),
+                eq(new LiveHistoryAuditMetadata("GetCustomer", "Customer", "CSU001"))
+        );
     }
 
     @Test

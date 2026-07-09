@@ -14,6 +14,9 @@ public class SessionMessageDto {
     private String actionTaken;
     private Integer tokensUsed;
     private LocalDateTime createdAt;
+    private String lexIntent;
+    private String businessObject;
+    private String businessIdentifier;
 
     public SessionMessageDto() {
     }
@@ -28,7 +31,10 @@ public class SessionMessageDto {
             Boolean sanitizedFlag,
             String actionTaken,
             Integer tokensUsed,
-            LocalDateTime createdAt
+            LocalDateTime createdAt,
+            String lexIntent,
+            String businessObject,
+            String businessIdentifier
     ) {
         this.id = id;
         this.sessionId = sessionId;
@@ -40,6 +46,9 @@ public class SessionMessageDto {
         this.actionTaken = actionTaken;
         this.tokensUsed = tokensUsed;
         this.createdAt = createdAt;
+        this.lexIntent = lexIntent;
+        this.businessObject = businessObject;
+        this.businessIdentifier = businessIdentifier;
     }
 
     public Long getId() {
@@ -120,5 +129,29 @@ public class SessionMessageDto {
 
     public void setCreatedAt(LocalDateTime createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public String getLexIntent() {
+        return lexIntent;
+    }
+
+    public void setLexIntent(String lexIntent) {
+        this.lexIntent = lexIntent;
+    }
+
+    public String getBusinessObject() {
+        return businessObject;
+    }
+
+    public void setBusinessObject(String businessObject) {
+        this.businessObject = businessObject;
+    }
+
+    public String getBusinessIdentifier() {
+        return businessIdentifier;
+    }
+
+    public void setBusinessIdentifier(String businessIdentifier) {
+        this.businessIdentifier = businessIdentifier;
     }
 }

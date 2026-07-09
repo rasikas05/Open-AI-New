@@ -170,7 +170,10 @@ public class ChatController {
                         message.getSanitizedFlag(),
                         message.getActionTaken(),
                         message.getTokensUsed(),
-                        message.getCreatedAt()
+                        message.getCreatedAt(),
+                        message.getLexIntent(),
+                        message.getBusinessObject(),
+                        message.getBusinessIdentifier()
                 ))
                 .toList();
 
