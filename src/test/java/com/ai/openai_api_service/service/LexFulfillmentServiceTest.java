@@ -15,7 +15,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class LexFulfillmentServiceTest {
 
-    private final LexFulfillmentService fulfillmentService = new LexFulfillmentService(new LexIntentMapper());
+    private final LexFulfillmentService fulfillmentService =
+            new LexFulfillmentService(new LexIntentMapper(new IntentApiCatalog()));
 
     @Test
     void fulfill_buildsM3RequestWithoutCallingPython() {
