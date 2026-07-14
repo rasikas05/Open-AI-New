@@ -36,6 +36,7 @@ public class ChatResponse {
     private String lexDialogAction;
     private String lexSlotToElicit;
     private M3RequestDto m3Request;
+    private List<String> requestedInformation;
 
     public ChatResponse() {
     }
@@ -267,6 +268,14 @@ public class ChatResponse {
 
     public void setM3Request(M3RequestDto m3Request) {
         this.m3Request = m3Request;
+    }
+
+    public List<String> getRequestedInformation() {
+        return requestedInformation;
+    }
+
+    public void setRequestedInformation(List<String> requestedInformation) {
+        this.requestedInformation = requestedInformation;
     }
 }
 

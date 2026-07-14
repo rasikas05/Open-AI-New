@@ -64,6 +64,7 @@ public class ComprehendChatService {
     private final LexService lexService;
     private final LexFulfillmentService lexFulfillmentService;
     private final LiveHistorySummaryBuilder liveHistorySummaryBuilder;
+    private final RequestedInformationResolver requestedInformationResolver;
 
     @Value("${openai.response.include-sanitization-debug:false}")
     private boolean includeSanitizationDebug;
@@ -83,7 +84,8 @@ public class ComprehendChatService {
             OpenAIService openAIService,
             LexService lexService,
             LexFulfillmentService lexFulfillmentService,
-            LiveHistorySummaryBuilder liveHistorySummaryBuilder
+            LiveHistorySummaryBuilder liveHistorySummaryBuilder,
+            RequestedInformationResolver requestedInformationResolver
     ) {
         this.comprehendAnonymizationService = comprehendAnonymizationService;
         this.chatPersistenceService = chatPersistenceService;
@@ -94,6 +96,7 @@ public class ComprehendChatService {
         this.lexService = lexService;
         this.lexFulfillmentService = lexFulfillmentService;
         this.liveHistorySummaryBuilder = liveHistorySummaryBuilder;
+        this.requestedInformationResolver = requestedInformationResolver;
     }
 
     public ChatResponse chat(ChatRequest request) {
@@ -243,11 +246,18 @@ public class ComprehendChatService {
         String lexSessionId = lexService.buildLexSessionId(request);
         LexRecognizeResult lexResult = lexService.recognizeText(lexSessionId, originalUserText);
 
+        List<String> requestedInformation = requestedInformationResolver.resolve(
+                originalUserText,
+                lexResult.getIntentName(),
+                lexResult.getSessionAttributes()
+        );
+
         if (lexResult.isFallbackIntent()) {
             return lexFallbackRouteResult(request, lexResult);
         }
 
         if (lexResult.isElicitSlot()) {
+            persistRequestedInformationIfNeeded(lexSessionId, requestedInformation, lexResult);
             ChatResponse chatResponse = new ChatResponse(lexResult.firstMessage(), false);
             chatResponse.setActionTaken("lex_elicit_slot");
             chatResponse.setLexIntent(lexResult.getIntentName());
@@ -260,10 +270,30 @@ public class ComprehendChatService {
             ChatResponse chatResponse = lexFulfillmentService.fulfill(lexResult);
             chatResponse.setLexIntent(lexResult.getIntentName());
             chatResponse.setLexDialogAction(lexResult.getDialogActionType());
+            chatResponse.setRequestedInformation(requestedInformation);
             return LexLiveRouteResult.lex(chatResponse);
         }
 
         return lexFallbackRouteResult(request, lexResult);
+    }
+
+    private void persistRequestedInformationIfNeeded(
+            String lexSessionId,
+            List<String> requestedInformation,
+            LexRecognizeResult lexResult
+    ) {
+        if (!requestedInformationResolver.differsFromSession(
+                requestedInformation,
+                lexResult.getSessionAttributes()
+        )) {
+            return;
+        }
+        Map<String, String> attrs = new LinkedHashMap<>(lexResult.getSessionAttributes());
+        attrs.put(
+                LexRecognizeResult.ATTR_REQUESTED_INFORMATION,
+                requestedInformationResolver.encode(requestedInformation)
+        );
+        lexService.putSessionAttributes(lexSessionId, attrs);
     }
 
     private LexLiveRouteResult lexFallbackRouteResult(ChatRequest request, LexRecognizeResult lexResult) {

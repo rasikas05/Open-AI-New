@@ -14,6 +14,7 @@ public class LexRecognizeResult {
     public static final String FALLBACK_INTENT = "FallbackIntent";
     public static final String DIALOG_ELICIT_SLOT = "ElicitSlot";
     public static final String INTENT_STATE_READY = "ReadyForFulfillment";
+    public static final String ATTR_REQUESTED_INFORMATION = "requestedInformation";
 
     private final String intentName;
     private final String intentState;
@@ -21,6 +22,7 @@ public class LexRecognizeResult {
     private final String slotToElicit;
     private final Map<String, String> slots;
     private final List<String> messages;
+    private final Map<String, String> sessionAttributes;
 
     public LexRecognizeResult(
             String intentName,
@@ -30,12 +32,25 @@ public class LexRecognizeResult {
             Map<String, String> slots,
             List<String> messages
     ) {
+        this(intentName, intentState, dialogActionType, slotToElicit, slots, messages, Map.of());
+    }
+
+    public LexRecognizeResult(
+            String intentName,
+            String intentState,
+            String dialogActionType,
+            String slotToElicit,
+            Map<String, String> slots,
+            List<String> messages,
+            Map<String, String> sessionAttributes
+    ) {
         this.intentName = intentName;
         this.intentState = intentState;
         this.dialogActionType = dialogActionType;
         this.slotToElicit = slotToElicit;
         this.slots = slots != null ? Map.copyOf(slots) : Map.of();
         this.messages = messages != null ? List.copyOf(messages) : List.of();
+        this.sessionAttributes = sessionAttributes != null ? Map.copyOf(sessionAttributes) : Map.of();
     }
 
     public static LexRecognizeResult fromResponse(RecognizeTextResponse response) {
@@ -43,6 +58,7 @@ public class LexRecognizeResult {
         String intentName = null;
         String intentState = null;
         Map<String, String> slots = new LinkedHashMap<>();
+        Map<String, String> sessionAttributes = new LinkedHashMap<>();
 
         if (state != null && state.intent() != null) {
             intentName = state.intent().name();
@@ -67,6 +83,14 @@ public class LexRecognizeResult {
             }
         }
 
+        if (state != null && state.sessionAttributes() != null) {
+            state.sessionAttributes().forEach((key, value) -> {
+                if (key != null && value != null) {
+                    sessionAttributes.put(key, value);
+                }
+            });
+        }
+
         String dialogActionType = null;
         String slotToElicit = null;
         if (state != null && state.dialogAction() != null) {
@@ -89,7 +113,8 @@ public class LexRecognizeResult {
                 dialogActionType,
                 slotToElicit,
                 slots,
-                messages
+                messages,
+                sessionAttributes
         );
     }
 
@@ -115,6 +140,10 @@ public class LexRecognizeResult {
 
     public List<String> getMessages() {
         return messages;
+    }
+
+    public Map<String, String> getSessionAttributes() {
+        return sessionAttributes;
     }
 
     public String firstMessage() {

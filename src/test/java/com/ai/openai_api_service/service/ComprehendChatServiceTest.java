@@ -66,6 +66,8 @@ class ComprehendChatServiceTest {
     private LexFulfillmentService lexFulfillmentService;
     @Spy
     private LiveHistorySummaryBuilder liveHistorySummaryBuilder = new LiveHistorySummaryBuilder();
+    @Spy
+    private RequestedInformationResolver requestedInformationResolver = new RequestedInformationResolver();
 
     @InjectMocks
     private ComprehendChatService comprehendChatService;
@@ -602,6 +604,35 @@ class ComprehendChatServiceTest {
     }
 
     @Test
+    void liveRoute_lexElicitSlot_persistsRequestedInformationToLexSession() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("Show address of customer")).thenReturn(new PythonRouteResponse("live"));
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "InProgress",
+                "ElicitSlot",
+                "CustomerNumber",
+                Map.of(),
+                List.of("What is the customer number?")
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "Show address of customer")).thenReturn(lexResult);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("Show address of customer"));
+
+        assertEquals("lex_elicit_slot", response.getActionTaken());
+        verify(lexService).putSessionAttributes(
+                eq("tenant1:user1:session1"),
+                eq(Map.of(LexRecognizeResult.ATTR_REQUESTED_INFORMATION, "ADDRESS"))
+        );
+        verify(lexFulfillmentService, never()).fulfill(any());
+    }
+
+    @Test
     void liveRoute_lexReadyForFulfillment_callsFulfillment() {
         stubQuotaAllowed();
         stubSanitize();
@@ -630,6 +661,7 @@ class ComprehendChatServiceTest {
 
         assertEquals("read", response.getActionTaken());
         assertEquals("Looking up customer CSU001...", response.getReply());
+        assertEquals(List.of(RequestedInformationResolver.FULL), response.getRequestedInformation());
         assertNotNull(response.getM3Request());
         assertTrue(response.getM3Request().isExecute());
         assertEquals("CRS610MI", response.getM3Request().getProgram());
@@ -655,6 +687,71 @@ class ComprehendChatServiceTest {
                 isNull(),
                 eq(new LiveHistoryAuditMetadata("GetCustomer", "Customer", "CSU001"))
         );
+    }
+
+    @Test
+    void liveRoute_lexReadyForFulfillment_usesSessionRequestedInformationOnSlotReply() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("Y11100")).thenReturn(new PythonRouteResponse("live"));
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "Y11100"),
+                List.of(),
+                Map.of(LexRecognizeResult.ATTR_REQUESTED_INFORMATION, "ADDRESS")
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "Y11100")).thenReturn(lexResult);
+
+        M3RequestDto m3Request = new M3RequestDto(true, "CRS610MI", "GetBasicData", Map.of("CUNO", "Y11100"));
+        ChatResponse fulfillResponse = new ChatResponse("Looking up customer Y11100...", false);
+        fulfillResponse.setActionTaken("read");
+        fulfillResponse.setM3Request(m3Request);
+        when(lexFulfillmentService.fulfill(lexResult)).thenReturn(fulfillResponse);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("Y11100"));
+
+        assertEquals("read", response.getActionTaken());
+        assertEquals(List.of(RequestedInformationResolver.ADDRESS), response.getRequestedInformation());
+        assertNotNull(response.getM3Request());
+        assertEquals("Y11100", response.getM3Request().getParams().get("CUNO"));
+    }
+
+    @Test
+    void liveRoute_lexReadyForFulfillment_addressInSameTurn() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("Show address of customer Y11100")).thenReturn(new PythonRouteResponse("live"));
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "Y11100"),
+                List.of()
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "Show address of customer Y11100"))
+                .thenReturn(lexResult);
+
+        M3RequestDto m3Request = new M3RequestDto(true, "CRS610MI", "GetBasicData", Map.of("CUNO", "Y11100"));
+        ChatResponse fulfillResponse = new ChatResponse("Looking up customer Y11100...", false);
+        fulfillResponse.setActionTaken("read");
+        fulfillResponse.setM3Request(m3Request);
+        when(lexFulfillmentService.fulfill(lexResult)).thenReturn(fulfillResponse);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("Show address of customer Y11100"));
+
+        assertEquals(List.of(RequestedInformationResolver.ADDRESS), response.getRequestedInformation());
     }
 
     @Test
