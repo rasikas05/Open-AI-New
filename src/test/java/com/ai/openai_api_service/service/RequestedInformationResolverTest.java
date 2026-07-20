@@ -1,5 +1,6 @@
 package com.ai.openai_api_service.service;
 
+import com.ai.openai_api_service.model.SearchCriterion;
 import com.ai.openai_api_service.model.lex.LexRecognizeResult;
 import org.junit.jupiter.api.Test;
 
@@ -12,7 +13,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class RequestedInformationResolverTest {
 
-    private final RequestedInformationResolver resolver = new RequestedInformationResolver();
+    private final RequestedInformationResolver resolver =
+            new RequestedInformationResolver(new SearchFieldCatalog());
 
     @Test
     void resolve_addressKeyword_returnsAddress() {
@@ -126,5 +128,51 @@ class RequestedInformationResolverTest {
                 List.of(RequestedInformationResolver.ADDRESS),
                 Map.of(LexRecognizeResult.ATTR_REQUESTED_INFORMATION, "ADDRESS")
         ));
+    }
+
+    @Test
+    void resolveForSearch_filterStatusInCriteria_returnsFull() {
+        String utterance =
+                "Retrieve customer orders for customer Y11100 in facility A01 with status 33 on 2025-04-24";
+        List<SearchCriterion> criteria = List.of(
+                new SearchCriterion("CUNO", "Y11100"),
+                new SearchCriterion("FACI", "A01"),
+                new SearchCriterion("ORST", "33")
+        );
+
+        assertEquals(
+                List.of(RequestedInformationResolver.FULL),
+                resolver.resolveForSearch(utterance, criteria)
+        );
+    }
+
+    @Test
+    void resolveForSearch_explicitOrderStatusDisplay_returnsStatus() {
+        String utterance = "Show customer order 1000001234 status";
+        List<SearchCriterion> criteria = List.of(new SearchCriterion("ORNO", "1000001234"));
+
+        assertEquals(
+                List.of(RequestedInformationResolver.STATUS),
+                resolver.resolveForSearch(utterance, criteria)
+        );
+    }
+
+    @Test
+    void resolveForSearch_showOrdersOnly_returnsFull() {
+        assertEquals(
+                List.of(RequestedInformationResolver.FULL),
+                resolver.resolveForSearch("Show customer orders", List.of())
+        );
+    }
+
+    @Test
+    void resolveForSearch_statusDisplaySuppressedWhenOrstInCriteria_returnsFull() {
+        String utterance = "Show customer order status with status 33";
+        List<SearchCriterion> criteria = List.of(new SearchCriterion("ORST", "33"));
+
+        assertEquals(
+                List.of(RequestedInformationResolver.FULL),
+                resolver.resolveForSearch(utterance, criteria)
+        );
     }
 }

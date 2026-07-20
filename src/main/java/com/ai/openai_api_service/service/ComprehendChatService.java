@@ -4,10 +4,13 @@ import com.ai.openai_api_service.exception.TenantQuotaExceededException;
 import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
+import com.ai.openai_api_service.model.IntentDefinition;
+import com.ai.openai_api_service.model.LexFulfillmentOutcome;
 import com.ai.openai_api_service.model.LiveHistoryAuditMetadata;
 import com.ai.openai_api_service.model.LiveHistoryResult;
 import com.ai.openai_api_service.model.OpenAIUsage;
 import com.ai.openai_api_service.model.QueryRewriteResult;
+import com.ai.openai_api_service.model.RequestType;
 import com.ai.openai_api_service.model.SuggestionContext;
 import com.ai.openai_api_service.model.SuggestionResult;
 import com.ai.openai_api_service.model.lex.LexRecognizeResult;
@@ -65,6 +68,7 @@ public class ComprehendChatService {
     private final LexFulfillmentService lexFulfillmentService;
     private final LiveHistorySummaryBuilder liveHistorySummaryBuilder;
     private final RequestedInformationResolver requestedInformationResolver;
+    private final IntentApiCatalog intentApiCatalog;
 
     @Value("${openai.response.include-sanitization-debug:false}")
     private boolean includeSanitizationDebug;
@@ -85,7 +89,8 @@ public class ComprehendChatService {
             LexService lexService,
             LexFulfillmentService lexFulfillmentService,
             LiveHistorySummaryBuilder liveHistorySummaryBuilder,
-            RequestedInformationResolver requestedInformationResolver
+            RequestedInformationResolver requestedInformationResolver,
+            IntentApiCatalog intentApiCatalog
     ) {
         this.comprehendAnonymizationService = comprehendAnonymizationService;
         this.chatPersistenceService = chatPersistenceService;
@@ -97,6 +102,7 @@ public class ComprehendChatService {
         this.lexFulfillmentService = lexFulfillmentService;
         this.liveHistorySummaryBuilder = liveHistorySummaryBuilder;
         this.requestedInformationResolver = requestedInformationResolver;
+        this.intentApiCatalog = intentApiCatalog;
     }
 
     public ChatResponse chat(ChatRequest request) {
@@ -246,17 +252,16 @@ public class ComprehendChatService {
         String lexSessionId = lexService.buildLexSessionId(request);
         LexRecognizeResult lexResult = lexService.recognizeText(lexSessionId, originalUserText);
 
-        List<String> requestedInformation = requestedInformationResolver.resolve(
-                originalUserText,
-                lexResult.getIntentName(),
-                lexResult.getSessionAttributes()
-        );
-
         if (lexResult.isFallbackIntent()) {
             return lexFallbackRouteResult(request, lexResult);
         }
 
         if (lexResult.isElicitSlot()) {
+            List<String> requestedInformation = requestedInformationResolver.resolve(
+                    originalUserText,
+                    lexResult.getIntentName(),
+                    lexResult.getSessionAttributes()
+            );
             persistRequestedInformationIfNeeded(lexSessionId, requestedInformation, lexResult);
             ChatResponse chatResponse = new ChatResponse(lexResult.firstMessage(), false);
             chatResponse.setActionTaken("lex_elicit_slot");
@@ -267,14 +272,49 @@ public class ComprehendChatService {
         }
 
         if (lexResult.isReadyForFulfillment()) {
-            ChatResponse chatResponse = lexFulfillmentService.fulfill(lexResult);
+            var fulfillmentOutcome = lexFulfillmentService.fulfillOutcome(lexResult, originalUserText);
+            ChatResponse chatResponse = fulfillmentOutcome.response();
             chatResponse.setLexIntent(lexResult.getIntentName());
             chatResponse.setLexDialogAction(lexResult.getDialogActionType());
+
+            List<String> requestedInformation = resolveRequestedInformationForFulfillment(
+                    originalUserText,
+                    lexResult,
+                    fulfillmentOutcome
+            );
             chatResponse.setRequestedInformation(requestedInformation);
             return LexLiveRouteResult.lex(chatResponse);
         }
 
         return lexFallbackRouteResult(request, lexResult);
+    }
+
+    private List<String> resolveRequestedInformationForFulfillment(
+            String originalUserText,
+            LexRecognizeResult lexResult,
+            LexFulfillmentOutcome fulfillmentOutcome
+    ) {
+        if ("lex_invalid_slot".equals(fulfillmentOutcome.response().getActionTaken())) {
+            return List.of();
+        }
+
+        boolean isSearch = intentApiCatalog.find(lexResult.getIntentName())
+                .map(IntentDefinition::requestType)
+                .filter(type -> type == RequestType.SEARCH)
+                .isPresent();
+
+        if (isSearch) {
+            return requestedInformationResolver.resolveForSearch(
+                    originalUserText,
+                    fulfillmentOutcome.searchCriteria()
+            );
+        }
+
+        return requestedInformationResolver.resolve(
+                originalUserText,
+                lexResult.getIntentName(),
+                lexResult.getSessionAttributes()
+        );
     }
 
     private void persistRequestedInformationIfNeeded(

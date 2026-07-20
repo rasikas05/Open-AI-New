@@ -2,8 +2,11 @@ package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.config.RestTemplateFactory;
 import com.ai.openai_api_service.exception.OpenAIException;
+import com.ai.openai_api_service.model.M3RequestDto;
 import com.ai.openai_api_service.model.python_rag.M3ExecuteRequest;
 import com.ai.openai_api_service.model.python_rag.M3ExecuteResponse;
+import com.ai.openai_api_service.model.python_rag.M3MiCallRequest;
+import com.ai.openai_api_service.model.python_rag.M3MiCallResponse;
 import com.ai.openai_api_service.model.python_rag.PythonQueryRequest;
 import com.ai.openai_api_service.model.python_rag.PythonQueryResponse;
 import com.ai.openai_api_service.model.python_rag.PythonRetrievalRequest;
@@ -45,6 +48,9 @@ public class PythonRagService {
 
     @Value("${python-rag.api.m3-execute-endpoint:/m3/execute}")
     private String pythonM3ExecuteEndpoint;
+
+    @Value("${python-rag.api.m3-call-endpoint:/m3/call}")
+    private String pythonM3CallEndpoint;
 
     @Value("${python-rag.api.timeout-ms:180000}")
     private int timeoutMs;
@@ -175,6 +181,40 @@ public class PythonRagService {
         M3ExecuteRequest body = new M3ExecuteRequest(toolName, args != null ? args : java.util.Map.of());
         log.info("Calling Python M3 execute API. url={}, tool='{}', args={}", url, toolName, args);
         return postForEntity(url, body, M3ExecuteResponse.class, "m3-execute");
+    }
+
+    /**
+     * Execute a generic M3 MI transaction via Python (Lex SEARCH fulfillment path).
+     */
+    public M3MiCallResponse executeMi(M3RequestDto request, String company, int maxReturnedRecords) {
+        ensureEnabled();
+        if (request == null) {
+            throw new OpenAIException("M3 request cannot be null", 400);
+        }
+        if (request.getProgram() == null || request.getProgram().isBlank()) {
+            throw new OpenAIException("M3 program cannot be empty", 400);
+        }
+        if (request.getTransaction() == null || request.getTransaction().isBlank()) {
+            throw new OpenAIException("M3 transaction cannot be empty", 400);
+        }
+
+        String url = buildUrl(pythonM3CallEndpoint);
+        M3MiCallRequest body = new M3MiCallRequest(
+                request.getProgram(),
+                request.getTransaction(),
+                request.getParams() != null ? request.getParams() : java.util.Map.of()
+        );
+        body.setCompany(company);
+        body.setMaxReturnedRecords(maxReturnedRecords);
+
+        log.info(
+                "Calling Python M3 call API. url={}, program='{}', transaction='{}', params={}",
+                url,
+                request.getProgram(),
+                request.getTransaction(),
+                request.getParams()
+        );
+        return postForEntity(url, body, M3MiCallResponse.class, "m3-call");
     }
 
     /**
@@ -357,6 +397,16 @@ public class PythonRagService {
                     executeResponse.getTool(),
                     executeResponse.getActionTaken(),
                     executeResponse.getError()
+            );
+        }
+        if (response instanceof M3MiCallResponse miCallResponse) {
+            int recordCount = miCallResponse.getRecords() != null ? miCallResponse.getRecords().size() : 0;
+            return String.format(
+                    "program=%s transaction=%s records=%s error=%s",
+                    miCallResponse.getProgram(),
+                    miCallResponse.getTransaction(),
+                    recordCount,
+                    miCallResponse.getError()
             );
         }
         return "ok";
