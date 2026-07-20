@@ -10,9 +10,12 @@ import org.springframework.stereotype.Service;
 import software.amazon.awssdk.core.exception.SdkClientException;
 import software.amazon.awssdk.services.lexruntimev2.LexRuntimeV2Client;
 import software.amazon.awssdk.services.lexruntimev2.model.LexRuntimeV2Exception;
+import software.amazon.awssdk.services.lexruntimev2.model.PutSessionRequest;
 import software.amazon.awssdk.services.lexruntimev2.model.RecognizeTextRequest;
 import software.amazon.awssdk.services.lexruntimev2.model.RecognizeTextResponse;
+import software.amazon.awssdk.services.lexruntimev2.model.SessionState;
 
+import java.util.Map;
 import java.util.regex.Pattern;
 
 @Service
@@ -77,13 +80,14 @@ public class LexService {
             RecognizeTextResponse response = lexClient.recognizeText(request);
             LexRecognizeResult result = LexRecognizeResult.fromResponse(response);
             log.info(
-                    "Lex RecognizeText: session='{}' intent='{}' state='{}' dialogAction='{}' slotToElicit='{}' slots={}",
+                    "Lex RecognizeText: session='{}' intent='{}' state='{}' dialogAction='{}' slotToElicit='{}' slots={} attrs={}",
                     lexSessionId,
                     result.getIntentName(),
                     result.getIntentState(),
                     result.getDialogActionType(),
                     result.getSlotToElicit(),
-                    result.getSlots()
+                    result.getSlots(),
+                    result.getSessionAttributes()
             );
             return result;
         } catch (LexRuntimeV2Exception e) {
@@ -104,6 +108,59 @@ public class LexService {
                     "Cannot reach Amazon Lex in region " + region
                             + ". Check DNS/network/VPN or verify lex.region matches your bot's AWS region. "
                             + "Cause: " + e.getMessage(),
+                    502
+            );
+        }
+    }
+
+    /**
+     * Updates Lex session attributes without advancing dialog (intent/slots preserved by Lex).
+     */
+    public void putSessionAttributes(String lexSessionId, Map<String, String> sessionAttributes) {
+        if (!lexProperties.isEnabled()) {
+            throw new OpenAIException("Lex integration is disabled", 503);
+        }
+        String botId = lexProperties.getBotId();
+        String botAliasId = lexProperties.getBotAliasId();
+        if (botId == null || botId.isBlank() || botAliasId == null || botAliasId.isBlank()) {
+            throw new OpenAIException("Lex bot-id and bot-alias-id must be configured", 500);
+        }
+        if (lexSessionId == null || lexSessionId.isBlank()) {
+            throw new OpenAIException("Lex sessionId cannot be empty", 400);
+        }
+        if (sessionAttributes == null || sessionAttributes.isEmpty()) {
+            return;
+        }
+
+        PutSessionRequest request = PutSessionRequest.builder()
+                .botId(botId)
+                .botAliasId(botAliasId)
+                .localeId(lexProperties.getLocaleId())
+                .sessionId(lexSessionId)
+                .sessionState(SessionState.builder()
+                        .sessionAttributes(sessionAttributes)
+                        .build())
+                .build();
+
+        try {
+            lexClient.putSession(request);
+            log.info("Lex PutSession attributes: session='{}' attrs={}", lexSessionId, sessionAttributes);
+        } catch (LexRuntimeV2Exception e) {
+            log.error("Lex PutSession failed: {}", e.awsErrorDetails() != null
+                    ? e.awsErrorDetails().errorMessage()
+                    : e.getMessage());
+            throw new OpenAIException("Lex PutSession failed: " + e.getMessage(), 502);
+        } catch (SdkClientException e) {
+            String region = lexProperties.getRegion();
+            log.error(
+                    "Lex PutSession connectivity failed (region={}): {}",
+                    region,
+                    e.getMessage(),
+                    e
+            );
+            throw new OpenAIException(
+                    "Cannot reach Amazon Lex in region " + region
+                            + ". Cause: " + e.getMessage(),
                     502
             );
         }

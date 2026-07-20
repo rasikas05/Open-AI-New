@@ -10,12 +10,16 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import software.amazon.awssdk.services.lexruntimev2.LexRuntimeV2Client;
 import software.amazon.awssdk.services.lexruntimev2.model.DialogAction;
 import software.amazon.awssdk.services.lexruntimev2.model.Intent;
+import software.amazon.awssdk.services.lexruntimev2.model.PutSessionRequest;
 import software.amazon.awssdk.services.lexruntimev2.model.RecognizeTextRequest;
 import software.amazon.awssdk.services.lexruntimev2.model.RecognizeTextResponse;
 import software.amazon.awssdk.services.lexruntimev2.model.SessionState;
 
+import java.util.Map;
+
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -85,5 +89,19 @@ class LexServiceTest {
         assertEquals("GetCustomer", result.getIntentName());
         assertEquals("CustomerNumber", result.getSlotToElicit());
         verify(lexClient).recognizeText(any(RecognizeTextRequest.class));
+    }
+
+    @Test
+    void putSessionAttributes_callsPutSessionWithAttributes() {
+        lexService.putSessionAttributes(
+                "t1:u1:s1",
+                Map.of("requestedInformation", "ADDRESS")
+        );
+
+        verify(lexClient).putSession(argThat((PutSessionRequest req) ->
+                "t1:u1:s1".equals(req.sessionId())
+                        && req.sessionState() != null
+                        && "ADDRESS".equals(req.sessionState().sessionAttributes().get("requestedInformation"))
+        ));
     }
 }

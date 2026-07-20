@@ -9,6 +9,7 @@ import software.amazon.awssdk.services.lexruntimev2.model.RecognizeTextResponse;
 import software.amazon.awssdk.services.lexruntimev2.model.SessionState;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -71,5 +72,28 @@ class LexRecognizeResultTest {
         LexRecognizeResult result = LexRecognizeResult.fromResponse(response);
 
         assertTrue(result.isFallbackIntent());
+    }
+
+    @Test
+    void fromResponse_parsesSessionAttributes() {
+        RecognizeTextResponse response = RecognizeTextResponse.builder()
+                .sessionState(SessionState.builder()
+                        .intent(Intent.builder()
+                                .name("GetCustomer")
+                                .state("InProgress")
+                                .build())
+                        .sessionAttributes(Map.of(
+                                LexRecognizeResult.ATTR_REQUESTED_INFORMATION,
+                                "ADDRESS"
+                        ))
+                        .build())
+                .build();
+
+        LexRecognizeResult result = LexRecognizeResult.fromResponse(response);
+
+        assertEquals(
+                "ADDRESS",
+                result.getSessionAttributes().get(LexRecognizeResult.ATTR_REQUESTED_INFORMATION)
+        );
     }
 }

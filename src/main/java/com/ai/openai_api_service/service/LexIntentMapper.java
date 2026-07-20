@@ -2,6 +2,7 @@ package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.exception.InvalidLexSlotException;
 import com.ai.openai_api_service.exception.OpenAIException;
+import com.ai.openai_api_service.model.IntentDefinition;
 import com.ai.openai_api_service.model.lex.LexRecognizeResult;
 import org.springframework.stereotype.Component;
 
@@ -20,6 +21,12 @@ public class LexIntentMapper {
     ) {
     }
 
+    private final IntentApiCatalog intentApiCatalog;
+
+    public LexIntentMapper(IntentApiCatalog intentApiCatalog) {
+        this.intentApiCatalog = intentApiCatalog;
+    }
+
     public Optional<MappedM3Request> map(LexRecognizeResult lexResult) {
         if (lexResult == null || lexResult.getIntentName() == null) {
             return Optional.empty();
@@ -32,6 +39,12 @@ public class LexIntentMapper {
     }
 
     private Optional<MappedM3Request> mapGetCustomer(LexRecognizeResult lexResult) {
+        IntentDefinition definition = intentApiCatalog.find("GetCustomer")
+                .orElseThrow(() -> new OpenAIException(
+                        "IntentApiCatalog is missing definition for GetCustomer",
+                        500
+                ));
+
         String customerNumber = lexResult.getSlots().get("CustomerNumber");
         if (customerNumber == null || customerNumber.isBlank()) {
             throw new OpenAIException(
@@ -46,7 +59,12 @@ public class LexIntentMapper {
         }
 
         Map<String, Object> params = new LinkedHashMap<>();
-        params.put("CUNO", normalized.cuno());
-        return Optional.of(new MappedM3Request("CRS610MI", "GetBasicData", params, "read"));
+        params.put(definition.primaryParameter(), normalized.cuno());
+        return Optional.of(new MappedM3Request(
+                definition.program(),
+                definition.transaction(),
+                params,
+                "read"
+        ));
     }
 }
