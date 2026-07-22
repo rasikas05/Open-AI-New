@@ -4,15 +4,7 @@ import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.LexFulfillmentOutcome;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.lex.LexRecognizeResult;
-import com.ai.openai_api_service.service.normalizer.FieldDefinitionRegistry;
-import com.ai.openai_api_service.service.normalizer.SlotNormalizer;
-import com.ai.openai_api_service.service.repair.SlotKeywordRegistry;
-import com.ai.openai_api_service.service.repair.SlotRepairService;
-import com.ai.openai_api_service.service.repair.rules.KeywordUtteranceRepairRule;
-import com.ai.openai_api_service.service.repair.rules.MergedStatusSplitRule;
-import com.ai.openai_api_service.service.repair.rules.MergedTextSplitRule;
-import com.ai.openai_api_service.service.repair.rules.MisassignmentRepairRule;
-import com.ai.openai_api_service.service.validation.SlotValidator;
+import com.ai.openai_api_service.service.api.ApiCapabilityResolver;
 import org.junit.jupiter.api.Test;
 
 import java.util.LinkedHashMap;
@@ -22,43 +14,14 @@ import java.util.Map;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class LexFulfillmentServiceTest {
 
-    private final LexFulfillmentService fulfillmentService = createFulfillmentService();
-
-    private static LexFulfillmentService createFulfillmentService() {
-        IntentApiCatalog intentApiCatalog = new IntentApiCatalog();
-        SearchFieldCatalog searchFieldCatalog = new SearchFieldCatalog();
-        FieldDefinitionRegistry fieldDefinitionRegistry = new FieldDefinitionRegistry();
-        SearchResolver searchResolver = new SearchResolver(searchFieldCatalog);
-        M3RequestBuilder m3RequestBuilder = new M3RequestBuilder(
-                new SqryBuilder(new SearchValueFormatter())
-        );
-        SlotNormalizer slotNormalizer = new SlotNormalizer(searchFieldCatalog, fieldDefinitionRegistry);
-        SlotValidator slotValidator = new SlotValidator(searchFieldCatalog, fieldDefinitionRegistry);
-        SlotKeywordRegistry keywordRegistry = new SlotKeywordRegistry(searchFieldCatalog);
-        SlotRepairService slotRepairService = new SlotRepairService(
-                slotValidator,
-                searchFieldCatalog,
-                fieldDefinitionRegistry,
-                new KeywordUtteranceRepairRule(keywordRegistry),
-                new MisassignmentRepairRule(),
-                new MergedStatusSplitRule(keywordRegistry),
-                new MergedTextSplitRule(keywordRegistry)
-        );
-        return new LexFulfillmentService(
-                new LexIntentMapper(intentApiCatalog),
-                intentApiCatalog,
-                searchResolver,
-                m3RequestBuilder,
-                slotNormalizer,
-                slotRepairService,
-                slotValidator
-        );
-    }
+    private final LexFulfillmentService fulfillmentService =
+            LexFulfillmentServiceTestSupport.createFulfillmentService();
 
     @Test
     void fulfill_buildsM3RequestWithoutCallingPython() {
@@ -294,5 +257,144 @@ class LexFulfillmentServiceTest {
         String sqry = response.getM3Request().getParams().get("SQRY").toString();
         assertEquals("ORNO:1000001234", sqry);
         assertFalse(sqry.contains("CUNO:"));
+    }
+
+    @Test
+    void fulfill_searchWithSession_returnsSearchContextId() {
+        Map<String, String> slots = new LinkedHashMap<>();
+        slots.put("CustomerNumber", "C00001");
+        slots.put("Facility", "A01");
+        slots.put("Status", "33");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "SearchCustomerOrder",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                slots,
+                List.of()
+        );
+
+        LexFulfillmentOutcome outcome = fulfillmentService.fulfillOutcome(
+                lexResult,
+                null,
+                com.ai.openai_api_service.model.LexFulfillmentSession.of("infor", "u1", "s1")
+        );
+
+        assertNotNull(outcome.response().getSearchContextId());
+        assertNotNull(outcome.response().getPagination());
+        assertTrue(outcome.response().getPagination().getSupportsContinuation());
+    }
+
+    @Test
+    void fulfill_getCustomer_salespersonRequest_blocksM3WithMessage() {
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "107685"),
+                List.of()
+        );
+
+        ChatResponse response = fulfillmentService.fulfill(
+                lexResult,
+                "Show salesperson for customer 107685"
+        );
+
+        assertEquals(ApiCapabilityResolver.ACTION_INFORMATION_NOT_AVAILABLE, response.getActionTaken());
+        assertNull(response.getM3Request());
+        assertTrue(response.getReply().contains("salesperson"));
+    }
+
+    @Test
+    void fulfill_getCustomer_phoneRequest_addsReturncols() {
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "107685"),
+                List.of()
+        );
+
+        ChatResponse response = fulfillmentService.fulfill(
+                lexResult,
+                "Show phone number for customer 107685"
+        );
+
+        assertEquals("read", response.getActionTaken());
+        assertEquals("PHNO", response.getM3Request().getParams().get("returncols"));
+    }
+
+    @Test
+    void fulfill_searchCustomerOrder_salespersonRequest_addsReturncols() {
+        Map<String, String> slots = new LinkedHashMap<>();
+        slots.put("CustomerNumber", "C00001");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "SearchCustomerOrder",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                slots,
+                List.of()
+        );
+
+        ChatResponse response = fulfillmentService.fulfill(
+                lexResult,
+                "Show salesperson for customer C00001 orders"
+        );
+
+        assertEquals("search", response.getActionTaken());
+        assertEquals("ORNO,SMCD", response.getM3Request().getParams().get("returncols"));
+    }
+
+    @Test
+    void fulfill_searchCustomerOrder_orderStatusForCustomerLastFive_noSpuriousOrnoInSqry() {
+        Map<String, String> slots = new LinkedHashMap<>();
+        slots.put("CustomerNumber", "Y11100");
+        slots.put("OrderDate", "5");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "SearchCustomerOrder",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                slots,
+                List.of()
+        );
+
+        ChatResponse response = fulfillmentService.fulfill(
+                lexResult,
+                "Show order status for customer Y11100 last 5 orders"
+        );
+
+        assertEquals("search", response.getActionTaken());
+        assertEquals(5, response.getM3Request().getParams().get("maxrecs"));
+        String sqry = response.getM3Request().getParams().get("SQRY").toString();
+        assertEquals("CUNO:Y11100", sqry);
+        assertFalse(sqry.contains("ORNO:"));
+        assertEquals("ORNO,ORST", response.getM3Request().getParams().get("returncols"));
+    }
+
+    @Test
+    void fulfill_getCustomer_phoneAndEmailRequest_addsBothReturncols() {
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "107685"),
+                List.of()
+        );
+
+        ChatResponse response = fulfillmentService.fulfill(
+                lexResult,
+                "Show phone and email for customer 107685"
+        );
+
+        assertEquals("read", response.getActionTaken());
+        assertEquals("PHNO,EMAL", response.getM3Request().getParams().get("returncols"));
     }
 }

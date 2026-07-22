@@ -3,6 +3,8 @@ package com.ai.openai_api_service.service;
 import com.ai.openai_api_service.model.SearchCriterion;
 import com.ai.openai_api_service.model.SearchFieldDefinition;
 import com.ai.openai_api_service.model.lex.LexRecognizeResult;
+import com.ai.openai_api_service.service.api.InformationRequestCatalog;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -67,10 +69,16 @@ public class RequestedInformationResolver {
     );
 
     private final SearchFieldCatalog searchFieldCatalog;
+    private final InformationRequestCatalog informationRequestCatalog;
     private volatile Map<String, String> m3FieldToDisplayGroupCache;
 
-    public RequestedInformationResolver(SearchFieldCatalog searchFieldCatalog) {
+    @Autowired
+    public RequestedInformationResolver(
+            SearchFieldCatalog searchFieldCatalog,
+            InformationRequestCatalog informationRequestCatalog
+    ) {
         this.searchFieldCatalog = searchFieldCatalog;
+        this.informationRequestCatalog = informationRequestCatalog;
     }
 
     /**
@@ -78,7 +86,7 @@ public class RequestedInformationResolver {
      * Used for READ intents and elicit-slot flows. Specific keyword groups win over FULL.
      */
     public List<String> resolve(String userText, String lexIntent, Map<String, String> sessionAttributes) {
-        List<String> fromText = parseFromText(userText);
+        List<String> fromText = mergeLegacyAndCatalog(userText);
         List<String> specific = fromText.stream()
                 .filter(g -> !FULL.equals(g))
                 .toList();
@@ -100,6 +108,9 @@ public class RequestedInformationResolver {
      */
     public List<String> resolveForSearch(String userText, List<SearchCriterion> searchCriteria) {
         Set<String> candidates = new LinkedHashSet<>(parseSearchDisplayFromText(userText));
+        for (String code : informationRequestCatalog.matchCodesFromUtterance(userText)) {
+            candidates.add(normalizeSearchInformationCode(code));
+        }
         if (candidates.isEmpty()) {
             return List.of(FULL);
         }
@@ -119,6 +130,13 @@ public class RequestedInformationResolver {
             return List.of(FULL);
         }
         return List.copyOf(candidates);
+    }
+
+    private static String normalizeSearchInformationCode(String code) {
+        if ("ORDER_STATUS".equalsIgnoreCase(code)) {
+            return STATUS;
+        }
+        return code;
     }
 
     public String encode(List<String> groups) {
@@ -229,6 +247,15 @@ public class RequestedInformationResolver {
             }
         }
         return false;
+    }
+
+    private List<String> mergeLegacyAndCatalog(String userText) {
+        if (userText == null || userText.isBlank()) {
+            return List.of();
+        }
+        Set<String> groups = new LinkedHashSet<>(parseFromText(userText));
+        groups.addAll(informationRequestCatalog.matchCodesFromUtterance(userText));
+        return List.copyOf(groups);
     }
 
     private List<String> parseFromText(String userText) {

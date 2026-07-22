@@ -2,6 +2,7 @@ package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.model.SearchCriterion;
 import com.ai.openai_api_service.model.lex.LexRecognizeResult;
+import com.ai.openai_api_service.service.api.InformationRequestCatalog;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -14,7 +15,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class RequestedInformationResolverTest {
 
     private final RequestedInformationResolver resolver =
-            new RequestedInformationResolver(new SearchFieldCatalog());
+            new RequestedInformationResolver(new SearchFieldCatalog(), new InformationRequestCatalog());
 
     @Test
     void resolve_addressKeyword_returnsAddress() {

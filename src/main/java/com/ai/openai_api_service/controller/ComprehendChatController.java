@@ -4,10 +4,12 @@ import com.ai.openai_api_service.entity.Session;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.MessageDto;
+import com.ai.openai_api_service.model.LexFulfillmentSession;
 import com.ai.openai_api_service.model.SessionSummaryDto;
 import com.ai.openai_api_service.service.ComprehendChatService;
 import com.ai.openai_api_service.service.ChatPersistenceService;
 import com.ai.openai_api_service.service.TenantService;
+import com.ai.openai_api_service.service.query.SearchContextService;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,15 +41,18 @@ public class ComprehendChatController {
     private final ComprehendChatService comprehendChatService;
     private final ChatPersistenceService chatPersistenceService;
     private final TenantService tenantService;
+    private final SearchContextService searchContextService;
 
     public ComprehendChatController(
             ComprehendChatService comprehendChatService,
             ChatPersistenceService chatPersistenceService,
-            TenantService tenantService
+            TenantService tenantService,
+            SearchContextService searchContextService
     ) {
         this.comprehendChatService = comprehendChatService;
         this.chatPersistenceService = chatPersistenceService;
         this.tenantService = tenantService;
+        this.searchContextService = searchContextService;
     }
 
     @PostMapping
@@ -169,6 +174,12 @@ public class ComprehendChatController {
         if (session == null) {
             return ResponseEntity.notFound().build();
         }
+
+        searchContextService.clearSession(LexFulfillmentSession.of(
+                session.getTenant().getTenantCode(),
+                session.getUser().getUsername(),
+                session.getSessionId()
+        ));
 
         SessionSummaryDto response = new SessionSummaryDto(
                 session.getSessionId(),

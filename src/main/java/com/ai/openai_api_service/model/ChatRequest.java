@@ -28,6 +28,10 @@ public class ChatRequest {
     @Schema(example = "[]")
     private List<MessageDto> history;
 
+    @Valid
+    @Schema(description = "Optional M3 MI execution report from widget (pagination cursor)")
+    private M3ClientReportDto m3ClientReport;
+
     public ChatRequest() {
     }
 
@@ -74,6 +78,14 @@ public class ChatRequest {
 
     public void setHistory(List<MessageDto> history) {
         this.history = history;
+    }
+
+    public M3ClientReportDto getM3ClientReport() {
+        return m3ClientReport;
+    }
+
+    public void setM3ClientReport(M3ClientReportDto m3ClientReport) {
+        this.m3ClientReport = m3ClientReport;
     }
 }
 

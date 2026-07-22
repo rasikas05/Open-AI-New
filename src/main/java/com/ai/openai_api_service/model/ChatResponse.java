@@ -37,6 +37,8 @@ public class ChatResponse {
     private String lexSlotToElicit;
     private M3RequestDto m3Request;
     private List<String> requestedInformation;
+    private String searchContextId;
+    private PaginationMetadataDto pagination;
 
     public ChatResponse() {
     }
@@ -276,6 +278,22 @@ public class ChatResponse {
 
     public void setRequestedInformation(List<String> requestedInformation) {
         this.requestedInformation = requestedInformation;
+    }
+
+    public String getSearchContextId() {
+        return searchContextId;
+    }
+
+    public void setSearchContextId(String searchContextId) {
+        this.searchContextId = searchContextId;
+    }
+
+    public PaginationMetadataDto getPagination() {
+        return pagination;
+    }
+
+    public void setPagination(PaginationMetadataDto pagination) {
+        this.pagination = pagination;
     }
 }
 

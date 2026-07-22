@@ -5,6 +5,7 @@ import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.IntentDefinition;
+import com.ai.openai_api_service.model.LexFulfillmentSession;
 import com.ai.openai_api_service.model.LexFulfillmentOutcome;
 import com.ai.openai_api_service.model.LiveHistoryAuditMetadata;
 import com.ai.openai_api_service.model.LiveHistoryResult;
@@ -20,6 +21,7 @@ import com.ai.openai_api_service.model.python_rag.PythonQueryResponse;
 import com.ai.openai_api_service.model.python_rag.PythonRetrievalResponse;
 import com.ai.openai_api_service.model.python_rag.PythonRouteResponse;
 import com.ai.openai_api_service.model.python_rag.SourceItem;
+import com.ai.openai_api_service.service.query.SearchContextService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -69,6 +71,7 @@ public class ComprehendChatService {
     private final LiveHistorySummaryBuilder liveHistorySummaryBuilder;
     private final RequestedInformationResolver requestedInformationResolver;
     private final IntentApiCatalog intentApiCatalog;
+    private final SearchContextService searchContextService;
 
     @Value("${openai.response.include-sanitization-debug:false}")
     private boolean includeSanitizationDebug;
@@ -90,7 +93,8 @@ public class ComprehendChatService {
             LexFulfillmentService lexFulfillmentService,
             LiveHistorySummaryBuilder liveHistorySummaryBuilder,
             RequestedInformationResolver requestedInformationResolver,
-            IntentApiCatalog intentApiCatalog
+            IntentApiCatalog intentApiCatalog,
+            SearchContextService searchContextService
     ) {
         this.comprehendAnonymizationService = comprehendAnonymizationService;
         this.chatPersistenceService = chatPersistenceService;
@@ -103,6 +107,7 @@ public class ComprehendChatService {
         this.liveHistorySummaryBuilder = liveHistorySummaryBuilder;
         this.requestedInformationResolver = requestedInformationResolver;
         this.intentApiCatalog = intentApiCatalog;
+        this.searchContextService = searchContextService;
     }
 
     public ChatResponse chat(ChatRequest request) {
@@ -249,6 +254,15 @@ public class ComprehendChatService {
             String originalUserText,
             String sanitizedUserText
     ) {
+        LexFulfillmentSession fulfillmentSession = LexFulfillmentSession.of(
+                request.getTenantCode(),
+                request.getUserId(),
+                request.getSessionId()
+        );
+        if (request.getM3ClientReport() != null) {
+            searchContextService.applyClientReport(fulfillmentSession, request.getM3ClientReport());
+        }
+
         String lexSessionId = lexService.buildLexSessionId(request);
         LexRecognizeResult lexResult = lexService.recognizeText(lexSessionId, originalUserText);
 
@@ -272,7 +286,11 @@ public class ComprehendChatService {
         }
 
         if (lexResult.isReadyForFulfillment()) {
-            var fulfillmentOutcome = lexFulfillmentService.fulfillOutcome(lexResult, originalUserText);
+            var fulfillmentOutcome = lexFulfillmentService.fulfillOutcome(
+                    lexResult,
+                    originalUserText,
+                    fulfillmentSession
+            );
             ChatResponse chatResponse = fulfillmentOutcome.response();
             chatResponse.setLexIntent(lexResult.getIntentName());
             chatResponse.setLexDialogAction(lexResult.getDialogActionType());
@@ -296,6 +314,11 @@ public class ComprehendChatService {
     ) {
         if ("lex_invalid_slot".equals(fulfillmentOutcome.response().getActionTaken())) {
             return List.of();
+        }
+
+        if (fulfillmentOutcome.queryContext() != null
+                && !fulfillmentOutcome.queryContext().requestedInformation().isEmpty()) {
+            return fulfillmentOutcome.queryContext().requestedInformation();
         }
 
         boolean isSearch = intentApiCatalog.find(lexResult.getIntentName())

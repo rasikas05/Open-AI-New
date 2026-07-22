@@ -23,6 +23,15 @@ public class KeywordUtteranceRepairRule implements SlotRepairRule {
 
     private static final double CONFIDENCE = 0.9;
 
+    private static final Set<String> CAPTURE_STOPWORDS = Set.of(
+            "for", "of", "with", "on", "in", "at", "to", "from", "the", "a", "an",
+            "customer", "order", "orders", "status"
+    );
+
+    private static final Pattern LEADING_TRAILING_PUNCTUATION = Pattern.compile(
+            "^[\\.,;:!?'\"]+|[\\.,;:!?'\"]+$"
+    );
+
     private final SlotKeywordRegistry keywordRegistry;
 
     public KeywordUtteranceRepairRule(SlotKeywordRegistry keywordRegistry) {
@@ -66,7 +75,12 @@ public class KeywordUtteranceRepairRule implements SlotRepairRule {
                 continue;
             }
 
-            if (reservedKeywordTexts.contains(extracted.toLowerCase(Locale.ROOT))) {
+            String normalizedCapture = normalizeForStopwordCheck(extracted);
+            if (normalizedCapture.isBlank() || CAPTURE_STOPWORDS.contains(normalizedCapture)) {
+                continue;
+            }
+
+            if (reservedKeywordTexts.contains(normalizedCapture)) {
                 continue;
             }
 
@@ -92,6 +106,14 @@ public class KeywordUtteranceRepairRule implements SlotRepairRule {
         }
 
         return actions.isEmpty() ? Optional.empty() : Optional.of(new RepairOutcome(List.copyOf(actions)));
+    }
+
+    private static String normalizeForStopwordCheck(String token) {
+        if (token == null || token.isBlank()) {
+            return "";
+        }
+        String trimmed = token.trim().toLowerCase(Locale.ROOT);
+        return LEADING_TRAILING_PUNCTUATION.matcher(trimmed).replaceAll("");
     }
 
     private static boolean isInsideConsumedSpan(int keywordStart, List<ConsumedSpan> consumedSpans) {
