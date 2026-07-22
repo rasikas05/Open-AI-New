@@ -3,10 +3,12 @@ package com.ai.openai_api_service.service.api;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -20,6 +22,12 @@ public class InformationRequestCatalog {
             String displayName,
             List<Pattern> keywordPatterns
     ) {
+    }
+
+    /**
+     * A matched information code with its earliest start index in the utterance.
+     */
+    public record MatchedCode(String code, int startIndex) {
     }
 
     private static final Pattern INFORMATION_SEEKING_LEAD = Pattern.compile(
@@ -45,17 +53,31 @@ public class InformationRequestCatalog {
         return def != null ? def.displayName() : code;
     }
 
+    /**
+     * Match catalog codes from utterance, ordered by earliest appearance in the text.
+     */
     public List<String> matchCodesFromUtterance(String userText) {
+        return matchCodesWithPositions(userText).stream()
+                .map(MatchedCode::code)
+                .toList();
+    }
+
+    /**
+     * Match catalog codes with earliest start index for each code (deduped).
+     */
+    public List<MatchedCode> matchCodesWithPositions(String userText) {
         if (userText == null || userText.isBlank()) {
             return List.of();
         }
         String text = userText.trim();
-        List<String> matched = new ArrayList<>();
+        List<MatchedCode> matched = new ArrayList<>();
         for (InformationRequestDefinition def : byCode.values()) {
-            if (matchesAny(text, def.keywordPatterns())) {
-                matched.add(def.code());
+            int earliest = earliestMatchIndex(text, def.keywordPatterns());
+            if (earliest >= 0) {
+                matched.add(new MatchedCode(def.code(), earliest));
             }
         }
+        matched.sort(Comparator.comparingInt(MatchedCode::startIndex));
         return List.copyOf(matched);
     }
 
@@ -72,20 +94,27 @@ public class InformationRequestCatalog {
         return matchCodesFromUtterance(userText).isEmpty();
     }
 
-    private static boolean matchesAny(String text, List<Pattern> patterns) {
+    private static int earliestMatchIndex(String text, List<Pattern> patterns) {
+        int earliest = -1;
         for (Pattern pattern : patterns) {
-            if (pattern.matcher(text).find()) {
-                return true;
+            Matcher matcher = pattern.matcher(text);
+            if (matcher.find()) {
+                int start = matcher.start();
+                if (earliest < 0 || start < earliest) {
+                    earliest = start;
+                }
             }
         }
-        return false;
+        return earliest;
     }
 
     private static Map<String, InformationRequestDefinition> seed() {
         Map<String, InformationRequestDefinition> map = new LinkedHashMap<>();
+        put(map, "EMAIL", "email", "\\be-?mail\\b", "\\bmail\\b");
+        put(map, "PAYMENT_TERMS", "payment terms", "\\bpayment terms?\\b", "\\bpay terms?\\b");
         put(map, "SALESPERSON", "salesperson", "\\bsalesperson\\b", "\\bsales rep\\b", "\\bhandled by\\b");
         put(map, "DELIVERY_DATE", "delivery date", "\\bdelivery date\\b", "\\bdelivery\\s+date\\b");
-        put(map, "ORDER_AMOUNT", "order amount", "\\border amount\\b");
+        put(map, "ORDER_AMOUNT", "order amount", "\\border amount\\b", "\\bamount\\b");
         put(map, "ORDER_STATUS", "order status", "\\border status\\b");
         put(map, "ORDER_NUMBER", "order number", "\\border number\\b", "\\border no\\b");
         put(map, "LOYALTY_TIER", "loyalty tier", "\\bloyalty\\b", "\\bloyalty tier\\b");

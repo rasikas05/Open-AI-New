@@ -395,6 +395,30 @@ class LexFulfillmentServiceTest {
         );
 
         assertEquals("read", response.getActionTaken());
-        assertEquals("PHNO,EMAL", response.getM3Request().getParams().get("returncols"));
+        assertEquals("PHNO,MAIL", response.getM3Request().getParams().get("returncols"));
+    }
+
+    @Test
+    void fulfill_searchCustomerOrder_statusAndAmount_mergesReturncols() {
+        Map<String, String> slots = new LinkedHashMap<>();
+        slots.put("CustomerNumber", "Y11100");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "SearchCustomerOrder",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                slots,
+                List.of()
+        );
+
+        ChatResponse response = fulfillmentService.fulfill(
+                lexResult,
+                "Show order status and amount for customer Y11100"
+        );
+
+        assertEquals("search", response.getActionTaken());
+        assertEquals("ORNO,ORST,NTAM", response.getM3Request().getParams().get("returncols"));
+        assertEquals("CUNO:Y11100", response.getM3Request().getParams().get("SQRY").toString());
     }
 }

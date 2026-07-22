@@ -176,4 +176,84 @@ class RequestedInformationResolverTest {
                 resolver.resolveForSearch(utterance, criteria)
         );
     }
+
+    @Test
+    void resolveForSearch_orderStatus_returnsStatus() {
+        assertEquals(
+                List.of(RequestedInformationResolver.STATUS),
+                resolver.resolveForSearch("Show order status", List.of())
+        );
+    }
+
+    @Test
+    void resolveForSearch_orderAmount_returnsOrderAmount() {
+        assertEquals(
+                List.of("ORDER_AMOUNT"),
+                resolver.resolveForSearch("Show order amount", List.of())
+        );
+    }
+
+    @Test
+    void resolveForSearch_orderStatusAndAmount_returnsBothInOrder() {
+        assertEquals(
+                List.of(RequestedInformationResolver.STATUS, "ORDER_AMOUNT"),
+                resolver.resolveForSearch("Show order status and amount", List.of())
+        );
+    }
+
+    @Test
+    void resolveForSearch_orderAmountAndDeliveryDate_returnsBothInOrder() {
+        assertEquals(
+                List.of("ORDER_AMOUNT", "DELIVERY_DATE"),
+                resolver.resolveForSearch("Show order amount and delivery date", List.of())
+        );
+    }
+
+    @Test
+    void resolveForSearch_statusAmountAndDeliveryDate_returnsAllInOrder() {
+        assertEquals(
+                List.of(RequestedInformationResolver.STATUS, "ORDER_AMOUNT", "DELIVERY_DATE"),
+                resolver.resolveForSearch("Show order status, amount and delivery date", List.of())
+        );
+    }
+
+    @Test
+    void resolveForSearch_statusSalespersonAndDeliveryDate_returnsAllInOrder() {
+        assertEquals(
+                List.of(RequestedInformationResolver.STATUS, "SALESPERSON", "DELIVERY_DATE"),
+                resolver.resolveForSearch("Show status, salesperson and delivery date", List.of())
+        );
+    }
+
+    @Test
+    void resolveForSearch_email_returnsEmail() {
+        assertEquals(
+                List.of(RequestedInformationResolver.EMAIL),
+                resolver.resolveForSearch("Show email for customer orders", List.of())
+        );
+    }
+
+    @Test
+    void resolveForSearch_paymentTerms_returnsPaymentTerms() {
+        assertEquals(
+                List.of("PAYMENT_TERMS"),
+                resolver.resolveForSearch("Show payment terms for customer orders", List.of())
+        );
+    }
+
+    @Test
+    void resolveForSearch_statusAndEmail_keepsUnsupportedEmailInRequestedInformation() {
+        assertEquals(
+                List.of(RequestedInformationResolver.STATUS, RequestedInformationResolver.EMAIL),
+                resolver.resolveForSearch("Show order status and email", List.of())
+        );
+    }
+
+    @Test
+    void resolve_paymentTerms_returnsPaymentTerms() {
+        assertEquals(
+                List.of("PAYMENT_TERMS"),
+                resolver.resolve("Show payment terms for customer", "GetCustomer", Map.of())
+        );
+    }
 }

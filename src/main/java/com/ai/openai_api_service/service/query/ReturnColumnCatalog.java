@@ -87,7 +87,7 @@ public class ReturnColumnCatalog {
     private static Map<String, List<String>> customerReadGroups() {
         Map<String, List<String>> groups = new LinkedHashMap<>();
         groups.put(RequestedInformationResolver.PHONE, List.of("PHNO"));
-        groups.put(RequestedInformationResolver.EMAIL, List.of("EMAL"));
+        groups.put(RequestedInformationResolver.EMAIL, List.of("MAIL"));
         groups.put(RequestedInformationResolver.ADDRESS, List.of("CUA1", "CUA2", "CUA3", "CUA4", "TOWN", "PONO"));
         groups.put(RequestedInformationResolver.STATUS, List.of("STAT"));
         groups.put(RequestedInformationResolver.BASIC, List.of("CUNM", "CUNO"));

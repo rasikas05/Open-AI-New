@@ -98,7 +98,7 @@ public class ApiFieldCatalog {
     private static void seedGetBasicData(Map<M3ApiKey, ApiEntry> seeded) {
         Map<String, List<String>> fields = new LinkedHashMap<>();
         fields.put(RequestedInformationResolver.PHONE, List.of("PHNO"));
-        fields.put(RequestedInformationResolver.EMAIL, List.of("EMAL"));
+        fields.put(RequestedInformationResolver.EMAIL, List.of("MAIL"));
         fields.put(RequestedInformationResolver.ADDRESS, List.of("CUA1", "CUA2", "CUA3", "CUA4", "TOWN", "PONO"));
         fields.put(RequestedInformationResolver.STATUS, List.of("STAT"));
         fields.put("CUSTOMER_NAME", List.of("CUNM"));
@@ -120,6 +120,7 @@ public class ApiFieldCatalog {
         fields.put("SALESPERSON", List.of("ORNO", "SMCD"));
         fields.put("DELIVERY_DATE", List.of("ORNO", "RLDZ"));
         fields.put("ORDER_AMOUNT", List.of("ORNO", "NTAM"));
+        fields.put("PAYMENT_TERMS", List.of("ORNO", "TEPY"));
         fields.put("ORDER_DATE", List.of("ORNO", "ORDT"));
         fields.put("FACILITY", List.of("ORNO", "FACI"));
         fields.put("CUSTOMER", List.of("ORNO", "CUNO"));

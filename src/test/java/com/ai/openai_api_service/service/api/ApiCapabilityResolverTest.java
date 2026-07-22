@@ -85,7 +85,7 @@ class ApiCapabilityResolverTest {
         );
 
         assertTrue(result.shouldExecuteM3());
-        assertEquals(List.of("PHNO", "EMAL"), List.copyOf(result.supportedReturnColumns()));
+        assertEquals(List.of("PHNO", "MAIL"), List.copyOf(result.supportedReturnColumns()));
     }
 
     @Test
@@ -94,5 +94,36 @@ class ApiCapabilityResolverTest {
 
         assertFalse(result.shouldExecuteM3());
         assertTrue(result.userMessage().contains("loyalty tier"));
+    }
+
+    @Test
+    void resolve_paymentTermsOnGetCustomer_blocksAsUnsupported() {
+        ApiCapabilityResult result = resolver.resolve(getCustomer, List.of("PAYMENT_TERMS"));
+
+        assertFalse(result.shouldExecuteM3());
+        assertEquals(ApiCapabilityResolver.ACTION_INFORMATION_NOT_AVAILABLE, result.actionTaken());
+        assertTrue(result.userMessage().toLowerCase().contains("payment terms"));
+    }
+
+    @Test
+    void resolve_paymentTermsOnSearch_executesWithTepyColumns() {
+        ApiCapabilityResult result = resolver.resolve(searchCustomerOrder, List.of("PAYMENT_TERMS"));
+
+        assertTrue(result.shouldExecuteM3());
+        assertEquals(List.of("ORNO", "TEPY"), List.copyOf(result.supportedReturnColumns()));
+    }
+
+    @Test
+    void resolve_statusAndEmailOnSearch_partialExecuteKeepsUnsupportedEmail() {
+        ApiCapabilityResult result = resolver.resolve(
+                searchCustomerOrder,
+                List.of(RequestedInformationResolver.STATUS, RequestedInformationResolver.EMAIL)
+        );
+
+        assertTrue(result.shouldExecuteM3());
+        assertEquals(List.of("ORNO", "ORST"), List.copyOf(result.supportedReturnColumns()));
+        assertEquals(List.of(RequestedInformationResolver.STATUS), result.supportedCodes());
+        assertEquals(List.of(RequestedInformationResolver.EMAIL), result.unsupportedCodes());
+        assertTrue(result.userMessage().toLowerCase().contains("email"));
     }
 }
