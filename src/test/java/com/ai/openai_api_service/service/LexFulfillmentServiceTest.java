@@ -1,11 +1,18 @@
 package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.exception.OpenAIException;
+import com.ai.openai_api_service.model.LexFulfillmentSession;
+import com.ai.openai_api_service.model.M3ClientReportDto;
+import com.ai.openai_api_service.service.query.InMemorySearchContextService;
 import com.ai.openai_api_service.model.LexFulfillmentOutcome;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.lex.LexRecognizeResult;
 import com.ai.openai_api_service.service.api.ApiCapabilityResolver;
+import com.ai.openai_api_service.service.validation.M3RequestExecutionValidator;
+import com.ai.openai_api_service.service.validation.SearchCriteriaValidator;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -160,7 +167,7 @@ class LexFulfillmentServiceTest {
     }
 
     @Test
-    void fulfill_searchIntent_emptySlots_omitsSqry() {
+    void fulfill_searchIntent_emptySlots_blocksWithoutM3Request() {
         LexRecognizeResult lexResult = new LexRecognizeResult(
                 "SearchCustomerOrder",
                 "ReadyForFulfillment",
@@ -172,12 +179,58 @@ class LexFulfillmentServiceTest {
 
         ChatResponse response = fulfillmentService.fulfill(lexResult);
 
-        assertEquals("search", response.getActionTaken());
-        assertEquals("OIS100MI", response.getM3Request().getProgram());
-        assertEquals("SearchHead", response.getM3Request().getTransaction());
-        assertTrue(response.getM3Request().getParams().isEmpty());
-        assertFalse(response.getM3Request().getParams().containsKey("SQRY"));
+        assertEquals(SearchCriteriaValidator.ACTION_SEARCH_CRITERIA_MISSING, response.getActionTaken());
+        assertEquals(SearchCriteriaValidator.NO_CRITERIA_MESSAGE, response.getReply());
+        assertNull(response.getM3Request());
         assertNull(response.getM3Data());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "SearchCustomerOrder",
+            "SearchPurchaseOrder",
+            "SearchManufacturingOrder",
+            "SearchDistributionOrder"
+    })
+    void fulfill_searchIntents_emptySlots_allBlocked(String intentName) {
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                intentName,
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of(),
+                List.of()
+        );
+
+        ChatResponse response = fulfillmentService.fulfill(lexResult);
+
+        assertEquals(SearchCriteriaValidator.ACTION_SEARCH_CRITERIA_MISSING, response.getActionTaken());
+        assertEquals(SearchCriteriaValidator.NO_CRITERIA_MESSAGE, response.getReply());
+        assertNull(response.getM3Request());
+    }
+
+    @Test
+    void fulfill_searchPurchaseOrder_placeholderSlotValues_blocksInvalidM3Request() {
+        Map<String, String> slots = new LinkedHashMap<>();
+        slots.put("Warehouse", "AND");
+        slots.put("Supplier", "WAREHOUSE");
+        slots.put("Buyer", "BUYER");
+        slots.put("PurchaseOrderNumber", "11");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "SearchPurchaseOrder",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                slots,
+                List.of()
+        );
+
+        ChatResponse response = fulfillmentService.fulfill(lexResult);
+
+        assertEquals(M3RequestExecutionValidator.ACTION_M3_SEARCH_REQUEST_INVALID, response.getActionTaken());
+        assertEquals(M3RequestExecutionValidator.INVALID_SEARCH_MESSAGE, response.getReply());
+        assertNull(response.getM3Request());
     }
 
     @Test
@@ -284,6 +337,49 @@ class LexFulfillmentServiceTest {
         assertNotNull(outcome.response().getSearchContextId());
         assertNotNull(outcome.response().getPagination());
         assertTrue(outcome.response().getPagination().getSupportsContinuation());
+    }
+
+    @Test
+    void fulfill_searchContinuation_emptySlots_stillBuildsM3Request() {
+        InMemorySearchContextService searchContextService =
+                new InMemorySearchContextService(new IntentApiCatalog(), 3600);
+        LexFulfillmentService service =
+                LexFulfillmentServiceTestSupport.createFulfillmentService(searchContextService);
+        LexFulfillmentSession session = LexFulfillmentSession.of("infor", "u1", "s-cont");
+
+        Map<String, String> slots = new LinkedHashMap<>();
+        slots.put("CustomerNumber", "C00001");
+
+        LexRecognizeResult initial = new LexRecognizeResult(
+                "SearchCustomerOrder",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                slots,
+                List.of()
+        );
+        LexFulfillmentOutcome first = service.fulfillOutcome(initial, null, session);
+        assertNotNull(first.response().getM3Request());
+        assertNotNull(first.searchContext());
+
+        M3ClientReportDto report = new M3ClientReportDto();
+        report.setSearchContextId(first.searchContext().searchContextId());
+        report.setPositionkey("cursor-next");
+        searchContextService.applyClientReport(session, report);
+
+        LexRecognizeResult continuation = new LexRecognizeResult(
+                "SearchCustomerOrder",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of(),
+                List.of()
+        );
+        ChatResponse response = service.fulfillOutcome(continuation, "show more", session).response();
+
+        assertEquals("search", response.getActionTaken());
+        assertNotNull(response.getM3Request());
+        assertEquals("cursor-next", response.getM3Request().getParams().get("positionkey"));
     }
 
     @Test
