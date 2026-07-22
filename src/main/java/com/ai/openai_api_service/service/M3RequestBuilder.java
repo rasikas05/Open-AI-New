@@ -5,6 +5,7 @@ import com.ai.openai_api_service.model.QueryContext;
 import com.ai.openai_api_service.model.RequestType;
 import com.ai.openai_api_service.model.SearchCriterion;
 import com.ai.openai_api_service.service.api.SpecificInformationHelper;
+import com.ai.openai_api_service.service.validation.SearchCriteriaValidator;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
@@ -65,7 +66,7 @@ public class M3RequestBuilder {
             Map<String, Object> params
     ) {
         List<SearchCriterion> criteria = context.criteria();
-        if (!hasUsableCriteria(criteria)) {
+        if (!SearchCriteriaValidator.hasUsableCriteria(criteria)) {
             return;
         }
         String sqry = sqryBuilder.build(criteria);
@@ -100,23 +101,6 @@ public class M3RequestBuilder {
                 params.put("returncols", returncols);
             }
         }
-    }
-
-    private static boolean hasUsableCriteria(List<SearchCriterion> criteria) {
-        if (criteria == null || criteria.isEmpty()) {
-            return false;
-        }
-        for (SearchCriterion criterion : criteria) {
-            if (criterion == null) {
-                continue;
-            }
-            String field = criterion.field();
-            String value = criterion.value();
-            if (field != null && !field.isBlank() && value != null && !value.isBlank()) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private static String actionTakenFor(RequestType requestType) {

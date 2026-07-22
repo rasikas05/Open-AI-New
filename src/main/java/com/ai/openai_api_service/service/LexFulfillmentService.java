@@ -23,6 +23,8 @@ import com.ai.openai_api_service.service.api.ApiCapabilityResult;
 import com.ai.openai_api_service.service.api.SpecificInformationHelper;
 import com.ai.openai_api_service.service.repair.SlotRepairService;
 import com.ai.openai_api_service.service.validation.SlotValidator;
+import com.ai.openai_api_service.service.validation.SearchCriteriaValidator;
+import com.ai.openai_api_service.service.validation.M3RequestExecutionValidator;
 import com.ai.openai_api_service.service.validation.ValidatedSlot;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -51,6 +53,7 @@ public class LexFulfillmentService {
     private final QueryUnderstander queryUnderstander;
     private final SearchContextService searchContextService;
     private final ApiCapabilityResolver apiCapabilityResolver;
+    private final M3RequestExecutionValidator m3RequestExecutionValidator;
 
     public LexFulfillmentService(
             IntentApiCatalog intentApiCatalog,
@@ -62,7 +65,8 @@ public class LexFulfillmentService {
             QueryContextAssembler queryContextAssembler,
             QueryUnderstander queryUnderstander,
             SearchContextService searchContextService,
-            ApiCapabilityResolver apiCapabilityResolver
+            ApiCapabilityResolver apiCapabilityResolver,
+            M3RequestExecutionValidator m3RequestExecutionValidator
     ) {
         this.intentApiCatalog = intentApiCatalog;
         this.searchResolver = searchResolver;
@@ -74,6 +78,7 @@ public class LexFulfillmentService {
         this.queryUnderstander = queryUnderstander;
         this.searchContextService = searchContextService;
         this.apiCapabilityResolver = apiCapabilityResolver;
+        this.m3RequestExecutionValidator = m3RequestExecutionValidator;
     }
 
     public ChatResponse fulfill(LexRecognizeResult lexResult) {
@@ -222,6 +227,17 @@ public class LexFulfillmentService {
         Optional<LexIntentMapper.MappedM3Request> continuationMapped =
                 searchContextService.buildContinuationRequest(session, buildContext);
 
+        if (continuationMapped.isEmpty()
+                && intentDefinition.requestType() == RequestType.SEARCH
+                && !SearchCriteriaValidator.hasUsableCriteria(buildContext.criteria())) {
+            return SearchPipelineResult.blocked(
+                    SearchCriteriaValidator.NO_CRITERIA_MESSAGE,
+                    SearchCriteriaValidator.ACTION_SEARCH_CRITERIA_MISSING,
+                    criteria,
+                    buildContext
+            );
+        }
+
         String capabilityUserMessage = null;
         if (continuationMapped.isEmpty()
                 && SpecificInformationHelper.isSpecificInformationRequest(buildContext.requestedInformation())) {
@@ -246,6 +262,17 @@ public class LexFulfillmentService {
         LexIntentMapper.MappedM3Request mapped = continuationMapped.orElseGet(
                 () -> m3RequestBuilder.build(intentDefinition, contextForBuild)
         );
+
+        if (continuationMapped.isEmpty()
+                && intentDefinition.requestType() == RequestType.SEARCH
+                && !m3RequestExecutionValidator.isExecutable(intentDefinition, mapped)) {
+            return SearchPipelineResult.blocked(
+                    M3RequestExecutionValidator.INVALID_SEARCH_MESSAGE,
+                    M3RequestExecutionValidator.ACTION_M3_SEARCH_REQUEST_INVALID,
+                    criteria,
+                    contextForBuild
+            );
+        }
 
         SearchContext searchContext = null;
         if (intentDefinition.requestType() == RequestType.SEARCH

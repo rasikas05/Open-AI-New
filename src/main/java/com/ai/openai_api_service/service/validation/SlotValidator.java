@@ -3,7 +3,6 @@ package com.ai.openai_api_service.service.validation;
 import com.ai.openai_api_service.service.SearchFieldCatalog;
 import com.ai.openai_api_service.service.normalizer.FieldDefinition;
 import com.ai.openai_api_service.service.normalizer.FieldDefinitionRegistry;
-import com.ai.openai_api_service.service.normalizer.FieldType;
 import com.ai.openai_api_service.service.normalizer.SlotValue;
 import org.springframework.stereotype.Service;
 
@@ -55,7 +54,8 @@ public class SlotValidator {
                 continue;
             }
 
-            ValidationResult result = validateValue(fieldDefinition.get(), value);
+            FieldValueValidator.ValidationOutcome result =
+                    FieldValueValidator.validate(fieldDefinition.get(), value);
             results.add(new ValidatedSlot(
                     lexSlot,
                     m3Field.get(),
@@ -72,45 +72,5 @@ public class SlotValidator {
             return true;
         }
         return validatedSlots.stream().allMatch(ValidatedSlot::valid);
-    }
-
-    private static ValidationResult validateValue(FieldDefinition definition, String value) {
-        if (!definition.allowSpaces() && value.contains(" ")) {
-            return ValidationResult.fail("Spaces are not allowed");
-        }
-
-        if (definition.expectedLength() != null && value.length() != definition.expectedLength()) {
-            return ValidationResult.fail(
-                    "Expected length=" + definition.expectedLength() + ", received=" + value.length()
-            );
-        }
-
-        if (definition.minLength() != null && value.length() < definition.minLength()) {
-            return ValidationResult.fail(
-                    "Minimum length=" + definition.minLength() + ", received=" + value.length()
-            );
-        }
-
-        if (definition.maxLength() != null && value.length() > definition.maxLength()) {
-            return ValidationResult.fail(
-                    "Maximum length=" + definition.maxLength() + ", received=" + value.length()
-            );
-        }
-
-        if (definition.regexPattern() != null && !definition.regexPattern().matcher(value).matches()) {
-            return ValidationResult.fail("Value does not match expected pattern for " + definition.fieldType());
-        }
-
-        return ValidationResult.ok();
-    }
-
-    private record ValidationResult(boolean passed, String reason) {
-        static ValidationResult ok() {
-            return new ValidationResult(true, null);
-        }
-
-        static ValidationResult fail(String reason) {
-            return new ValidationResult(false, reason);
-        }
     }
 }
