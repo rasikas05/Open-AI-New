@@ -158,6 +158,32 @@ class SlotRepairServiceTest {
     }
 
     @Test
+    void repair_orderStatusForCustomer_doesNotCaptureForAsStatus() {
+        Map<String, SlotValue> slots = new LinkedHashMap<>();
+        slots.put("CustomerNumber", new SlotValue("Y11100"));
+        slots.put("OrderDate", new SlotValue("5"));
+
+        String utterance = "Show order status for customer Y11100 last 5 orders";
+
+        Map<String, SlotValue> repaired = repairService.repair("SearchCustomerOrder", utterance, slots);
+
+        assertFalse(repaired.containsKey("Status"));
+        assertFalse(repaired.containsKey("CustomerOrderNumber"));
+        assertEquals("Y11100", repaired.get("CustomerNumber").value());
+    }
+
+    @Test
+    void repair_mergedStatusSplit_doesNotSplitNonNumericStatus() {
+        Map<String, SlotValue> slots = new LinkedHashMap<>();
+        slots.put("Status", new SlotValue("FOR"));
+
+        Map<String, SlotValue> repaired = repairService.repair("SearchCustomerOrder", null, slots);
+
+        assertEquals("FOR", repaired.get("Status").value());
+        assertFalse(repaired.containsKey("CustomerOrderNumber"));
+    }
+
+    @Test
     void repair_respectsMaxIterations() {
         Map<String, SlotValue> slots = new LinkedHashMap<>();
         slots.put("Warehouse", new SlotValue("MAHESH"));

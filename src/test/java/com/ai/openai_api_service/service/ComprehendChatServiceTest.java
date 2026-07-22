@@ -15,6 +15,8 @@ import com.ai.openai_api_service.model.python_rag.ChunkItem;
 import com.ai.openai_api_service.model.QueryRewriteResult;
 import com.ai.openai_api_service.model.python_rag.PythonRetrievalResponse;
 import com.ai.openai_api_service.model.python_rag.PythonRouteResponse;
+import com.ai.openai_api_service.service.query.SearchContextService;
+import com.ai.openai_api_service.service.api.InformationRequestCatalog;
 import com.ai.openai_api_service.service.TenantQuotaService.QuotaCheckResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -66,11 +68,13 @@ class ComprehendChatServiceTest {
     private LexService lexService;
     @Mock
     private LexFulfillmentService lexFulfillmentService;
+    @Mock
+    private SearchContextService searchContextService;
     @Spy
     private LiveHistorySummaryBuilder liveHistorySummaryBuilder = new LiveHistorySummaryBuilder();
     @Spy
     private RequestedInformationResolver requestedInformationResolver =
-            new RequestedInformationResolver(new SearchFieldCatalog());
+            new RequestedInformationResolver(new SearchFieldCatalog(), new InformationRequestCatalog());
     @Spy
     private IntentApiCatalog intentApiCatalog = new IntentApiCatalog();
 
@@ -605,7 +609,7 @@ class ComprehendChatServiceTest {
         assertNull(response.getM3Request());
         verify(pythonRagService, never()).query(any());
         verify(pythonRagService, never()).executeLiveIntent(anyString(), any());
-        verify(lexFulfillmentService, never()).fulfillOutcome(any(), any());
+        verify(lexFulfillmentService, never()).fulfillOutcome(any(), any(), any());
     }
 
     @Test
@@ -634,7 +638,7 @@ class ComprehendChatServiceTest {
                 eq("tenant1:user1:session1"),
                 eq(Map.of(LexRecognizeResult.ATTR_REQUESTED_INFORMATION, "ADDRESS"))
         );
-        verify(lexFulfillmentService, never()).fulfillOutcome(any(), any());
+        verify(lexFulfillmentService, never()).fulfillOutcome(any(), any(), any());
     }
 
     @Test
@@ -659,7 +663,7 @@ class ComprehendChatServiceTest {
         ChatResponse fulfillResponse = new ChatResponse("Looking up customer CSU001...", false);
         fulfillResponse.setActionTaken("read");
         fulfillResponse.setM3Request(m3Request);
-        when(lexFulfillmentService.fulfillOutcome(lexResult, "show customer CSU001"))
+        when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq("show customer CSU001"), any()))
                 .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
@@ -674,7 +678,7 @@ class ComprehendChatServiceTest {
         assertEquals("GetBasicData", response.getM3Request().getTransaction());
         assertEquals("CSU001", response.getM3Request().getParams().get("CUNO"));
         assertNull(response.getM3Data());
-        verify(lexFulfillmentService).fulfillOutcome(lexResult, "show customer CSU001");
+        verify(lexFulfillmentService).fulfillOutcome(eq(lexResult), eq("show customer CSU001"), any());
         verify(pythonRagService, never()).query(any());
         verify(pythonRagService, never()).executeLiveIntent(anyString(), any());
         String expectedHistorySummary =
@@ -718,7 +722,7 @@ class ComprehendChatServiceTest {
         ChatResponse fulfillResponse = new ChatResponse("Looking up customer Y11100...", false);
         fulfillResponse.setActionTaken("read");
         fulfillResponse.setM3Request(m3Request);
-        when(lexFulfillmentService.fulfillOutcome(lexResult, "Y11100"))
+        when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq("Y11100"), any()))
                 .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
@@ -753,7 +757,7 @@ class ComprehendChatServiceTest {
         ChatResponse fulfillResponse = new ChatResponse("Looking up customer Y11100...", false);
         fulfillResponse.setActionTaken("read");
         fulfillResponse.setM3Request(m3Request);
-        when(lexFulfillmentService.fulfillOutcome(lexResult, "Show address of customer Y11100"))
+        when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq("Show address of customer Y11100"), any()))
                 .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
@@ -787,7 +791,7 @@ class ComprehendChatServiceTest {
         assertEquals("lex_fallback", response.getActionTaken());
         assertNull(response.getM3Request());
         assertNull(response.getRetrievalReason());
-        verify(lexFulfillmentService, never()).fulfillOutcome(any(), any());
+        verify(lexFulfillmentService, never()).fulfillOutcome(any(), any(), any());
         verify(pythonRagService, never()).query(any());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any());
         verify(pythonRagService, never()).executeLiveIntent(anyString(), any());
@@ -819,7 +823,7 @@ class ComprehendChatServiceTest {
         assertEquals(ComprehendChatService.LEX_FALLBACK_CLARIFICATION_MESSAGE, response.getReply());
         assertEquals("lex_fallback", response.getActionTaken());
         assertNull(response.getM3Request());
-        verify(lexFulfillmentService, never()).fulfillOutcome(any(), any());
+        verify(lexFulfillmentService, never()).fulfillOutcome(any(), any(), any());
         verify(pythonRagService, never()).query(any());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any());
         verify(openAIService, never()).chatWithRagContext(any(), anyList());

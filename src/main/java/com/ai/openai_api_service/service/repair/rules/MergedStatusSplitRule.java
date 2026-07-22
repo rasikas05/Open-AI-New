@@ -53,6 +53,10 @@ public class MergedStatusSplitRule implements SlotRepairRule {
             }
 
             String value = validated.value();
+            if (!DIGITS_ONLY.matcher(value).matches()) {
+                continue;
+            }
+
             String statusPart = value.substring(value.length() - expectedLength);
             String orderPart = value.substring(0, value.length() - expectedLength);
             if (orderPart.isBlank()) {

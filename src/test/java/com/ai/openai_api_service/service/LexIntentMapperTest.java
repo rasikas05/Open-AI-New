@@ -13,7 +13,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class LexIntentMapperTest {
 
-    private final LexIntentMapper mapper = new LexIntentMapper(new IntentApiCatalog());
+    private final LexIntentMapper mapper = new LexIntentMapper(
+            new IntentApiCatalog(),
+            new M3RequestBuilder(new SqryBuilder(new SearchValueFormatter()))
+    );
 
     @Test
     void mapGetCustomer_mapsSlotToM3Request() {
