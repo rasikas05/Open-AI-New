@@ -9,6 +9,7 @@ import com.ai.openai_api_service.model.SessionSummaryDto;
 import com.ai.openai_api_service.service.ComprehendChatService;
 import com.ai.openai_api_service.service.ChatPersistenceService;
 import com.ai.openai_api_service.service.TenantService;
+import com.ai.openai_api_service.service.guided.InMemoryGuidedSearchSessionService;
 import com.ai.openai_api_service.service.query.SearchContextService;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
@@ -42,17 +43,20 @@ public class ComprehendChatController {
     private final ChatPersistenceService chatPersistenceService;
     private final TenantService tenantService;
     private final SearchContextService searchContextService;
+    private final InMemoryGuidedSearchSessionService guidedSearchSessionService;
 
     public ComprehendChatController(
             ComprehendChatService comprehendChatService,
             ChatPersistenceService chatPersistenceService,
             TenantService tenantService,
-            SearchContextService searchContextService
+            SearchContextService searchContextService,
+            InMemoryGuidedSearchSessionService guidedSearchSessionService
     ) {
         this.comprehendChatService = comprehendChatService;
         this.chatPersistenceService = chatPersistenceService;
         this.tenantService = tenantService;
         this.searchContextService = searchContextService;
+        this.guidedSearchSessionService = guidedSearchSessionService;
     }
 
     @PostMapping
@@ -176,6 +180,11 @@ public class ComprehendChatController {
         }
 
         searchContextService.clearSession(LexFulfillmentSession.of(
+                session.getTenant().getTenantCode(),
+                session.getUser().getUsername(),
+                session.getSessionId()
+        ));
+        guidedSearchSessionService.clear(LexFulfillmentSession.of(
                 session.getTenant().getTenantCode(),
                 session.getUser().getUsername(),
                 session.getSessionId()

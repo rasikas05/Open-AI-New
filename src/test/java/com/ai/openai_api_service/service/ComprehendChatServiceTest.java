@@ -3,6 +3,7 @@ package com.ai.openai_api_service.service;
 import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.LiveHistoryAuditMetadata;
+import com.ai.openai_api_service.model.GuidedSearchState;
 import com.ai.openai_api_service.model.LexFulfillmentOutcome;
 import com.ai.openai_api_service.model.M3RequestDto;
 import com.ai.openai_api_service.model.SearchCriterion;
@@ -16,6 +17,8 @@ import com.ai.openai_api_service.model.QueryRewriteResult;
 import com.ai.openai_api_service.model.python_rag.PythonRetrievalResponse;
 import com.ai.openai_api_service.model.python_rag.PythonRouteResponse;
 import com.ai.openai_api_service.service.query.SearchContextService;
+import com.ai.openai_api_service.service.guided.GuidedSearchService;
+import com.ai.openai_api_service.service.guided.InMemoryGuidedSearchSessionService;
 import com.ai.openai_api_service.service.api.InformationRequestCatalog;
 import com.ai.openai_api_service.service.TenantQuotaService.QuotaCheckResult;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,6 +34,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -45,6 +49,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.nullable;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -70,6 +75,10 @@ class ComprehendChatServiceTest {
     private LexFulfillmentService lexFulfillmentService;
     @Mock
     private SearchContextService searchContextService;
+    @Mock
+    private GuidedSearchService guidedSearchService;
+    @Mock
+    private InMemoryGuidedSearchSessionService guidedSearchSessionService;
     @Spy
     private LiveHistorySummaryBuilder liveHistorySummaryBuilder = new LiveHistorySummaryBuilder();
     @Spy
@@ -85,6 +94,7 @@ class ComprehendChatServiceTest {
     void setUp() {
         ReflectionTestUtils.setField(comprehendChatService, "ragFallbackOnNoAnswer", true);
         ReflectionTestUtils.setField(comprehendChatService, "queryRewriteEnabled", false);
+        lenient().when(guidedSearchSessionService.find(any())).thenReturn(Optional.empty());
     }
 
     @Test
@@ -828,6 +838,115 @@ class ComprehendChatServiceTest {
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any());
         verify(openAIService, never()).chatWithRagContext(any(), anyList());
         verify(openAIService, never()).chatWithoutPersistence(any());
+    }
+
+    @Test
+    void liveRoute_searchCriteriaMissing_startsGuidedSearchMenu() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("Show customer orders")).thenReturn(new PythonRouteResponse("live"));
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "SearchCustomerOrder",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of(),
+                List.of()
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "Show customer orders")).thenReturn(lexResult);
+
+        ChatResponse missing = new ChatResponse("Unable to process...", false);
+        missing.setActionTaken("search_criteria_missing");
+        missing.setLexIntent("SearchCustomerOrder");
+        when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq("Show customer orders"), any()))
+                .thenReturn(new LexFulfillmentOutcome(missing, List.of()));
+
+        ChatResponse menu = new ChatResponse("I can search customer orders.", false);
+        menu.setActionTaken(GuidedSearchService.ACTION_SELECT_FIELD);
+        menu.setLexIntent("SearchCustomerOrder");
+        menu.setCollectingTool("SearchCustomerOrder");
+        menu.setNextField(GuidedSearchService.NEXT_FIELD_CHOICE);
+        when(guidedSearchService.start(eq("SearchCustomerOrder"), any())).thenReturn(menu);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("Show customer orders"));
+
+        assertEquals(GuidedSearchService.ACTION_SELECT_FIELD, response.getActionTaken());
+        assertTrue(response.getReply().contains("customer orders"));
+        verify(guidedSearchService).start(eq("SearchCustomerOrder"), any());
+        verify(lexService).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void liveRoute_activeGuidedSession_skipsLexAndHandlesTurn() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("2")).thenReturn(new PythonRouteResponse("live"));
+
+        GuidedSearchState state = GuidedSearchState.selectField("SearchCustomerOrder");
+        when(guidedSearchSessionService.find(any())).thenReturn(Optional.of(state));
+
+        ChatResponse collect = new ChatResponse("Please enter the customer order number.", false);
+        collect.setActionTaken(GuidedSearchService.ACTION_COLLECT_VALUE);
+        collect.setNextField("ORNO");
+        when(guidedSearchService.handleTurn(any(), eq(state), eq("2")))
+                .thenReturn(GuidedSearchService.GuidedTurnResult.response(collect));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("2"));
+
+        assertEquals(GuidedSearchService.ACTION_COLLECT_VALUE, response.getActionTaken());
+        assertEquals("ORNO", response.getNextField());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexFulfillmentService, never()).fulfillSearch(anyString(), any(), anyString(), any());
+    }
+
+    @Test
+    void liveRoute_guidedValueCollected_resumesFulfillSearch() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("1000001234")).thenReturn(new PythonRouteResponse("live"));
+
+        GuidedSearchState state = GuidedSearchState.collectValue(
+                "SearchCustomerOrder", "ORNO", "CustomerOrderNumber");
+        when(guidedSearchSessionService.find(any())).thenReturn(Optional.of(state));
+        when(guidedSearchService.handleTurn(any(), eq(state), eq("1000001234")))
+                .thenReturn(GuidedSearchService.GuidedTurnResult.resume(
+                        "SearchCustomerOrder",
+                        Map.of("CustomerOrderNumber", "1000001234")
+                ));
+
+        M3RequestDto m3Request = new M3RequestDto(
+                true, "OIS100MI", "SearchHead", Map.of("SQRY", "ORNO:'1000001234'"));
+        ChatResponse fulfilled = new ChatResponse("Processing your request...", false);
+        fulfilled.setActionTaken("search");
+        fulfilled.setM3Request(m3Request);
+        fulfilled.setLexIntent("SearchCustomerOrder");
+        when(lexFulfillmentService.fulfillSearch(
+                eq("SearchCustomerOrder"),
+                eq(Map.of("CustomerOrderNumber", "1000001234")),
+                eq("1000001234"),
+                any()
+        )).thenReturn(new LexFulfillmentOutcome(fulfilled, List.of(new SearchCriterion("ORNO", "1000001234"))));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("1000001234"));
+
+        assertEquals("search", response.getActionTaken());
+        assertNotNull(response.getM3Request());
+        assertEquals("OIS100MI", response.getM3Request().getProgram());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexFulfillmentService).fulfillSearch(
+                eq("SearchCustomerOrder"),
+                eq(Map.of("CustomerOrderNumber", "1000001234")),
+                eq("1000001234"),
+                any()
+        );
     }
 
     private void stubQuotaAllowed() {

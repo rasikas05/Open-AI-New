@@ -113,17 +113,58 @@ public class LexFulfillmentService {
         }
     }
 
+    /**
+     * Resume SEARCH fulfillment with an explicit slot map (guided search).
+     * Reuses the same SEARCH pipeline as Lex ReadyForFulfillment — no LexRecognizeResult required.
+     */
+    public LexFulfillmentOutcome fulfillSearch(
+            String intentName,
+            Map<String, String> slots,
+            String userUtterance,
+            LexFulfillmentSession session
+    ) {
+        try {
+            SearchPipelineResult pipeline = resolveSearchPipeline(
+                    intentName,
+                    slots != null ? slots : Map.of(),
+                    Map.of(),
+                    userUtterance,
+                    session
+            );
+            return toFulfillmentOutcome(intentName, pipeline);
+        } catch (InvalidLexSlotException e) {
+            log.info(
+                    "Guided search fulfillment rejected invalid slot: intent='{}' message='{}'",
+                    intentName,
+                    e.getUserMessage()
+            );
+            ChatResponse chatResponse = new ChatResponse(e.getUserMessage(), false);
+            chatResponse.setActionTaken("lex_invalid_slot");
+            chatResponse.setLexIntent(intentName);
+            return new LexFulfillmentOutcome(chatResponse, List.of(), null, null);
+        }
+    }
+
     private LexFulfillmentOutcome fulfillOutcomeMapped(
             LexRecognizeResult lexResult,
             String userUtterance,
             LexFulfillmentSession session
     ) {
-        SearchPipelineResult pipeline = resolveSearchPipeline(lexResult, userUtterance, session);
+        SearchPipelineResult pipeline = resolveSearchPipeline(
+                lexResult.getIntentName(),
+                lexResult.getSlots(),
+                lexResult.getSessionAttributes(),
+                userUtterance,
+                session
+        );
+        return toFulfillmentOutcome(lexResult.getIntentName(), pipeline);
+    }
 
+    private LexFulfillmentOutcome toFulfillmentOutcome(String intentName, SearchPipelineResult pipeline) {
         if (pipeline.blocked()) {
             ChatResponse chatResponse = new ChatResponse(pipeline.blockedMessage(), false);
             chatResponse.setActionTaken(pipeline.blockedActionTaken());
-            chatResponse.setLexIntent(lexResult.getIntentName());
+            chatResponse.setLexIntent(intentName);
             return new LexFulfillmentOutcome(
                     chatResponse,
                     pipeline.searchCriteria(),
@@ -136,7 +177,7 @@ public class LexFulfillmentService {
 
         log.info(
                 "Lex fulfillment: intent='{}' program='{}' transaction='{}' params={}",
-                lexResult.getIntentName(),
+                intentName,
                 mapped.program(),
                 mapped.transaction(),
                 mapped.params()
@@ -149,14 +190,14 @@ public class LexFulfillmentService {
                 mapped.params()
         );
 
-        String reply = buildPlaceholderReply(lexResult.getIntentName(), mapped);
+        String reply = buildPlaceholderReply(intentName, mapped);
         if (pipeline.capabilityUserMessage() != null && !pipeline.capabilityUserMessage().isBlank()) {
             reply = reply + " " + pipeline.capabilityUserMessage();
         }
         ChatResponse chatResponse = new ChatResponse(reply, false);
         chatResponse.setActionTaken(mapped.actionTaken());
         chatResponse.setM3Request(m3Request);
-        chatResponse.setLexIntent(lexResult.getIntentName());
+        chatResponse.setLexIntent(intentName);
 
         SearchContext searchContext = pipeline.searchContext();
         if (searchContext != null) {
@@ -176,14 +217,16 @@ public class LexFulfillmentService {
     }
 
     private SearchPipelineResult resolveSearchPipeline(
-            LexRecognizeResult lexResult,
+            String intentName,
+            Map<String, String> slots,
+            Map<String, String> sessionAttributes,
             String userUtterance,
             LexFulfillmentSession session
     ) {
-        Optional<IntentDefinition> definition = intentApiCatalog.find(lexResult.getIntentName());
+        Optional<IntentDefinition> definition = intentApiCatalog.find(intentName);
         if (definition.isEmpty()) {
             throw new OpenAIException(
-                    "No M3 mapping for Lex intent: " + lexResult.getIntentName(),
+                    "No M3 mapping for Lex intent: " + intentName,
                     400
             );
         }
@@ -191,11 +234,12 @@ public class LexFulfillmentService {
         IntentDefinition intentDefinition = definition.get();
         QueryContext baseContext;
         List<SearchCriterion> criteria;
+        Map<String, String> slotMap = slots != null ? slots : Map.of();
 
         if (intentDefinition.requestType() == RequestType.SEARCH) {
             Map<String, SlotValue> normalized = slotNormalizer.normalize(
                     intentDefinition.intentName(),
-                    SlotNormalizer.toSlotValues(lexResult.getSlots())
+                    SlotNormalizer.toSlotValues(slotMap)
             );
             Map<String, SlotValue> repaired = slotRepairService.repair(
                     intentDefinition.intentName(),
@@ -212,15 +256,15 @@ public class LexFulfillmentService {
         } else {
             criteria = List.of();
             baseContext = queryContextAssembler.assembleRead(
-                    lexResult.getIntentName(),
-                    lexResult.getSlots()
+                    intentName,
+                    slotMap
             );
         }
 
         QueryContext enriched = queryUnderstander.enrich(
                 baseContext,
                 userUtterance,
-                lexResult.getSessionAttributes()
+                sessionAttributes != null ? sessionAttributes : Map.of()
         );
         QueryContext buildContext = searchContextService.applyContinuation(session, enriched);
 

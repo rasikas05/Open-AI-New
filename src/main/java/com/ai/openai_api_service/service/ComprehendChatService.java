@@ -4,6 +4,7 @@ import com.ai.openai_api_service.exception.TenantQuotaExceededException;
 import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
+import com.ai.openai_api_service.model.GuidedSearchState;
 import com.ai.openai_api_service.model.IntentDefinition;
 import com.ai.openai_api_service.model.LexFulfillmentSession;
 import com.ai.openai_api_service.model.LexFulfillmentOutcome;
@@ -21,7 +22,10 @@ import com.ai.openai_api_service.model.python_rag.PythonQueryResponse;
 import com.ai.openai_api_service.model.python_rag.PythonRetrievalResponse;
 import com.ai.openai_api_service.model.python_rag.PythonRouteResponse;
 import com.ai.openai_api_service.model.python_rag.SourceItem;
+import com.ai.openai_api_service.service.guided.GuidedSearchService;
+import com.ai.openai_api_service.service.guided.InMemoryGuidedSearchSessionService;
 import com.ai.openai_api_service.service.query.SearchContextService;
+import com.ai.openai_api_service.service.validation.SearchCriteriaValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -34,6 +38,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 @Service
 public class ComprehendChatService {
@@ -72,6 +77,8 @@ public class ComprehendChatService {
     private final RequestedInformationResolver requestedInformationResolver;
     private final IntentApiCatalog intentApiCatalog;
     private final SearchContextService searchContextService;
+    private final GuidedSearchService guidedSearchService;
+    private final InMemoryGuidedSearchSessionService guidedSearchSessionService;
 
     @Value("${openai.response.include-sanitization-debug:false}")
     private boolean includeSanitizationDebug;
@@ -94,7 +101,9 @@ public class ComprehendChatService {
             LiveHistorySummaryBuilder liveHistorySummaryBuilder,
             RequestedInformationResolver requestedInformationResolver,
             IntentApiCatalog intentApiCatalog,
-            SearchContextService searchContextService
+            SearchContextService searchContextService,
+            GuidedSearchService guidedSearchService,
+            InMemoryGuidedSearchSessionService guidedSearchSessionService
     ) {
         this.comprehendAnonymizationService = comprehendAnonymizationService;
         this.chatPersistenceService = chatPersistenceService;
@@ -108,6 +117,8 @@ public class ComprehendChatService {
         this.requestedInformationResolver = requestedInformationResolver;
         this.intentApiCatalog = intentApiCatalog;
         this.searchContextService = searchContextService;
+        this.guidedSearchService = guidedSearchService;
+        this.guidedSearchSessionService = guidedSearchSessionService;
     }
 
     public ChatResponse chat(ChatRequest request) {
@@ -263,6 +274,11 @@ public class ComprehendChatService {
             searchContextService.applyClientReport(fulfillmentSession, request.getM3ClientReport());
         }
 
+        Optional<GuidedSearchState> guidedState = guidedSearchSessionService.find(fulfillmentSession);
+        if (guidedState.isPresent()) {
+            return handleGuidedSearchTurn(fulfillmentSession, guidedState.get(), originalUserText);
+        }
+
         String lexSessionId = lexService.buildLexSessionId(request);
         LexRecognizeResult lexResult = lexService.recognizeText(lexSessionId, originalUserText);
 
@@ -292,6 +308,13 @@ public class ComprehendChatService {
                     fulfillmentSession
             );
             ChatResponse chatResponse = fulfillmentOutcome.response();
+
+            if (SearchCriteriaValidator.ACTION_SEARCH_CRITERIA_MISSING.equals(chatResponse.getActionTaken())
+                    && isSearchIntent(lexResult.getIntentName())) {
+                ChatResponse guided = guidedSearchService.start(lexResult.getIntentName(), fulfillmentSession);
+                return LexLiveRouteResult.lex(guided);
+            }
+
             chatResponse.setLexIntent(lexResult.getIntentName());
             chatResponse.setLexDialogAction(lexResult.getDialogActionType());
 
@@ -305,6 +328,37 @@ public class ComprehendChatService {
         }
 
         return lexFallbackRouteResult(request, lexResult);
+    }
+
+    private LexLiveRouteResult handleGuidedSearchTurn(
+            LexFulfillmentSession fulfillmentSession,
+            GuidedSearchState state,
+            String originalUserText
+    ) {
+        GuidedSearchService.GuidedTurnResult turn =
+                guidedSearchService.handleTurn(fulfillmentSession, state, originalUserText);
+        if (!turn.shouldResumeFulfillment()) {
+            return LexLiveRouteResult.lex(turn.response());
+        }
+
+        LexFulfillmentOutcome outcome = lexFulfillmentService.fulfillSearch(
+                turn.intentName(),
+                turn.slots(),
+                originalUserText,
+                fulfillmentSession
+        );
+        ChatResponse chatResponse = outcome.response();
+        chatResponse.setLexIntent(turn.intentName());
+        if (outcome.queryContext() != null && !outcome.queryContext().requestedInformation().isEmpty()) {
+            chatResponse.setRequestedInformation(outcome.queryContext().requestedInformation());
+        }
+        return LexLiveRouteResult.lex(chatResponse);
+    }
+
+    private boolean isSearchIntent(String intentName) {
+        return intentApiCatalog.find(intentName)
+                .filter(def -> def.requestType() == RequestType.SEARCH)
+                .isPresent();
     }
 
     private List<String> resolveRequestedInformationForFulfillment(

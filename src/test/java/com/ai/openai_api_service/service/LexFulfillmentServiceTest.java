@@ -167,6 +167,23 @@ class LexFulfillmentServiceTest {
     }
 
     @Test
+    void fulfillSearch_withCustomerOrderNumber_buildsM3Request() {
+        LexFulfillmentOutcome outcome = fulfillmentService.fulfillSearch(
+                "SearchCustomerOrder",
+                Map.of("CustomerOrderNumber", "1000001234"),
+                "1000001234",
+                null
+        );
+
+        ChatResponse response = outcome.response();
+        assertEquals("search", response.getActionTaken());
+        assertNotNull(response.getM3Request());
+        assertEquals("OIS100MI", response.getM3Request().getProgram());
+        assertEquals("SearchHead", response.getM3Request().getTransaction());
+        assertTrue(response.getM3Request().getParams().get("SQRY").toString().contains("ORNO"));
+    }
+
+    @Test
     void fulfill_searchIntent_emptySlots_blocksWithoutM3Request() {
         LexRecognizeResult lexResult = new LexRecognizeResult(
                 "SearchCustomerOrder",

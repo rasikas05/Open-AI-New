@@ -136,10 +136,18 @@ class SearchResolverTest {
     }
 
     @Test
-    void resolve_customerOrderNumber_mapsToOrno() {
+    void resolve_m3FieldKey_mapsWhenLexSlotMissing() {
         assertEquals(
-                List.of(new SearchCriterion("ORNO", "0010000864")),
-                resolver.resolve("SearchCustomerOrder", Map.of("CustomerOrderNumber", "0010000864"))
+                List.of(new SearchCriterion("ORNO", "1000001234")),
+                resolver.resolve("SearchCustomerOrder", Map.of("ORNO", "1000001234"))
+        );
+    }
+
+    @Test
+    void resolve_distributionOrder_m3FieldKey_mapsTrnr() {
+        assertEquals(
+                List.of(new SearchCriterion("TRNR", "DO00000001")),
+                resolver.resolve("SearchDistributionOrder", Map.of("TRNR", "DO00000001"))
         );
     }
 }
