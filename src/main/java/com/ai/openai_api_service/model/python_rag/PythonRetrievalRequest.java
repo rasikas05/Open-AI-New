@@ -25,6 +25,14 @@ public class PythonRetrievalRequest {
     @JsonProperty("program_ids")
     private List<String> programIds;
 
+    /** Soft-boost only — never used as a hard Qdrant filter. */
+    @JsonProperty("boost_program_ids")
+    private List<String> boostProgramIds;
+
+    /** Amount added once to rankScore when a chunk matches boost_program_ids. */
+    @JsonProperty("program_boost")
+    private Double programBoost;
+
     @JsonProperty("doc_version")
     private String docVersion;
 

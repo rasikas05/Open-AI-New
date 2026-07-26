@@ -51,9 +51,14 @@ public class OpenAIService {
             - Use ONLY the documentation context provided in the user message. Do not use general M3 knowledge \
             outside that context.
             - Never mix documentation with general knowledge in the same answer.
-            - When referencing M3 programs, always include the program ID (e.g., CRS610, OIS100).
+            - Never invent program names, MI transaction names, API names, table names, or field names. \
+            Use only identifiers that appear in the supplied context, and preserve them exactly \
+            (spelling and casing).
+            - When referencing M3 programs, always include the program ID (e.g., CRS610, OIS100) if present \
+            in the context.
+            - Combine information across multiple documents when they agree; if they conflict, say so clearly.
             - Provide step-by-step instructions when the context includes procedural information.
-            - Cite documentation naturally (program names, field names, URLs when present). Do not use labels \
+            - Cite documentation using document titles and source URLs when present. Do not use labels \
             like "Document 1" or "Source: Document N".
             - Do not add disclaimers about knowledge sources or documentation search.
 
@@ -74,7 +79,7 @@ public class OpenAIService {
 
             R - References
             Ground every answer in the retrieved documentation supplied in the user message. Reference program IDs, \
-            field names, and source URLs when they appear in the context.""";
+            field names, document titles, and source URLs when they appear in the context.""";
 
     private static final int MAX_REWRITTEN_QUERIES = 3;
     private static final Pattern MARKDOWN_JSON_FENCE = Pattern.compile("```(?:json)?\\s*([\\s\\S]*?)```");
@@ -106,6 +111,10 @@ public class OpenAIService {
             - Only use process-flow angles if the user asks how something works, steps, workflow, or end-to-end flow.
             - Do NOT answer the question. Output search queries only.
             - Remove conversational filler; keep queries short and keyword-rich.
+            - Preserve all exact technical identifiers exactly as written. Never replace, remove, abbreviate, \
+            or generalize these identifiers.
+            - Examples of identifiers to preserve verbatim: OIS300, CRS610, CRS610MI, MMS200, \
+            OIS100MI.AddBatchHead, MITMAS, CUNO.
 
             A - Actor
             Assume the user is searching official Infor M3 documentation. Write documentation-friendly keyword queries, \
@@ -561,11 +570,17 @@ public class OpenAIService {
             float score = chunk.getScore() != null ? chunk.getScore() : 0f;
             String scorePct = String.format(Locale.ROOT, "%.1f%%", score * 100);
             builder.append("--- Document ").append(i + 1).append(" (Relevance: ").append(scorePct).append(") ---");
-            if (chunk.getSource() != null && !chunk.getSource().isBlank()) {
-                builder.append("\nSource: ").append(chunk.getSource());
+            if (chunk.getTitle() != null && !chunk.getTitle().isBlank()) {
+                builder.append("\nTitle: ").append(chunk.getTitle());
+            }
+            if (chunk.getSectionPath() != null && !chunk.getSectionPath().isEmpty()) {
+                builder.append("\nSection: ").append(String.join(" > ", chunk.getSectionPath()));
             }
             if (chunk.getProgramIds() != null && !chunk.getProgramIds().isEmpty()) {
                 builder.append("\nPrograms: ").append(String.join(", ", chunk.getProgramIds()));
+            }
+            if (chunk.getSource() != null && !chunk.getSource().isBlank()) {
+                builder.append("\nSource: ").append(chunk.getSource());
             }
             builder.append("\n\n").append(chunk.getChunk() != null ? chunk.getChunk() : "").append("\n\n");
         }
@@ -575,7 +590,8 @@ public class OpenAIService {
     private String buildRagUserPrompt(String context, String question) {
         return "Context from M3 Documentation:\n" + context + "\n\n---\n\n"
                 + "Question: " + question + "\n\n"
-                + "Answer using ONLY the context above. Cite sources when present. "
+                + "Answer using ONLY the context above. Preserve program IDs, MI names, and field names exactly. "
+                + "Cite document titles and source URLs when present. "
                 + "If the context is partial, say what is documented and what is missing. "
                 + "If the context does not answer the question, use the exact not-available phrase from your instructions.";
     }

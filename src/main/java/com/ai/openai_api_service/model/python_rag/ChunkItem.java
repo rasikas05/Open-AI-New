@@ -20,6 +20,9 @@ public class ChunkItem {
     @JsonProperty("programIds")
     private List<String> programIds;
 
+    @JsonProperty("sectionPath")
+    private List<String> sectionPath;
+
     @JsonProperty("queryCount")
     private Integer queryCount;
 

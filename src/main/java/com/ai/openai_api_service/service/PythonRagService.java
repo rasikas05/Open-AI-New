@@ -64,6 +64,9 @@ public class PythonRagService {
     @Value("${python-rag.api.enabled:true}")
     private boolean ragApiEnabled;
 
+    @Value("${rag.program.boost:0.08}")
+    private double programBoost;
+
     public PythonRagService(@Value("${python-rag.api.timeout-ms:180000}") int timeoutMs) {
         this.restTemplate = RestTemplateFactory.create(timeoutMs);
     }
@@ -249,8 +252,14 @@ public class PythonRagService {
     /**
      * Retrieve using pre-computed search queries from Spring (comprehend doc path).
      * Always skips Python-side rewrite; queries are embedded and searched directly.
+     * Soft-boosts chunks matching {@code boostProgramIds} without hard-filtering.
      */
-    public PythonRetrievalResponse retrieve(String query, java.util.List<String> searchQueries, PythonQueryRequest queryRequest) {
+    public PythonRetrievalResponse retrieve(
+            String query,
+            java.util.List<String> searchQueries,
+            PythonQueryRequest queryRequest,
+            java.util.List<String> boostProgramIds
+    ) {
         ensureEnabled();
         if (query == null || query.isBlank()) {
             throw new OpenAIException("Message cannot be empty", 400);
@@ -265,20 +274,35 @@ public class PythonRagService {
         retrievalRequest.setTopK(queryRequest.getTopK() != null ? queryRequest.getTopK() : defaultTopK);
         retrievalRequest.setFinalLimit(queryRequest.getFinalLimit() != null ? queryRequest.getFinalLimit() : defaultFinalLimit);
         retrievalRequest.setDeliverable(queryRequest.getDeliverable());
-        retrievalRequest.setProgramIds(queryRequest.getProgramIds());
+        // Hard filter stays unset on doc path; soft boost uses boost_program_ids only.
+        retrievalRequest.setProgramIds(null);
+        retrievalRequest.setBoostProgramIds(
+                boostProgramIds != null && !boostProgramIds.isEmpty() ? boostProgramIds : null
+        );
+        retrievalRequest.setProgramBoost(programBoost);
         retrievalRequest.setDocVersion(queryRequest.getDocVersion());
         retrievalRequest.setSkipRewrite(true);
 
         String url = buildUrl(pythonRetrievalEndpoint);
         log.info(
-                "Calling Python RAG retrieval API. url={}, query='{}', queryCount={}, topK={}, finalLimit={}, skipRewrite=true",
+                "Calling Python RAG retrieval API. url={}, query='{}', queryCount={}, topK={}, finalLimit={}, "
+                        + "boostProgramIds={}, programBoost={}, skipRewrite=true",
                 url,
                 retrievalRequest.getQuery(),
                 searchQueries.size(),
                 retrievalRequest.getTopK(),
-                retrievalRequest.getFinalLimit()
+                retrievalRequest.getFinalLimit(),
+                boostProgramIds == null || boostProgramIds.isEmpty() ? "none" : boostProgramIds,
+                programBoost
         );
         return postForEntity(url, retrievalRequest, PythonRetrievalResponse.class, "retrieval");
+    }
+
+    /**
+     * Legacy overload without soft boost (no detected program IDs).
+     */
+    public PythonRetrievalResponse retrieve(String query, java.util.List<String> searchQueries, PythonQueryRequest queryRequest) {
+        return retrieve(query, searchQueries, queryRequest, null);
     }
 
     private void ensureEnabled() {

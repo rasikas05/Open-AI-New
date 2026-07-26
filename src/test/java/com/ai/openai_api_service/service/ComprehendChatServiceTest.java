@@ -107,9 +107,9 @@ class ComprehendChatServiceTest {
         retrieval.setRetrievalReason("ready_for_grounding");
         retrieval.setRetrievalTimeMs(42);
         retrieval.setMaxScore(0.62f);
-        ChunkItem chunk = new ChunkItem("chunk text", 0.62f, "Title", "http://example.com", List.of("CRS610"), null, null, null);
+        ChunkItem chunk = new ChunkItem("chunk text", 0.62f, "Title", "http://example.com", List.of("CRS610"), null, null, null, null);
         retrieval.setPromptChunks(List.of(chunk));
-        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
 
         OpenAIUsage usage = new OpenAIUsage(10, 20, 30, "gpt-4.1");
         ChatResponse openAiResponse = new ChatResponse("grounded answer", false);
@@ -146,7 +146,7 @@ class ComprehendChatServiceTest {
         PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
         retrieval.setRetrievalReason("below_prompt_threshold");
         retrieval.setPromptChunks(List.of());
-        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
 
         OpenAIUsage usage = new OpenAIUsage(5, 5, 10, "gpt-4.1");
         ChatResponse openAiResponse = new ChatResponse("fallback answer", false);
@@ -171,13 +171,13 @@ class ComprehendChatServiceTest {
         stubSanitize();
         when(pythonRagService.route("pricing issue")).thenReturn(new PythonRouteResponse("rag"));
 
-        ChunkItem chunk1 = new ChunkItem("chunk one", 0.72f, "Title A", "http://example.com/doc", List.of("CRS610"), null, null, null);
-        ChunkItem chunk2 = new ChunkItem("chunk two", 0.55f, "Title B", "http://example.com/doc", List.of("CRS610"), null, null, null);
+        ChunkItem chunk1 = new ChunkItem("chunk one", 0.72f, "Title A", "http://example.com/doc", List.of("CRS610"), null, null, null, null);
+        ChunkItem chunk2 = new ChunkItem("chunk two", 0.55f, "Title B", "http://example.com/doc", List.of("CRS610"), null, null, null, null);
         PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
         retrieval.setRetrievalReason("ready_for_grounding");
         retrieval.setMaxScore(0.72f);
         retrieval.setPromptChunks(List.of(chunk1, chunk2));
-        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
 
         ChatResponse openAiResponse = new ChatResponse("grounded answer", false);
         openAiResponse.setActionTaken("rag");
@@ -227,9 +227,9 @@ class ComprehendChatServiceTest {
         retrieval.setRetrievalReason("ready_for_grounding");
         retrieval.setRetrievalTimeMs(100);
         retrieval.setMaxScore(0.64f);
-        ChunkItem chunk = new ChunkItem("chunk text", 0.64f, "Title", "http://example.com", List.of("OIS100"), null, null, null);
+        ChunkItem chunk = new ChunkItem("chunk text", 0.64f, "Title", "http://example.com", List.of("OIS100"), null, null, null, null);
         retrieval.setPromptChunks(List.of(chunk));
-        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
 
         OpenAIUsage ragUsage = new OpenAIUsage(3000, 20, 3020, "gpt-4.1");
         ChatResponse ragResponse = new ChatResponse(
@@ -262,7 +262,7 @@ class ComprehendChatServiceTest {
         stubQuotaAllowed();
         stubSanitize();
         when(pythonRagService.route("how to create customer")).thenReturn(new PythonRouteResponse("rag"));
-        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenThrow(
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenThrow(
                 new OpenAIException("Python RAG API timeout after 180000ms", 504)
         );
 
@@ -290,7 +290,7 @@ class ComprehendChatServiceTest {
         PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
         retrieval.setRetrievalReason("no_matches");
         retrieval.setPromptChunks(List.of());
-        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
 
         OpenAIUsage usage = new OpenAIUsage(8, 12, 20, "gpt-4.1");
         ChatResponse openAiResponse = new ChatResponse("general m3 answer", false);
@@ -319,7 +319,7 @@ class ComprehendChatServiceTest {
         retrieval.setRetrievalReason("retrieval_error");
         retrieval.setError("Qdrant down");
         retrieval.setPromptChunks(List.of());
-        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
 
         OpenAIUsage usage = new OpenAIUsage(6, 4, 10, "gpt-4.1");
         ChatResponse openAiResponse = new ChatResponse("fallback after qdrant error", false);
@@ -342,7 +342,7 @@ class ComprehendChatServiceTest {
         stubQuotaAllowed();
         stubSanitize();
         when(pythonRagService.route("how to create customer")).thenReturn(new PythonRouteResponse("rag"));
-        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenThrow(
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenThrow(
                 new OpenAIException("Python RAG API connection refused: WinError 10061", 503)
         );
 
@@ -393,7 +393,7 @@ class ComprehendChatServiceTest {
         PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
         retrieval.setRetrievalReason("below_prompt_threshold");
         retrieval.setPromptChunks(List.of());
-        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
 
         ChatResponse openAiResponse = new ChatResponse("answer", false);
         openAiResponse.setActionTaken("gpt_infor");
@@ -405,7 +405,7 @@ class ComprehendChatServiceTest {
 
         assertTrue(response.getSanitizationApplied());
         verify(pythonRagService).route(eq(original));
-        verify(pythonRagService).retrieve(eq(sanitized), eq(List.of(sanitized)), any());
+        verify(pythonRagService).retrieve(eq(sanitized), eq(List.of(sanitized)), any(), any());
         verify(lexService, never()).recognizeText(anyString(), anyString());
     }
 
@@ -420,7 +420,7 @@ class ComprehendChatServiceTest {
         PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
         retrieval.setRetrievalReason("below_prompt_threshold");
         retrieval.setPromptChunks(List.of());
-        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
 
         ChatResponse openAiResponse = new ChatResponse("still works", false);
         openAiResponse.setActionTaken("gpt_infor");
@@ -445,9 +445,9 @@ class ComprehendChatServiceTest {
         retrieval.setRetrievalReason("ready_for_grounding");
         retrieval.setRetrievalTimeMs(88);
         retrieval.setMaxScore(0.71f);
-        ChunkItem chunk = new ChunkItem("chunk", 0.71f, "CRS780", "http://docs/crs780", List.of("CRS780"), null, null, null);
+        ChunkItem chunk = new ChunkItem("chunk", 0.71f, "CRS780", "http://docs/crs780", List.of("CRS780"), null, null, null, null);
         retrieval.setPromptChunks(List.of(chunk));
-        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
 
         OpenAIUsage usage = new OpenAIUsage(100, 50, 150, "gpt-4.1");
         ChatResponse openAiResponse = new ChatResponse("configure in CRS780", false);
@@ -505,7 +505,7 @@ class ComprehendChatServiceTest {
 
         PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
         retrieval.setRetrievalReason("below_prompt_threshold");
-        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
 
         ChatResponse fallback = new ChatResponse("fallback", false);
         fallback.setActionTaken("gpt_infor");
@@ -515,7 +515,7 @@ class ComprehendChatServiceTest {
         comprehendChatService.chat(baseRequest("pricing issue"));
 
         verify(openAIService, never()).rewriteQueries(anyString());
-        verify(pythonRagService).retrieve(eq("pricing issue"), eq(List.of("pricing issue")), any());
+        verify(pythonRagService).retrieve(eq("pricing issue"), eq(List.of("pricing issue")), any(), any());
     }
 
     @Test
@@ -531,7 +531,7 @@ class ComprehendChatServiceTest {
 
         PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
         retrieval.setRetrievalReason("below_prompt_threshold");
-        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
 
         OpenAIUsage answerUsage = new OpenAIUsage(5, 5, 10, "gpt-4.1");
         ChatResponse fallback = new ChatResponse("fallback", false);
@@ -543,7 +543,12 @@ class ComprehendChatServiceTest {
         ChatResponse response = comprehendChatService.chat(baseRequest("pricing issue"));
 
         verify(openAIService).rewriteQueries("pricing issue");
-        verify(pythonRagService).retrieve(eq("pricing issue"), eq(rewritten), any());
+        verify(pythonRagService).retrieve(
+                eq("pricing issue"),
+                eq(List.of("pricing issue", "customer pricing configuration", "price list setup")),
+                any(),
+                any()
+        );
         assertEquals(13, response.getOpenAiUsage().getPromptTokens());
         assertEquals(9, response.getOpenAiUsage().getCompletionTokens());
         assertEquals(22, response.getOpenAiUsage().getTotalTokens());
@@ -557,7 +562,7 @@ class ComprehendChatServiceTest {
 
         PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
         retrieval.setRetrievalReason("below_prompt_threshold");
-        when(pythonRagService.retrieve(anyString(), anyList(), any())).thenReturn(retrieval);
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
 
         ChatResponse fallback = new ChatResponse("doc answer", false);
         fallback.setActionTaken("gpt_infor");
@@ -803,7 +808,7 @@ class ComprehendChatServiceTest {
         assertNull(response.getRetrievalReason());
         verify(lexFulfillmentService, never()).fulfillOutcome(any(), any(), any());
         verify(pythonRagService, never()).query(any());
-        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any());
         verify(pythonRagService, never()).executeLiveIntent(anyString(), any());
         verify(openAIService, never()).chatWithRagContext(any(), anyList());
         verify(openAIService, never()).chatWithoutPersistence(any());
@@ -835,7 +840,7 @@ class ComprehendChatServiceTest {
         assertNull(response.getM3Request());
         verify(lexFulfillmentService, never()).fulfillOutcome(any(), any(), any());
         verify(pythonRagService, never()).query(any());
-        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any());
         verify(openAIService, never()).chatWithRagContext(any(), anyList());
         verify(openAIService, never()).chatWithoutPersistence(any());
     }

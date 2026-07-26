@@ -25,6 +25,8 @@ import com.ai.openai_api_service.model.python_rag.SourceItem;
 import com.ai.openai_api_service.service.guided.GuidedSearchService;
 import com.ai.openai_api_service.service.guided.InMemoryGuidedSearchSessionService;
 import com.ai.openai_api_service.service.query.SearchContextService;
+import com.ai.openai_api_service.service.rag.ProgramIdDetector;
+import com.ai.openai_api_service.service.rag.SearchQueryAssembler;
 import com.ai.openai_api_service.service.validation.SearchCriteriaValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -463,19 +465,29 @@ public class ComprehendChatService {
         ragRequest.setMessage(sanitizedUserText);
         ragRequest.setHistory(request.getHistory());
 
-        List<String> searchQueries;
+        List<String> rewrittenQueries = List.of();
         OpenAIUsage rewriteUsage = null;
         if (queryRewriteEnabled) {
             QueryRewriteResult rewriteResult = openAIService.rewriteQueries(sanitizedUserText);
-            searchQueries = rewriteResult.queries();
+            rewrittenQueries = rewriteResult.queries();
             rewriteUsage = rewriteResult.usage();
-        } else {
-            searchQueries = List.of(sanitizedUserText);
         }
+        List<String> searchQueries = SearchQueryAssembler.assemble(sanitizedUserText, rewrittenQueries, 4);
+
+        List<String> boostProgramIds = ProgramIdDetector.detect(sanitizedUserText, originalUserText);
+        log.info(
+                "Doc retrieval program boost: detectedProgramIds={}",
+                boostProgramIds.isEmpty() ? "none" : boostProgramIds
+        );
 
         PythonRetrievalResponse retrieval;
         try {
-            retrieval = pythonRagService.retrieve(sanitizedUserText, searchQueries, ragRequest);
+            retrieval = pythonRagService.retrieve(
+                    sanitizedUserText,
+                    searchQueries,
+                    ragRequest,
+                    boostProgramIds
+            );
         } catch (OpenAIException e) {
             log.warn(
                     "Python retrieval call failed (status={}), falling back to OpenAI: {}",
@@ -513,6 +525,18 @@ public class ComprehendChatService {
             if (rewriteUsage != null) {
                 chatResponse.setOpenAiUsage(mergeUsage(rewriteUsage, chatResponse.getOpenAiUsage()));
             }
+
+            String groundedReply = chatResponse.getReply();
+            boolean insufficient = isRagInsufficientAnswer(groundedReply);
+            log.info("==============================");
+            log.info("Grounded Response:");
+            log.info("{}", groundedReply);
+            log.info("==============================");
+            log.info("Fallback Decision={}", insufficient);
+            if (insufficient) {
+                log.info("Matched keyword={}", findRagInsufficientMatch(groundedReply));
+            }
+
             if (ragFallbackOnNoAnswer && isRagInsufficientAnswer(chatResponse.getReply())) {
                 log.info("RAG grounded answer insufficient, falling back to OpenAI general knowledge");
                 OpenAIUsage ragUsage = chatResponse.getOpenAiUsage();
@@ -674,6 +698,18 @@ public class ComprehendChatService {
         }
         String lower = reply.toLowerCase(Locale.ROOT);
         return RAG_INSUFFICIENT_SIGNALS.stream().anyMatch(lower::contains);
+    }
+
+    /** Logging only — identifies which insufficient signal matched. */
+    private String findRagInsufficientMatch(String reply) {
+        if (reply == null || reply.isBlank()) {
+            return "empty/blank reply";
+        }
+        String lower = reply.toLowerCase(Locale.ROOT);
+        return RAG_INSUFFICIENT_SIGNALS.stream()
+                .filter(lower::contains)
+                .findFirst()
+                .orElse("unknown");
     }
 
     private OpenAIUsage mergeUsage(OpenAIUsage first, OpenAIUsage second) {
