@@ -82,11 +82,11 @@ public class SearchFieldCatalog {
         add(fields, intent, "ORST",
                 List.of("status", "order status"),
                 "Highest Order Status",
-                "Status");
+                "HighestStatus");
         add(fields, intent, "ORSL",
                 List.of("lowest status"),
                 "Lowest Order Status",
-                null);
+                "LowestStatus");
         add(fields, intent, "ORDT",
                 List.of("order date", "placed on", "date"),
                 "Order Date",
@@ -122,11 +122,11 @@ public class SearchFieldCatalog {
         add(fields, intent, "PUST",
                 List.of("status", "purchase order status"),
                 "Highest Purchase Order Status",
-                "Status");
+                "HighestStatus");
         add(fields, intent, "PUSL",
                 List.of("lowest status"),
                 "Lowest Purchase Order Status",
-                null);
+                "LowestStatus");
         add(fields, intent, "PUDT",
                 List.of("order date", "purchase date"),
                 "Purchase Order Date",
@@ -146,7 +146,7 @@ public class SearchFieldCatalog {
         add(fields, intent, "WHST",
                 List.of("status", "manufacturing status"),
                 "Manufacturing Status",
-                null);
+                "ManufacturingStatus");
         add(fields, intent, "FACI",
                 List.of("facility", "plant"),
                 "Facility",
@@ -182,11 +182,11 @@ public class SearchFieldCatalog {
         add(fields, intent, "TRSH",
                 List.of("status", "distribution status"),
                 "Highest Distribution Status",
-                null);
+                "HighestStatus");
         add(fields, intent, "TRSL",
                 List.of("lowest status"),
                 "Lowest Distribution Status",
-                null);
+                "LowestStatus");
         add(fields, intent, "RIDT",
                 List.of("receiving date"),
                 "Receiving Date",

@@ -275,7 +275,7 @@ class LexFulfillmentServiceTest {
     }
 
     @Test
-    void fulfill_searchCustomerOrder_mergedStatusWithoutOrderContext_omitsOrnoFromSqry() {
+    void fulfill_searchCustomerOrder_mergedStatusWithoutOrderContext_omitsOrnoAndStatusFromSqry() {
         Map<String, String> slots = new LinkedHashMap<>();
         slots.put("CustomerNumber", "Y11100");
         slots.put("Facility", "A01");
@@ -299,8 +299,9 @@ class LexFulfillmentServiceTest {
         assertNull(response.getM3Data());
         String sqry = response.getM3Request().getParams().get("SQRY").toString();
         assertFalse(sqry.contains("ORNO:"));
+        assertFalse(sqry.contains("ORST:"));
         assertEquals(
-                java.util.Set.of("CUNO:Y11100", "FACI:A01", "ORST:33"),
+                java.util.Set.of("CUNO:Y11100", "FACI:A01"),
                 java.util.Set.of(sqry.split(" AND "))
         );
     }

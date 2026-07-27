@@ -21,6 +21,7 @@ import com.ai.openai_api_service.service.query.SearchContextService;
 import com.ai.openai_api_service.service.api.ApiCapabilityResolver;
 import com.ai.openai_api_service.service.api.ApiCapabilityResult;
 import com.ai.openai_api_service.service.api.SpecificInformationHelper;
+import com.ai.openai_api_service.service.slots.GenericSlotInterpreter;
 import com.ai.openai_api_service.service.repair.SlotRepairService;
 import com.ai.openai_api_service.service.validation.SlotValidator;
 import com.ai.openai_api_service.service.validation.SearchCriteriaValidator;
@@ -48,6 +49,7 @@ public class LexFulfillmentService {
     private final M3RequestBuilder m3RequestBuilder;
     private final SlotNormalizer slotNormalizer;
     private final SlotRepairService slotRepairService;
+    private final GenericSlotInterpreter genericSlotInterpreter;
     private final SlotValidator slotValidator;
     private final QueryContextAssembler queryContextAssembler;
     private final QueryUnderstander queryUnderstander;
@@ -61,6 +63,7 @@ public class LexFulfillmentService {
             M3RequestBuilder m3RequestBuilder,
             SlotNormalizer slotNormalizer,
             SlotRepairService slotRepairService,
+            GenericSlotInterpreter genericSlotInterpreter,
             SlotValidator slotValidator,
             QueryContextAssembler queryContextAssembler,
             QueryUnderstander queryUnderstander,
@@ -73,6 +76,7 @@ public class LexFulfillmentService {
         this.m3RequestBuilder = m3RequestBuilder;
         this.slotNormalizer = slotNormalizer;
         this.slotRepairService = slotRepairService;
+        this.genericSlotInterpreter = genericSlotInterpreter;
         this.slotValidator = slotValidator;
         this.queryContextAssembler = queryContextAssembler;
         this.queryUnderstander = queryUnderstander;
@@ -246,7 +250,15 @@ public class LexFulfillmentService {
                     userUtterance,
                     normalized
             );
-            Map<String, String> validSlots = toValidSlotStrings(intentDefinition.intentName(), repaired);
+            Map<String, SlotValue> interpreted = genericSlotInterpreter.interpret(
+                    intentDefinition.intentName(),
+                    repaired
+            );
+            Map<String, SlotValue> normalizedInterpreted = slotNormalizer.normalize(
+                    intentDefinition.intentName(),
+                    interpreted
+            );
+            Map<String, String> validSlots = toValidSlotStrings(intentDefinition.intentName(), normalizedInterpreted);
             criteria = searchResolver.resolve(intentDefinition.intentName(), validSlots);
             baseContext = queryContextAssembler.assembleSearch(
                     intentDefinition.intentName(),

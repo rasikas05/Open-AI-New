@@ -19,6 +19,8 @@ import com.ai.openai_api_service.service.repair.rules.KeywordUtteranceRepairRule
 import com.ai.openai_api_service.service.repair.rules.MergedStatusSplitRule;
 import com.ai.openai_api_service.service.repair.rules.MergedTextSplitRule;
 import com.ai.openai_api_service.service.repair.rules.MisassignmentRepairRule;
+import com.ai.openai_api_service.service.slots.GenericSlotInterpretationCatalog;
+import com.ai.openai_api_service.service.slots.GenericSlotInterpreter;
 import com.ai.openai_api_service.service.normalizer.SlotNormalizer;
 import com.ai.openai_api_service.service.validation.M3RequestExecutionValidator;
 import com.ai.openai_api_service.service.validation.SlotValidator;
@@ -132,12 +134,15 @@ final class LexFulfillmentServiceTestSupport {
                 searchFieldCatalog,
                 fieldDefinitionRegistry
         );
+        GenericSlotInterpreter genericSlotInterpreter =
+                new GenericSlotInterpreter(new GenericSlotInterpretationCatalog());
         return new LexFulfillmentService(
                 intentApiCatalog,
                 searchResolver,
                 m3RequestBuilder,
                 slotNormalizer,
                 slotRepairService,
+                genericSlotInterpreter,
                 slotValidator,
                 new QueryContextAssembler(),
                 queryUnderstander,
