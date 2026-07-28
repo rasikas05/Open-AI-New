@@ -66,6 +66,7 @@ class SearchFieldCatalogTest {
         assertEquals("SMCD", catalog.findBySlot("SearchCustomerOrder", "Salesperson").orElseThrow().m3Field());
         assertEquals("RESP", catalog.findBySlot("SearchCustomerOrder", "Responsible").orElseThrow().m3Field());
         assertEquals("ORDT", catalog.findBySlot("SearchCustomerOrder", "OrderDate").orElseThrow().m3Field());
+        assertEquals("RLDZ", catalog.findBySlot("SearchCustomerOrder", "RequestedDeliveryDate").orElseThrow().m3Field());
         assertEquals("ORTP", catalog.findBySlot("SearchCustomerOrder", "OrderType").orElseThrow().m3Field());
         assertEquals("ORSL", catalog.findBySlot("SearchCustomerOrder", "LowestStatus").orElseThrow().m3Field());
     }

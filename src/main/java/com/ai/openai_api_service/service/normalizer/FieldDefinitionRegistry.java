@@ -59,6 +59,7 @@ public class FieldDefinitionRegistry {
         seedDate(definitions, "STDT");
         seedDate(definitions, "FIDT");
         seedDate(definitions, "RIDT");
+        seedDate(definitions, "RLDZ");
 
         this.definitionsByField = Map.copyOf(definitions);
     }
