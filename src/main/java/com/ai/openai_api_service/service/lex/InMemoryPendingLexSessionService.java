@@ -3,6 +3,7 @@ package com.ai.openai_api_service.service.lex;
 import com.ai.openai_api_service.model.PendingLexMarker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -24,17 +25,12 @@ public class InMemoryPendingLexSessionService {
     private final Clock clock;
     private final ConcurrentHashMap<String, PendingLexMarker> byLexSessionId = new ConcurrentHashMap<>();
 
+    @Autowired
     public InMemoryPendingLexSessionService(
             @Value("${pending-lex.ttl-seconds:3600}") long ttlSeconds
     ) {
         this.ttlSeconds = ttlSeconds;
         this.clock = Clock.systemUTC();
-    }
-
-    /** Same-package tests only (not a Spring injection candidate). */
-    InMemoryPendingLexSessionService(long ttlSeconds, Clock clock) {
-        this.ttlSeconds = ttlSeconds;
-        this.clock = clock != null ? clock : Clock.systemUTC();
     }
 
     public void markPending(String lexSessionId) {
