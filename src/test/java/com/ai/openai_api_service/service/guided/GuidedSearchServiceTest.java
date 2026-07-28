@@ -62,7 +62,8 @@ class GuidedSearchServiceTest {
         assertEquals("SearchCustomerOrder", response.getCollectingTool());
         assertTrue(response.getReply().contains("Please select a search field"));
         assertTrue(response.getReply().contains("1. Customer Order Number"));
-        assertTrue(response.getReply().contains("10. Payer"));
+        assertTrue(response.getReply().contains("11. Payer"));
+        assertTrue(response.getReply().contains("Requested Delivery Date"));
         assertTrue(response.getReply().contains("Customer Number"));
         assertTrue(response.getReply().toLowerCase().contains("cancel"));
         assertNotNull(sessionService.find(session).orElse(null));

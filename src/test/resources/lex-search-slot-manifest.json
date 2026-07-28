@@ -4,6 +4,7 @@
   {"intent": "SearchCustomerOrder", "lexSlot": "Facility", "m3Field": "FACI"},
   {"intent": "SearchCustomerOrder", "lexSlot": "OrderType", "m3Field": "ORTP"},
   {"intent": "SearchCustomerOrder", "lexSlot": "OrderDate", "m3Field": "ORDT"},
+  {"intent": "SearchCustomerOrder", "lexSlot": "RequestedDeliveryDate", "m3Field": "RLDZ"},
   {"intent": "SearchCustomerOrder", "lexSlot": "Responsible", "m3Field": "RESP"},
   {"intent": "SearchCustomerOrder", "lexSlot": "Salesperson", "m3Field": "SMCD"},
   {"intent": "SearchCustomerOrder", "lexSlot": "HighestStatus", "m3Field": "ORST"},

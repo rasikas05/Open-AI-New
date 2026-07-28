@@ -178,6 +178,87 @@ class RequestedInformationResolverTest {
     }
 
     @Test
+    void resolveForSearch_poHighestStatusInCriteria_suppressesToFull() {
+        assertEquals(
+                List.of(RequestedInformationResolver.FULL),
+                resolver.resolveForSearch(
+                        "Show last 5 purchase orders with highest status 33",
+                        List.of(new SearchCriterion("PUST", "33"))
+                )
+        );
+    }
+
+    @Test
+    void resolveForSearch_coHighestStatusInCriteria_suppressesToFull() {
+        assertEquals(
+                List.of(RequestedInformationResolver.FULL),
+                resolver.resolveForSearch(
+                        "Show customer orders with highest status 77",
+                        List.of(new SearchCriterion("ORST", "77"))
+                )
+        );
+    }
+
+    @Test
+    void resolveForSearch_moStatusInCriteria_suppressesToFull() {
+        assertEquals(
+                List.of(RequestedInformationResolver.FULL),
+                resolver.resolveForSearch(
+                        "Show manufacturing orders with status 90",
+                        List.of(new SearchCriterion("WHST", "90"))
+                )
+        );
+    }
+
+    @Test
+    void resolveForSearch_doHighestStatusInCriteria_suppressesToFull() {
+        assertEquals(
+                List.of(RequestedInformationResolver.FULL),
+                resolver.resolveForSearch(
+                        "Show distribution orders with highest status 60",
+                        List.of(new SearchCriterion("TRSH", "60"))
+                )
+        );
+    }
+
+    @Test
+    void resolveForSearch_poSupplierInCriteria_suppressesSupplierToFull() {
+        assertEquals(
+                List.of(RequestedInformationResolver.FULL),
+                resolver.resolveForSearch(
+                        "Show purchase orders with supplier ABC",
+                        List.of(new SearchCriterion("SUNO", "ABC"))
+                )
+        );
+    }
+
+    @Test
+    void resolveForSearch_genuineSupplierReturnWithoutSupplierCriteria_keepsSupplier() {
+        assertEquals(
+                List.of("SUPPLIER"),
+                resolver.resolveForSearch("Show purchase orders and include supplier", List.of())
+        );
+    }
+
+    @Test
+    void normalizeBusinessGroup_highestAndLowestStatus_mapToStatus() {
+        assertEquals(RequestedInformationResolver.STATUS, RequestedInformationResolver.normalizeBusinessGroup("HIGHEST_STATUS"));
+        assertEquals(RequestedInformationResolver.STATUS, RequestedInformationResolver.normalizeBusinessGroup("LOWEST_STATUS"));
+        assertEquals(RequestedInformationResolver.STATUS, RequestedInformationResolver.normalizeBusinessGroup("ORDER_STATUS"));
+    }
+
+    @Test
+    void businessGroupByM3Field_coversSearchStatusFields() {
+        assertEquals(RequestedInformationResolver.STATUS, RequestedInformationResolver.BUSINESS_GROUP_BY_M3_FIELD.get("PUST"));
+        assertEquals(RequestedInformationResolver.STATUS, RequestedInformationResolver.BUSINESS_GROUP_BY_M3_FIELD.get("ORST"));
+        assertEquals(RequestedInformationResolver.STATUS, RequestedInformationResolver.BUSINESS_GROUP_BY_M3_FIELD.get("WHST"));
+        assertEquals(RequestedInformationResolver.STATUS, RequestedInformationResolver.BUSINESS_GROUP_BY_M3_FIELD.get("TRSH"));
+        assertEquals("SUPPLIER", RequestedInformationResolver.BUSINESS_GROUP_BY_M3_FIELD.get("SUNO"));
+        assertEquals("FACILITY", RequestedInformationResolver.BUSINESS_GROUP_BY_M3_FIELD.get("FACI"));
+        assertEquals("DELIVERY_DATE", RequestedInformationResolver.BUSINESS_GROUP_BY_M3_FIELD.get("RLDZ"));
+    }
+
+    @Test
     void resolveForSearch_orderStatus_returnsStatus() {
         assertEquals(
                 List.of(RequestedInformationResolver.STATUS),

@@ -1,7 +1,6 @@
 package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.model.SearchCriterion;
-import com.ai.openai_api_service.model.SearchFieldDefinition;
 import com.ai.openai_api_service.model.lex.LexRecognizeResult;
 import com.ai.openai_api_service.service.api.InformationRequestCatalog;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -39,12 +38,11 @@ public class RequestedInformationResolver {
     public static final String PAYER = "PAYER";
     public static final String GROUP_PAYER = "GROUP_PAYER";
 
-    private static final List<String> SEARCH_INTENTS_FOR_FIELD_INDEX = List.of(
-            "SearchCustomerOrder",
-            "SearchPurchaseOrder",
-            "SearchManufacturingOrder",
-            "SearchDistributionOrder"
-    );
+    /**
+     * Intent-agnostic M3 search field → canonical business information group.
+     * Used to suppress requested-information codes already represented by search criteria.
+     */
+    static final Map<String, String> BUSINESS_GROUP_BY_M3_FIELD = Map.copyOf(buildBusinessGroupByM3Field());
 
     private static final Pattern ADDRESS_PATTERN = Pattern.compile(
             "\\b(address|location|street|town|city|postal|zip)\\b",
@@ -80,16 +78,14 @@ public class RequestedInformationResolver {
             Pattern.CASE_INSENSITIVE
     );
 
-    private final SearchFieldCatalog searchFieldCatalog;
     private final InformationRequestCatalog informationRequestCatalog;
-    private volatile Map<String, String> m3FieldToDisplayGroupCache;
 
     @Autowired
     public RequestedInformationResolver(
             SearchFieldCatalog searchFieldCatalog,
             InformationRequestCatalog informationRequestCatalog
     ) {
-        this.searchFieldCatalog = searchFieldCatalog;
+        // searchFieldCatalog retained for Spring wiring / future catalog-driven index refresh
         this.informationRequestCatalog = informationRequestCatalog;
     }
 
@@ -116,8 +112,8 @@ public class RequestedInformationResolver {
     }
 
     /**
-     * SEARCH-only: detect explicit display groups, suppress groups tied to search criteria fields, default FULL.
-     * Accumulates every matched code and preserves utterance appearance order.
+     * SEARCH-only: detect display groups, normalize to business concepts, suppress groups already
+     * used as search criteria, default FULL.
      */
     public List<String> resolveForSearch(String userText, List<SearchCriterion> searchCriteria) {
         List<PositionedCode> positioned = new ArrayList<>();
@@ -128,43 +124,59 @@ public class RequestedInformationResolver {
         }
 
         for (InformationRequestCatalog.MatchedCode matched : informationRequestCatalog.matchCodesWithPositions(userText)) {
-            String code = normalizeSearchInformationCode(matched.code());
+            String code = normalizeBusinessGroup(matched.code());
             positioned.add(new PositionedCode(code, matched.startIndex()));
         }
 
         positioned.sort(Comparator.comparingInt(PositionedCode::startIndex));
 
-        Set<String> candidates = new LinkedHashSet<>();
+        Set<String> requestedGroups = new LinkedHashSet<>();
         for (PositionedCode item : positioned) {
-            candidates.add(item.code());
+            requestedGroups.add(normalizeBusinessGroup(item.code()));
         }
 
-        if (candidates.isEmpty()) {
+        if (requestedGroups.isEmpty()) {
             return List.of(FULL);
         }
 
-        Map<String, String> fieldToGroup = m3FieldToDisplayGroup();
-        Set<String> criterionFields = searchCriteria == null
-                ? Set.of()
-                : searchCriteria.stream()
-                .map(SearchCriterion::field)
-                .filter(f -> f != null && !f.isBlank())
-                .collect(Collectors.toSet());
+        Set<String> criteriaGroups = new LinkedHashSet<>();
+        if (searchCriteria != null) {
+            for (SearchCriterion criterion : searchCriteria) {
+                if (criterion == null || criterion.field() == null || criterion.field().isBlank()) {
+                    continue;
+                }
+                String group = BUSINESS_GROUP_BY_M3_FIELD.get(criterion.field().trim().toUpperCase(Locale.ROOT));
+                if (group != null) {
+                    criteriaGroups.add(group);
+                }
+            }
+        }
 
-        candidates.removeIf(group -> criterionFields.stream()
-                .anyMatch(field -> group.equals(fieldToGroup.get(field))));
+        requestedGroups.removeAll(criteriaGroups);
 
-        if (candidates.isEmpty()) {
+        if (requestedGroups.isEmpty()) {
             return List.of(FULL);
         }
-        return List.copyOf(candidates);
+        return List.copyOf(requestedGroups);
     }
 
-    private static String normalizeSearchInformationCode(String code) {
-        if ("ORDER_STATUS".equalsIgnoreCase(code)) {
-            return STATUS;
+    /**
+     * Collapse InformationRequestCatalog aliases to canonical business groups used by
+     * {@link #BUSINESS_GROUP_BY_M3_FIELD} and ApiFieldCatalog.
+     */
+    static String normalizeBusinessGroup(String code) {
+        if (code == null || code.isBlank()) {
+            return code;
         }
-        return code;
+        String normalized = code.trim().toUpperCase(Locale.ROOT);
+        return switch (normalized) {
+            case "HIGHEST_STATUS", "LOWEST_STATUS", "ORDER_STATUS" -> STATUS;
+            case "CUSTOMER_NUMBER" -> "CUSTOMER";
+            case "SUPPLIER_NUMBER" -> "SUPPLIER";
+            case "PRODUCT" -> "PRODUCT_NUMBER";
+            case "REQUESTED_DELIVERY_DATE", "REQUESTED_DELIVERY" -> "DELIVERY_DATE";
+            default -> normalized;
+        };
     }
 
     /**
@@ -244,44 +256,40 @@ public class RequestedInformationResolver {
         return !encode(resolved).equals(encode(existing));
     }
 
-    private Map<String, String> m3FieldToDisplayGroup() {
-        Map<String, String> cached = m3FieldToDisplayGroupCache;
-        if (cached != null) {
-            return cached;
-        }
-        synchronized (this) {
-            if (m3FieldToDisplayGroupCache == null) {
-                m3FieldToDisplayGroupCache = Map.copyOf(buildM3FieldToDisplayGroup());
-            }
-            return m3FieldToDisplayGroupCache;
-        }
-    }
-
-    private Map<String, String> buildM3FieldToDisplayGroup() {
+    private static Map<String, String> buildBusinessGroupByM3Field() {
         Map<String, String> map = new LinkedHashMap<>();
-        for (String intentName : SEARCH_INTENTS_FOR_FIELD_INDEX) {
-            for (SearchFieldDefinition field : searchFieldCatalog.fieldsFor(intentName)) {
-                if (field.m3Field() == null || field.m3Field().isBlank()) {
-                    continue;
-                }
-                if (keywordsIndicateStatus(field.keywords())) {
-                    map.putIfAbsent(field.m3Field(), STATUS);
-                }
-            }
-        }
+        putFields(map, STATUS, "ORST", "ORSL", "PUST", "PUSL", "WHST", "TRSH", "TRSL");
+        putFields(map, "CUSTOMER", "CUNO");
+        putFields(map, "SUPPLIER", "SUNO");
+        putFields(map, "FACILITY", "FACI");
+        putFields(map, "WAREHOUSE", "WHLO");
+        putFields(map, "RESPONSIBLE", "RESP");
+        putFields(map, "SALESPERSON", "SMCD");
+        putFields(map, "BUYER", "BUYE");
+        putFields(map, "ORDER_TYPE", "ORTP", "ORTY", "TRTP");
+        putFields(map, "ORDER_DATE", "ORDT", "PUDT");
+        putFields(map, "PRODUCT_NUMBER", "PRNO");
+        putFields(map, "PRIORITY", "PRIO");
+        putFields(map, "ORDER_NUMBER", "ORNO");
+        putFields(map, "PURCHASE_ORDER_NUMBER", "PUNO");
+        putFields(map, "MANUFACTURING_ORDER_NUMBER", "MFNO");
+        putFields(map, "DISTRIBUTION_ORDER_NUMBER", "TRNR");
+        putFields(map, "DIVISION", "DIVI");
+        putFields(map, "PURCHASE_CATEGORY", "POTC");
+        putFields(map, "RECEIVING_DATE", "RIDT");
+        putFields(map, "PLANNED_START_DATE", "STDT");
+        putFields(map, "PLANNED_FINISH_DATE", "FIDT");
+        putFields(map, "REFERENCE_ORDER_NUMBER", "RORN");
+        putFields(map, PAYER, "PYNO");
+        putFields(map, "REQUISITION_BY", "PURC");
+        putFields(map, "DELIVERY_DATE", "RLDZ");
         return map;
     }
 
-    private static boolean keywordsIndicateStatus(List<String> keywords) {
-        if (keywords == null) {
-            return false;
+    private static void putFields(Map<String, String> map, String group, String... m3Fields) {
+        for (String field : m3Fields) {
+            map.put(field, group);
         }
-        for (String keyword : keywords) {
-            if (keyword != null && keyword.toLowerCase(Locale.ROOT).contains("status")) {
-                return true;
-            }
-        }
-        return false;
     }
 
     private List<String> mergeLegacyAndCatalog(String userText) {

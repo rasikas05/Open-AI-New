@@ -123,11 +123,19 @@ public class SearchFieldCatalog {
                 "Please enter Order Date.",
                 "2026-07-22",
                 List.of("order date"));
+        addGuided(fields, intent, "RLDZ",
+                List.of("requested delivery date", "delivery date", "requested delivery"),
+                "Requested Delivery Date",
+                "RequestedDeliveryDate",
+                9,
+                "Please enter Requested Delivery Date.",
+                "2026-07-22",
+                List.of("requested delivery date", "delivery date", "rldz"));
         addGuided(fields, intent, "ORTP",
                 List.of("order type", "type of order"),
                 "Order Type",
                 "OrderType",
-                9,
+                10,
                 "Please enter Order Type.",
                 "A01",
                 List.of("type"));
@@ -135,7 +143,7 @@ public class SearchFieldCatalog {
                 List.of("payer"),
                 "Payer",
                 "Payer",
-                10,
+                11,
                 "Please enter Payer.",
                 "P00001",
                 List.of("payer number", "pyno"));
