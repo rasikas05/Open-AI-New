@@ -91,6 +91,10 @@ public class SearchFieldCatalog {
                 List.of("order date", "placed on", "date"),
                 "Order Date",
                 "OrderDate");
+        add(fields, intent, "ORTP",
+                List.of("order type", "type of order"),
+                "Order Type",
+                "OrderType");
         add(fields, intent, "PYNO",
                 List.of("payer"),
                 "Payer",
@@ -131,6 +135,22 @@ public class SearchFieldCatalog {
                 List.of("order date", "purchase date"),
                 "Purchase Order Date",
                 "OrderDate");
+        add(fields, intent, "DIVI",
+                List.of("division"),
+                "Division",
+                "Division");
+        add(fields, intent, "ORTY",
+                List.of("order type", "purchase order type"),
+                "Order Type",
+                "OrderType");
+        add(fields, intent, "POTC",
+                List.of("purchase category", "category"),
+                "Purchase Category",
+                "PurchaseCategory");
+        add(fields, intent, "PURC",
+                List.of("requisition", "requisition by", "requisitioned by"),
+                "Requisition By",
+                "RequisitionBy");
     }
 
     private static void seedSearchManufacturingOrder(Map<String, List<SearchFieldDefinition>> fields) {
@@ -138,11 +158,11 @@ public class SearchFieldCatalog {
         add(fields, intent, "MFNO",
                 List.of("manufacturing order", "manufacturing order number", "mo number"),
                 "Manufacturing Order Number",
-                null);
+                "ManufacturingOrderNumber");
         add(fields, intent, "PRNO",
                 List.of("product", "product number"),
                 "Product Number",
-                null);
+                "ProductNumber");
         add(fields, intent, "WHST",
                 List.of("status", "manufacturing status"),
                 "Manufacturing Status",
@@ -150,15 +170,23 @@ public class SearchFieldCatalog {
         add(fields, intent, "FACI",
                 List.of("facility", "plant"),
                 "Facility",
-                null);
+                "Facility");
         add(fields, intent, "STDT",
                 List.of("planned start", "start date"),
                 "Planned Start Date",
-                null);
+                "PlannedStartDate");
         add(fields, intent, "FIDT",
                 List.of("planned finish", "finish date", "end date"),
                 "Planned Finish Date",
-                null);
+                "PlannedFinishDate");
+        add(fields, intent, "RORN",
+                List.of("reference order", "reference order number"),
+                "Reference Order Number",
+                "ReferenceOrderNumber");
+        add(fields, intent, "PRIO",
+                List.of("priority"),
+                "Priority",
+                "Priority");
     }
 
     private static void seedSearchDistributionOrder(Map<String, List<SearchFieldDefinition>> fields) {
@@ -166,19 +194,19 @@ public class SearchFieldCatalog {
         add(fields, intent, "TRNR",
                 List.of("distribution order", "distribution order number"),
                 "Distribution Order Number",
-                null);
+                "DistributionOrderNumber");
         add(fields, intent, "WHLO",
                 List.of("warehouse"),
                 "Warehouse",
-                null);
+                "Warehouse");
         add(fields, intent, "FACI",
                 List.of("facility", "plant"),
                 "Facility",
-                null);
+                "Facility");
         add(fields, intent, "RESP",
                 List.of("responsible", "assigned to"),
                 "Responsible Person",
-                null);
+                "Responsible");
         add(fields, intent, "TRSH",
                 List.of("status", "distribution status"),
                 "Highest Distribution Status",
@@ -190,7 +218,11 @@ public class SearchFieldCatalog {
         add(fields, intent, "RIDT",
                 List.of("receiving date"),
                 "Receiving Date",
-                null);
+                "ReceivingDate");
+        add(fields, intent, "TRTP",
+                List.of("order type", "distribution order type"),
+                "Order Type",
+                "OrderType");
     }
 
     private static void seedGetCustomer(Map<String, List<SearchFieldDefinition>> fields) {

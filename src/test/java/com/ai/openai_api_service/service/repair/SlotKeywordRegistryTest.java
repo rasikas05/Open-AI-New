@@ -39,4 +39,20 @@ class SlotKeywordRegistryTest {
         assertTrue(texts.contains("customer order"));
         assertTrue(texts.contains("order"));
     }
+
+    @Test
+    void keywordsForIntent_distributionOrder_includesWarehouseSlot() {
+        var keywords = registry.keywordsForIntent("SearchDistributionOrder");
+
+        assertTrue(keywords.stream().anyMatch(k ->
+                "warehouse".equals(k.keyword()) && "Warehouse".equals(k.lexSlotName())));
+    }
+
+    @Test
+    void keywordsForIntent_manufacturingOrder_includesProductSlot() {
+        var keywords = registry.keywordsForIntent("SearchManufacturingOrder");
+
+        assertTrue(keywords.stream().anyMatch(k ->
+                "product".equals(k.keyword()) && "ProductNumber".equals(k.lexSlotName())));
+    }
 }

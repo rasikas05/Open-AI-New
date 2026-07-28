@@ -9,7 +9,11 @@ import com.ai.openai_api_service.model.MessageDto;
 import com.ai.openai_api_service.model.OpenAIUsage;
 import com.ai.openai_api_service.model.QueryRewriteResult;
 import com.ai.openai_api_service.model.python_rag.ChunkItem;
+import com.ai.openai_api_service.model.rag.GroundedRagCallResult;
+import com.ai.openai_api_service.model.rag.GroundedRagResult;
+import com.ai.openai_api_service.model.rag.RagStatus;
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -41,45 +45,37 @@ public class OpenAIService {
     private static final Logger log = LoggerFactory.getLogger(OpenAIService.class);
 
     private static final String RAG_SYSTEM_PROMPT = """
-            You are an Infor M3 / CloudSuite documentation-grounded assistant. Apply the CLEAR framework:
+            You are an Infor M3 / CloudSuite documentation-grounded assistant. Apply the CLEAR framework.
 
             C - Context
-            The user message includes retrieved Infor M3 documentation chunks. Your answer must be grounded in \
-            that supplied context only. Retrieved documentation is available for this response.
+            The user message includes retrieved Infor M3 documentation chunks only.
 
             L - Logic
-            - Use ONLY the documentation context provided in the user message. Do not use general M3 knowledge \
-            outside that context.
-            - Never mix documentation with general knowledge in the same answer.
-            - Never invent program names, MI transaction names, API names, table names, or field names. \
-            Use only identifiers that appear in the supplied context, and preserve them exactly \
-            (spelling and casing).
-            - When referencing M3 programs, always include the program ID (e.g., CRS610, OIS100) if present \
-            in the context.
-            - Combine information across multiple documents when they agree; if they conflict, say so clearly.
-            - Provide step-by-step instructions when the context includes procedural information.
-            - Cite documentation using document titles and source URLs when present. Do not use labels \
-            like "Document 1" or "Source: Document N".
-            - Do not add disclaimers about knowledge sources or documentation search.
+            - Use ONLY the supplied documentation context. Never use general M3 knowledge or invent facts.
+            - Never invent program names, MI names, API names, table names, or field names.
+            - Preserve identifiers exactly as they appear in the context.
+            - Format and organize documentation into a clear markdown answer inside the JSON "answer" field.
+            - Do not mix documentation with general knowledge.
 
             E - Expectations
-            - Provide accurate, concise, structured answers using markdown headings and bullet lists where helpful.
-            - If the documentation fully answers the question: answer clearly and completely from context.
-            - If the documentation partially answers: state what is documented and what is not covered in the \
-            supplied documentation.
-            - If the documentation does not contain the answer: respond with exactly: "This information is not \
-            available in the current documentation. Please refer to the official Infor M3 documentation or contact \
-            your M3 administrator."
-            - If context is ambiguous or incomplete, state uncertainty rather than guessing.
-            - Do not add information beyond what the context provides.
+            Return ONLY a single valid JSON object (no markdown fences, no prose outside JSON) with this shape:
+            {"status":"FULL"|"PARTIAL"|"INSUFFICIENT","answer":"...","missingTopics":[]}
+
+            Status rules:
+            - FULL: documentation completely answers the question. Put the full formatted answer in "answer". \
+            "missingTopics" must be [].
+            - PARTIAL: documentation answers part of the question. Put the COMPLETE documentation-based answer \
+            in "answer". List only substantive missing topics in "missingTopics" (not screenshots or formatting).
+            - INSUFFICIENT: documentation cannot support a useful answer. Set "answer" to "" and "missingTopics" to [].
+
+            Never append a separate "not available" refusal after a useful documentation answer. Use INSUFFICIENT \
+            only when the answer would not be useful.
 
             A - Actor
-            Act as an experienced Infor M3 consultant with strong domain knowledge across Finance, Manufacturing, \
-            Supply Chain, and Localization (country-specific setup).
+            Act as an experienced Infor M3 documentation formatter and coverage classifier.
 
             R - References
-            Ground every answer in the retrieved documentation supplied in the user message. Reference program IDs, \
-            field names, document titles, and source URLs when they appear in the context.""";
+            Cite program IDs, field names, document titles, and source URLs from the context when present.""";
 
     private static final int MAX_REWRITTEN_QUERIES = 3;
     private static final Pattern MARKDOWN_JSON_FENCE = Pattern.compile("```(?:json)?\\s*([\\s\\S]*?)```");
@@ -248,9 +244,9 @@ public class OpenAIService {
     }
 
     /**
-     * Grounded OpenAI chat using pre-filtered RAG chunks from Python.
+     * Grounded OpenAI chat using pre-filtered RAG chunks. Returns structured status JSON result.
      */
-    public ChatResponse chatWithRagContext(ChatRequest request, List<ChunkItem> promptChunks) {
+    public GroundedRagCallResult chatWithRagContext(ChatRequest request, List<ChunkItem> promptChunks) {
         validateApiKey();
         if (promptChunks == null || promptChunks.isEmpty()) {
             throw new OpenAIException("promptChunks cannot be empty for grounded chat", 400);
@@ -262,7 +258,92 @@ public class OpenAIService {
 
         List<Map<String, String>> messages = buildMessages(request, RAG_SYSTEM_PROMPT, userPrompt, true);
         OpenAiCallResult result = callOpenAi(messages);
-        return toChatResponse(request, result, "rag", request.getUserMessage(), modelReadyUserText);
+        GroundedRagResult grounded = parseGroundedRagResult(result.content());
+        return new GroundedRagCallResult(grounded, result.usage(), result.content());
+    }
+
+    /**
+     * General GPT fill for PARTIAL missing topics only (documentation answer is never regenerated here).
+     */
+    public ChatResponse chatGapFill(
+            ChatRequest request,
+            String documentationAnswer,
+            List<String> missingTopics
+    ) {
+        validateApiKey();
+        String modelReadyUserText = prepareUserContentForOpenAi(request.getUserMessage());
+        String topics = missingTopics == null || missingTopics.isEmpty()
+                ? "(none)"
+                : missingTopics.stream().map(t -> "- " + t).reduce((a, b) -> a + "\n" + b).orElse("(none)");
+        String userPrompt = """
+                User Question:
+                %s
+
+                Documentation Answer:
+                %s
+
+                Missing Topics:
+                %s
+
+                Answer ONLY the missing topics listed above. Do not repeat the documentation answer. \
+                Do not answer topics that are already covered in the documentation answer.
+                """.formatted(
+                request.getUserMessage() != null ? request.getUserMessage() : "",
+                documentationAnswer != null ? documentationAnswer : "",
+                topics
+        );
+        List<Map<String, String>> messages = buildMessages(request, systemPromptForFallback(), userPrompt, true);
+        OpenAiCallResult result = callOpenAi(messages);
+        return toChatResponse(request, result, "gpt_infor", request.getUserMessage(), modelReadyUserText);
+    }
+
+    GroundedRagResult parseGroundedRagResult(String content) {
+        if (content == null || content.isBlank()) {
+            throw new OpenAIException("Empty grounded RAG response from OpenAI", 502);
+        }
+        String cleaned = content.strip();
+        Matcher matcher = MARKDOWN_JSON_FENCE.matcher(cleaned);
+        if (matcher.find()) {
+            cleaned = matcher.group(1).strip();
+        }
+        try {
+            JsonNode root = objectMapper.readTree(cleaned);
+            if (root == null || !root.isObject()) {
+                throw new OpenAIException("Grounded RAG response is not a JSON object", 502);
+            }
+            JsonNode statusNode = root.get("status");
+            if (statusNode == null || statusNode.asText().isBlank()) {
+                throw new OpenAIException("Grounded RAG response missing status", 502);
+            }
+            RagStatus status;
+            try {
+                status = RagStatus.valueOf(statusNode.asText().trim().toUpperCase(Locale.ROOT));
+            } catch (IllegalArgumentException e) {
+                throw new OpenAIException("Invalid grounded RAG status: " + statusNode.asText(), 502);
+            }
+            String answer = root.has("answer") && !root.get("answer").isNull()
+                    ? root.get("answer").asText("")
+                    : "";
+            List<String> missingTopics = new ArrayList<>();
+            if (root.has("missingTopics") && root.get("missingTopics").isArray()) {
+                for (JsonNode item : root.get("missingTopics")) {
+                    if (item != null && !item.asText("").isBlank()) {
+                        missingTopics.add(item.asText().strip());
+                    }
+                }
+            }
+            if (status == RagStatus.FULL) {
+                missingTopics = List.of();
+            }
+            if (status == RagStatus.INSUFFICIENT) {
+                missingTopics = List.of();
+            }
+            return new GroundedRagResult(status, answer, missingTopics);
+        } catch (OpenAIException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new OpenAIException("Failed to parse grounded RAG JSON: " + e.getMessage(), 502);
+        }
     }
 
     /**
@@ -590,10 +671,11 @@ public class OpenAIService {
     private String buildRagUserPrompt(String context, String question) {
         return "Context from M3 Documentation:\n" + context + "\n\n---\n\n"
                 + "Question: " + question + "\n\n"
-                + "Answer using ONLY the context above. Preserve program IDs, MI names, and field names exactly. "
-                + "Cite document titles and source URLs when present. "
-                + "If the context is partial, say what is documented and what is missing. "
-                + "If the context does not answer the question, use the exact not-available phrase from your instructions.";
+                + "Respond with ONLY a JSON object: "
+                + "{\"status\":\"FULL|PARTIAL|INSUFFICIENT\",\"answer\":\"...\",\"missingTopics\":[]}. "
+                + "Use ONLY the context above. Never invent documentation. "
+                + "For PARTIAL, put the full documentation-based answer in answer and list missing topics. "
+                + "For INSUFFICIENT, use empty answer and empty missingTopics.";
     }
 
     private boolean isValidRole(String role) {

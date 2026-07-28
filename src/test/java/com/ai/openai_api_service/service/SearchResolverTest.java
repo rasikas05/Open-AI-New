@@ -158,4 +158,68 @@ class SearchResolverTest {
                 resolver.resolve("SearchDistributionOrder", Map.of("TRNR", "DO00000001"))
         );
     }
+
+    @Test
+    void resolve_distributionOrder_warehouse_mapsToWhlo() {
+        assertEquals(
+                List.of(new SearchCriterion("WHLO", "A01")),
+                resolver.resolve("SearchDistributionOrder", Map.of("Warehouse", "A01"))
+        );
+    }
+
+    @Test
+    void resolve_distributionOrder_facility_mapsToFaci() {
+        assertEquals(
+                List.of(new SearchCriterion("FACI", "A01")),
+                resolver.resolve("SearchDistributionOrder", Map.of("Facility", "A01"))
+        );
+    }
+
+    @Test
+    void resolve_manufacturingOrder_productNumber_mapsToPrno() {
+        assertEquals(
+                List.of(new SearchCriterion("PRNO", "P10001")),
+                resolver.resolve("SearchManufacturingOrder", Map.of("ProductNumber", "P10001"))
+        );
+    }
+
+    @Test
+    void resolve_manufacturingOrder_manufacturingOrderNumber_mapsToMfno() {
+        assertEquals(
+                List.of(new SearchCriterion("MFNO", "MO0001")),
+                resolver.resolve("SearchManufacturingOrder", Map.of("ManufacturingOrderNumber", "MO0001"))
+        );
+    }
+
+    @Test
+    void resolve_manufacturingOrder_facility_mapsToFaci() {
+        assertEquals(
+                List.of(new SearchCriterion("FACI", "A01")),
+                resolver.resolve("SearchManufacturingOrder", Map.of("Facility", "A01"))
+        );
+    }
+
+    @Test
+    void resolve_manufacturingOrder_referenceOrderNumber_mapsToRorn() {
+        assertEquals(
+                List.of(new SearchCriterion("RORN", "CO12345")),
+                resolver.resolve("SearchManufacturingOrder", Map.of("ReferenceOrderNumber", "CO12345"))
+        );
+    }
+
+    @Test
+    void resolve_distributionOrder_distributionOrderNumber_mapsToTrnr() {
+        assertEquals(
+                List.of(new SearchCriterion("TRNR", "DO001")),
+                resolver.resolve("SearchDistributionOrder", Map.of("DistributionOrderNumber", "DO001"))
+        );
+    }
+
+    @Test
+    void resolve_purchaseOrder_division_mapsToDivi() {
+        assertEquals(
+                List.of(new SearchCriterion("DIVI", "AAA")),
+                resolver.resolve("SearchPurchaseOrder", Map.of("Division", "AAA"))
+        );
+    }
 }

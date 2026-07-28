@@ -299,9 +299,9 @@ class LexFulfillmentServiceTest {
         assertNull(response.getM3Data());
         String sqry = response.getM3Request().getParams().get("SQRY").toString();
         assertFalse(sqry.contains("ORNO:"));
-        assertFalse(sqry.contains("ORST:"));
+        assertTrue(sqry.contains("ORST:33"));
         assertEquals(
-                java.util.Set.of("CUNO:Y11100", "FACI:A01"),
+                java.util.Set.of("CUNO:Y11100", "FACI:A01", "ORST:33"),
                 java.util.Set.of(sqry.split(" AND "))
         );
     }
@@ -534,5 +534,168 @@ class LexFulfillmentServiceTest {
         assertEquals("search", response.getActionTaken());
         assertEquals("ORNO,ORST,NTAM", response.getM3Request().getParams().get("returncols"));
         assertEquals("CUNO:Y11100", response.getM3Request().getParams().get("SQRY").toString());
+    }
+
+    @Test
+    void fulfill_getCustomerFinancial_creditLimit_addsReturncols() {
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomerFinancial",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "Y11100"),
+                List.of()
+        );
+
+        ChatResponse response = fulfillmentService.fulfill(
+                lexResult,
+                "Show credit limit for customer Y11100"
+        );
+
+        assertEquals("read", response.getActionTaken());
+        assertEquals("CRS610MI", response.getM3Request().getProgram());
+        assertEquals("GetFinancial", response.getM3Request().getTransaction());
+        String returncols = response.getM3Request().getParams().get("returncols").toString();
+        assertTrue(returncols.contains("CRLM"));
+    }
+
+    @Test
+    void fulfill_getCustomerFinancial_paymentAndCurrency_multiReturncols() {
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomerFinancial",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "Y11100"),
+                List.of()
+        );
+
+        ChatResponse response = fulfillmentService.fulfill(
+                lexResult,
+                "Show payment and currency for customer Y11100"
+        );
+
+        assertEquals("read", response.getActionTaken());
+        assertEquals(
+                java.util.Set.of("TEPY", "CUCD"),
+                java.util.Set.of(response.getM3Request().getParams().get("returncols").toString().split(","))
+        );
+    }
+
+    @Test
+    void fulfill_getCustomerFinancial_creditLimitAndPaymentTerms_multiField() {
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomerFinancial",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "Y11100"),
+                List.of()
+        );
+
+        ChatResponse response = fulfillmentService.fulfill(
+                lexResult,
+                "Show credit limit and payment terms for customer Y11100"
+        );
+
+        assertEquals("read", response.getActionTaken());
+        assertTrue(response.getReply().contains("credit limit"));
+        assertTrue(response.getReply().contains("payment terms"));
+        String returncols = response.getM3Request().getParams().get("returncols").toString();
+        assertTrue(returncols.contains("CRLM"));
+        assertTrue(returncols.contains("TEPY"));
+    }
+
+    @Test
+    void fulfill_searchDistributionOrder_warehouseMapsToWhlo() {
+        Map<String, String> slots = new LinkedHashMap<>();
+        slots.put("Warehouse", "A01");
+        slots.put("TRNR", "DO00000001");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "SearchDistributionOrder",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                slots,
+                List.of()
+        );
+
+        ChatResponse response = fulfillmentService.fulfill(lexResult);
+
+        assertEquals("search", response.getActionTaken());
+        String sqry = response.getM3Request().getParams().get("SQRY").toString();
+        assertTrue(sqry.contains("WHLO:A01"));
+        assertFalse(sqry.contains("FACI:A01"));
+    }
+
+    @Test
+    void fulfill_searchManufacturingOrder_productNumber_buildsSqry() {
+        Map<String, String> slots = new LinkedHashMap<>();
+        slots.put("ProductNumber", "P10001");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "SearchManufacturingOrder",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                slots,
+                List.of()
+        );
+
+        ChatResponse response = fulfillmentService.fulfill(
+                lexResult,
+                "Show manufacturing order for product P10001"
+        );
+
+        assertEquals("search", response.getActionTaken());
+        assertEquals("SearchManufacturingOrder", response.getLexIntent());
+        assertNotNull(response.getM3Request());
+        assertEquals("PMS100MI", response.getM3Request().getProgram());
+        assertEquals("SearchMO", response.getM3Request().getTransaction());
+        assertEquals("PRNO:P10001", response.getM3Request().getParams().get("SQRY").toString());
+    }
+
+    @Test
+    void fulfill_searchManufacturingOrder_referenceOrderNumber_buildsSqry() {
+        Map<String, String> slots = new LinkedHashMap<>();
+        slots.put("ReferenceOrderNumber", "CO12345");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "SearchManufacturingOrder",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                slots,
+                List.of()
+        );
+
+        ChatResponse response = fulfillmentService.fulfill(
+                lexResult,
+                "Show manufacturing orders with reference order CO12345"
+        );
+
+        assertEquals("search", response.getActionTaken());
+        assertEquals("RORN:CO12345", response.getM3Request().getParams().get("SQRY").toString());
+    }
+
+    @Test
+    void fulfill_searchCustomerOrder_orderNumberAlias_buildsSqry() {
+        Map<String, String> slots = new LinkedHashMap<>();
+        slots.put("OrderNumber", "0010000864");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "SearchCustomerOrder",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                slots,
+                List.of()
+        );
+
+        ChatResponse response = fulfillmentService.fulfill(lexResult);
+
+        assertEquals("search", response.getActionTaken());
+        assertEquals("ORNO:0010000864", response.getM3Request().getParams().get("SQRY").toString());
     }
 }

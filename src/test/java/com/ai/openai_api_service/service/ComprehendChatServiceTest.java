@@ -16,6 +16,9 @@ import com.ai.openai_api_service.model.python_rag.ChunkItem;
 import com.ai.openai_api_service.model.QueryRewriteResult;
 import com.ai.openai_api_service.model.python_rag.PythonRetrievalResponse;
 import com.ai.openai_api_service.model.python_rag.PythonRouteResponse;
+import com.ai.openai_api_service.model.rag.GroundedRagCallResult;
+import com.ai.openai_api_service.model.rag.GroundedRagResult;
+import com.ai.openai_api_service.model.rag.RagStatus;
 import com.ai.openai_api_service.service.query.SearchContextService;
 import com.ai.openai_api_service.service.guided.GuidedSearchService;
 import com.ai.openai_api_service.service.guided.InMemoryGuidedSearchSessionService;
@@ -92,7 +95,7 @@ class ComprehendChatServiceTest {
 
     @BeforeEach
     void setUp() {
-        ReflectionTestUtils.setField(comprehendChatService, "ragFallbackOnNoAnswer", true);
+        ReflectionTestUtils.setField(comprehendChatService, "ragPartialGapFillEnabled", true);
         ReflectionTestUtils.setField(comprehendChatService, "queryRewriteEnabled", false);
         lenient().when(guidedSearchSessionService.find(any())).thenReturn(Optional.empty());
     }
@@ -112,10 +115,9 @@ class ComprehendChatServiceTest {
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
 
         OpenAIUsage usage = new OpenAIUsage(10, 20, 30, "gpt-4.1");
-        ChatResponse openAiResponse = new ChatResponse("grounded answer", false);
-        openAiResponse.setActionTaken("rag");
-        openAiResponse.setOpenAiUsage(usage);
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)))).thenReturn(openAiResponse);
+        GroundedRagResult grounded = new GroundedRagResult(RagStatus.FULL, "grounded answer", List.of());
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk))))
+                .thenReturn(new GroundedRagCallResult(grounded, usage, "{\"status\":\"FULL\"}"));
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("how to create customer");
@@ -133,6 +135,7 @@ class ComprehendChatServiceTest {
         assertEquals(0.62f, response.getSources().get(0).getScore());
         verify(openAIService).chatWithRagContext(any(), eq(List.of(chunk)));
         verify(openAIService, never()).chatWithoutPersistence(any());
+        verify(openAIService, never()).chatGapFill(any(), any(), any());
         verify(pythonRagService, never()).query(any());
         verify(tenantQuotaService).recordUsage(eq("tenant1"), eq(30), anyString());
     }
@@ -181,7 +184,13 @@ class ComprehendChatServiceTest {
 
         ChatResponse openAiResponse = new ChatResponse("grounded answer", false);
         openAiResponse.setActionTaken("rag");
-        when(openAIService.chatWithRagContext(any(), anyList())).thenReturn(openAiResponse);
+        when(openAIService.chatWithRagContext(any(), anyList())).thenReturn(
+                new GroundedRagCallResult(
+                        new GroundedRagResult(RagStatus.FULL, "grounded answer", List.of()),
+                        new OpenAIUsage(1, 1, 2, "gpt-4.1"),
+                        "{}"
+                )
+        );
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("pricing issue"));
@@ -218,7 +227,7 @@ class ComprehendChatServiceTest {
     }
 
     @Test
-    void documentationRoute_ragInsufficientAnswer_fallsBackToOpenAi() {
+    void documentationRoute_insufficientStatus_fallsBackToOpenAi() {
         stubQuotaAllowed();
         stubSanitize();
         when(pythonRagService.route("how to add KIT")).thenReturn(new PythonRouteResponse("rag"));
@@ -232,13 +241,13 @@ class ComprehendChatServiceTest {
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
 
         OpenAIUsage ragUsage = new OpenAIUsage(3000, 20, 3020, "gpt-4.1");
-        ChatResponse ragResponse = new ChatResponse(
-                "This information is not available in the current documentation. Please refer to the official Infor M3 documentation or contact your M3 administrator.",
-                false
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)))).thenReturn(
+                new GroundedRagCallResult(
+                        new GroundedRagResult(RagStatus.INSUFFICIENT, "", List.of()),
+                        ragUsage,
+                        "{\"status\":\"INSUFFICIENT\"}"
+                )
         );
-        ragResponse.setActionTaken("rag");
-        ragResponse.setOpenAiUsage(ragUsage);
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)))).thenReturn(ragResponse);
 
         OpenAIUsage fallbackUsage = new OpenAIUsage(50, 100, 150, "gpt-4.1");
         ChatResponse fallbackResponse = new ChatResponse("To add a KIT on a customer order line, open OIS100...", false);
@@ -254,6 +263,116 @@ class ComprehendChatServiceTest {
         assertEquals("rag_no_answer_fallback", response.getRetrievalReason());
         assertEquals(3170, response.getOpenAiUsage().getTotalTokens());
         verify(openAIService).chatWithRagContext(any(), eq(List.of(chunk)));
+        verify(openAIService).chatWithoutPersistence(any());
+        verify(openAIService, never()).chatGapFill(any(), any(), any());
+    }
+
+    @Test
+    void documentationRoute_partialStatus_preservesDocsAndGapFills() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(pythonRagService.route("What is MNS204 used for?")).thenReturn(new PythonRouteResponse("rag"));
+
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        retrieval.setMaxScore(0.66f);
+        ChunkItem chunk = new ChunkItem("chunk", 0.66f, "MNS204", "http://docs/mns204", List.of("MNS204"), null, null, null, null);
+        retrieval.setPromptChunks(List.of(chunk));
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
+
+        OpenAIUsage ragUsage = new OpenAIUsage(100, 50, 150, "gpt-4.1");
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)))).thenReturn(
+                new GroundedRagCallResult(
+                        new GroundedRagResult(
+                                RagStatus.PARTIAL,
+                                "MNS204 appears in user settings documentation.",
+                                List.of("Functional purpose", "Business usage")
+                        ),
+                        ragUsage,
+                        "{\"status\":\"PARTIAL\"}"
+                )
+        );
+
+        OpenAIUsage gapUsage = new OpenAIUsage(20, 30, 50, "gpt-4.1");
+        ChatResponse gapResponse = new ChatResponse("Functional purpose: ...", false);
+        gapResponse.setOpenAiUsage(gapUsage);
+        when(openAIService.chatGapFill(any(), anyString(), anyList())).thenReturn(gapResponse);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("What is MNS204 used for?"));
+
+        assertTrue(response.getReply().contains("## Documentation"));
+        assertTrue(response.getReply().contains("MNS204 appears in user settings documentation."));
+        assertTrue(response.getReply().contains("## Additional AI Information"));
+        assertTrue(response.getReply().contains("Functional purpose: ..."));
+        assertEquals("rag", response.getActionTaken());
+        assertEquals("ready_for_grounding", response.getRetrievalReason());
+        assertEquals(200, response.getOpenAiUsage().getTotalTokens());
+        verify(openAIService).chatGapFill(
+                any(),
+                eq("MNS204 appears in user settings documentation."),
+                eq(List.of("Functional purpose", "Business usage"))
+        );
+        verify(openAIService, never()).chatWithoutPersistence(any());
+    }
+
+    @Test
+    void documentationRoute_partialStatus_gapFillDisabled_returnsDocsOnly() {
+        ReflectionTestUtils.setField(comprehendChatService, "ragPartialGapFillEnabled", false);
+        stubQuotaAllowed();
+        stubSanitize();
+        when(pythonRagService.route("What is MNS204 used for?")).thenReturn(new PythonRouteResponse("rag"));
+
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        ChunkItem chunk = new ChunkItem("chunk", 0.66f, "MNS204", "http://docs/mns204", List.of("MNS204"), null, null, null, null);
+        retrieval.setPromptChunks(List.of(chunk));
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
+
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)))).thenReturn(
+                new GroundedRagCallResult(
+                        new GroundedRagResult(
+                                RagStatus.PARTIAL,
+                                "Docs only answer",
+                                List.of("Missing topic")
+                        ),
+                        new OpenAIUsage(10, 10, 20, "gpt-4.1"),
+                        "{}"
+                )
+        );
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("What is MNS204 used for?"));
+
+        assertEquals("Docs only answer", response.getReply());
+        verify(openAIService, never()).chatGapFill(any(), any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any());
+    }
+
+    @Test
+    void documentationRoute_groundedParseFailure_fallsBackToOpenAi() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(pythonRagService.route("how to create customer")).thenReturn(new PythonRouteResponse("rag"));
+
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        ChunkItem chunk = new ChunkItem("chunk", 0.7f, "T", "http://x", List.of(), null, null, null, null);
+        retrieval.setPromptChunks(List.of(chunk));
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
+        when(openAIService.chatWithRagContext(any(), anyList()))
+                .thenThrow(new OpenAIException("Failed to parse grounded RAG JSON", 502));
+
+        ChatResponse fallback = new ChatResponse("general answer", false);
+        fallback.setActionTaken("gpt_infor");
+        fallback.setOpenAiUsage(new OpenAIUsage(5, 5, 10, "gpt-4.1"));
+        when(openAIService.chatWithoutPersistence(any())).thenReturn(fallback);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("how to create customer"));
+
+        assertEquals("general answer", response.getReply());
+        assertEquals("rag_no_answer_fallback", response.getRetrievalReason());
         verify(openAIService).chatWithoutPersistence(any());
     }
 
@@ -450,10 +569,13 @@ class ComprehendChatServiceTest {
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
 
         OpenAIUsage usage = new OpenAIUsage(100, 50, 150, "gpt-4.1");
-        ChatResponse openAiResponse = new ChatResponse("configure in CRS780", false);
-        openAiResponse.setActionTaken("rag");
-        openAiResponse.setOpenAiUsage(usage);
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)))).thenReturn(openAiResponse);
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)))).thenReturn(
+                new GroundedRagCallResult(
+                        new GroundedRagResult(RagStatus.FULL, "configure in CRS780", List.of()),
+                        usage,
+                        "{}"
+                )
+        );
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         comprehendChatService.chat(baseRequest("purchase settings"));

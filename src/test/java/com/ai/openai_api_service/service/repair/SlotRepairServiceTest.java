@@ -7,6 +7,8 @@ import com.ai.openai_api_service.service.repair.rules.KeywordUtteranceRepairRule
 import com.ai.openai_api_service.service.repair.rules.MergedStatusSplitRule;
 import com.ai.openai_api_service.service.repair.rules.MergedTextSplitRule;
 import com.ai.openai_api_service.service.repair.rules.MisassignmentRepairRule;
+import com.ai.openai_api_service.service.slots.GenericSlotInterpretationCatalog;
+import com.ai.openai_api_service.service.slots.GenericSlotInterpreter;
 import com.ai.openai_api_service.service.validation.SlotValidator;
 import org.junit.jupiter.api.Test;
 
@@ -28,10 +30,13 @@ class SlotRepairServiceTest {
         FieldDefinitionRegistry registry = new FieldDefinitionRegistry();
         SlotValidator validator = new SlotValidator(catalog, registry);
         SlotKeywordRegistry keywordRegistry = new SlotKeywordRegistry(catalog);
+        GenericSlotInterpreter genericSlotInterpreter =
+                new GenericSlotInterpreter(new GenericSlotInterpretationCatalog());
         return new SlotRepairService(
                 validator,
                 catalog,
                 registry,
+                genericSlotInterpreter,
                 new KeywordUtteranceRepairRule(keywordRegistry),
                 new MisassignmentRepairRule(),
                 new MergedStatusSplitRule(keywordRegistry),
@@ -57,7 +62,7 @@ class SlotRepairServiceTest {
 
         Map<String, SlotValue> repaired = repairService.repair("SearchPurchaseOrder", null, slots);
 
-        assertEquals("33", repaired.get("Status").value());
+        assertEquals("33", repaired.get("HighestStatus").value());
         assertEquals("890", repaired.get("PurchaseOrderNumber").value());
     }
 
@@ -91,7 +96,7 @@ class SlotRepairServiceTest {
     void repair_alreadyValid_unchanged() {
         Map<String, SlotValue> slots = new LinkedHashMap<>();
         slots.put("Warehouse", new SlotValue("A01"));
-        slots.put("Status", new SlotValue("33"));
+        slots.put("HighestStatus", new SlotValue("33"));
 
         Map<String, SlotValue> repaired = repairService.repair("SearchPurchaseOrder", null, slots);
 
@@ -122,7 +127,7 @@ class SlotRepairServiceTest {
                 slots
         );
 
-        assertEquals("33", repaired.get("Status").value());
+        assertEquals("33", repaired.get("HighestStatus").value());
         assertFalse(repaired.containsKey("CustomerOrderNumber"));
     }
 
@@ -137,7 +142,7 @@ class SlotRepairServiceTest {
                 slots
         );
 
-        assertEquals("33", repaired.get("Status").value());
+        assertEquals("33", repaired.get("HighestStatus").value());
         assertEquals("0010000864", repaired.get("CustomerOrderNumber").value());
         assertFalse(repaired.containsKey("CustomerNumber"));
     }
@@ -179,7 +184,7 @@ class SlotRepairServiceTest {
 
         Map<String, SlotValue> repaired = repairService.repair("SearchCustomerOrder", null, slots);
 
-        assertEquals("FOR", repaired.get("Status").value());
+        assertEquals("FOR", repaired.get("HighestStatus").value());
         assertFalse(repaired.containsKey("CustomerOrderNumber"));
     }
 
@@ -191,6 +196,6 @@ class SlotRepairServiceTest {
 
         Map<String, SlotValue> repaired = repairService.repair("SearchPurchaseOrder", null, slots);
 
-        assertEquals(Set.of("Supplier", "Status", "PurchaseOrderNumber"), repaired.keySet());
+        assertEquals(Set.of("Supplier", "HighestStatus", "PurchaseOrderNumber"), repaired.keySet());
     }
 }

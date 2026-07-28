@@ -71,6 +71,15 @@ class GenericSlotInterpreterTest {
     }
 
     @Test
+    void interpret_orderNumber_aliasesToCustomerOrderNumber() {
+        Map<String, SlotValue> slots = Map.of("OrderNumber", new SlotValue("1000001234"));
+
+        Map<String, SlotValue> interpreted = interpreter.interpret("SearchCustomerOrder", slots);
+
+        assertEquals(Map.of("CustomerOrderNumber", new SlotValue("1000001234")), interpreted);
+    }
+
+    @Test
     void interpret_unknownIntent_noOp() {
         Map<String, SlotValue> slots = Map.of("Status", new SlotValue("33"));
 

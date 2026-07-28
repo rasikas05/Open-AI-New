@@ -256,4 +256,48 @@ class RequestedInformationResolverTest {
                 resolver.resolve("Show payment terms for customer", "GetCustomer", Map.of())
         );
     }
+
+    @Test
+    void resolve_creditLimit_returnsCreditLimit() {
+        assertEquals(
+                List.of(RequestedInformationResolver.CREDIT_LIMIT),
+                resolver.resolve("Show credit limit for customer Y11100", "GetCustomerFinancial", Map.of())
+        );
+    }
+
+    @Test
+    void resolve_creditLimitAndPaymentTerms_returnsBothInOrder() {
+        assertEquals(
+                List.of(RequestedInformationResolver.CREDIT_LIMIT, "PAYMENT_TERMS"),
+                resolver.resolve(
+                        "Show credit limit and payment terms for customer Y11100",
+                        "GetCustomerFinancial",
+                        Map.of()
+                )
+        );
+    }
+
+    @Test
+    void resolve_groupPayer_notPlainPayer() {
+        assertEquals(
+                List.of(RequestedInformationResolver.GROUP_PAYER),
+                resolver.resolve("Show group payer for customer", "GetCustomerFinancial", Map.of())
+        );
+    }
+
+    @Test
+    void resolve_payerAlone_returnsPayer() {
+        assertEquals(
+                List.of(RequestedInformationResolver.PAYER),
+                resolver.resolve("Show payer for customer", "GetCustomerFinancial", Map.of())
+        );
+    }
+
+    @Test
+    void resolve_paymentAndCurrency_returnsBoth() {
+        assertEquals(
+                List.of(RequestedInformationResolver.PAYMENT, RequestedInformationResolver.CURRENCY),
+                resolver.resolve("Show payment and currency for customer", "GetCustomerFinancial", Map.of())
+        );
+    }
 }

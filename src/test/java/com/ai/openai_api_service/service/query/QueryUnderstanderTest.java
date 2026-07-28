@@ -4,6 +4,7 @@ import com.ai.openai_api_service.model.QueryContext;
 import com.ai.openai_api_service.model.SearchCriterion;
 import com.ai.openai_api_service.service.IntentApiCatalog;
 import com.ai.openai_api_service.service.RequestedInformationResolver;
+import com.ai.openai_api_service.service.api.ApiFieldCatalog;
 import com.ai.openai_api_service.service.api.InformationRequestCatalog;
 import org.junit.jupiter.api.Test;
 
@@ -23,7 +24,7 @@ class QueryUnderstanderTest {
                     new InformationRequestCatalog()
             ),
             new IntentApiCatalog(),
-            new ReturnColumnCatalog(new IntentApiCatalog())
+            new ReturnColumnCatalog(new IntentApiCatalog(), new ApiFieldCatalog())
     );
 
     @Test
@@ -55,5 +56,28 @@ class QueryUnderstanderTest {
 
         assertEquals(5, enriched.limit());
         assertEquals(base.criteria(), enriched.criteria());
+    }
+
+    @Test
+    void enrich_getCustomerFinancial_paymentAndCurrency_addsReturnColumns() {
+        QueryContext base = QueryContext.forRead(
+                "GetCustomerFinancial",
+                Map.of("CustomerNumber", "Y11100")
+        );
+
+        QueryContext enriched = understander.enrich(
+                base,
+                "Show payment and currency for customer Y11100",
+                Map.of()
+        );
+
+        assertEquals(
+                java.util.Set.of("TEPY", "CUCD"),
+                java.util.Set.copyOf(enriched.returnColumns())
+        );
+        assertEquals(
+                List.of(RequestedInformationResolver.PAYMENT, RequestedInformationResolver.CURRENCY),
+                enriched.requestedInformation()
+        );
     }
 }

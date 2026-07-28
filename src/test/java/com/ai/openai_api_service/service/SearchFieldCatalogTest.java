@@ -62,10 +62,12 @@ class SearchFieldCatalogTest {
         assertEquals("CUNO", catalog.findBySlot("SearchCustomerOrder", "CustomerNumber").orElseThrow().m3Field());
         assertEquals("ORNO", catalog.findBySlot("SearchCustomerOrder", "CustomerOrderNumber").orElseThrow().m3Field());
         assertEquals("FACI", catalog.findBySlot("SearchCustomerOrder", "Facility").orElseThrow().m3Field());
-        assertEquals("ORST", catalog.findBySlot("SearchCustomerOrder", "Status").orElseThrow().m3Field());
+        assertEquals("ORST", catalog.findBySlot("SearchCustomerOrder", "HighestStatus").orElseThrow().m3Field());
         assertEquals("SMCD", catalog.findBySlot("SearchCustomerOrder", "Salesperson").orElseThrow().m3Field());
         assertEquals("RESP", catalog.findBySlot("SearchCustomerOrder", "Responsible").orElseThrow().m3Field());
         assertEquals("ORDT", catalog.findBySlot("SearchCustomerOrder", "OrderDate").orElseThrow().m3Field());
+        assertEquals("ORTP", catalog.findBySlot("SearchCustomerOrder", "OrderType").orElseThrow().m3Field());
+        assertEquals("ORSL", catalog.findBySlot("SearchCustomerOrder", "LowestStatus").orElseThrow().m3Field());
     }
 
     @Test
@@ -77,10 +79,37 @@ class SearchFieldCatalogTest {
     void searchPurchaseOrder_findBySlot_mapsLexSlotsToM3Fields() {
         assertEquals("SUNO", catalog.findBySlot("SearchPurchaseOrder", "Supplier").orElseThrow().m3Field());
         assertEquals("WHLO", catalog.findBySlot("SearchPurchaseOrder", "Warehouse").orElseThrow().m3Field());
-        assertEquals("PUST", catalog.findBySlot("SearchPurchaseOrder", "Status").orElseThrow().m3Field());
+        assertEquals("PUST", catalog.findBySlot("SearchPurchaseOrder", "HighestStatus").orElseThrow().m3Field());
         assertEquals("PUDT", catalog.findBySlot("SearchPurchaseOrder", "OrderDate").orElseThrow().m3Field());
         assertEquals("PUNO", catalog.findBySlot("SearchPurchaseOrder", "PurchaseOrderNumber").orElseThrow().m3Field());
         assertEquals("BUYE", catalog.findBySlot("SearchPurchaseOrder", "Buyer").orElseThrow().m3Field());
         assertEquals("FACI", catalog.findBySlot("SearchPurchaseOrder", "Facility").orElseThrow().m3Field());
+        assertEquals("DIVI", catalog.findBySlot("SearchPurchaseOrder", "Division").orElseThrow().m3Field());
+        assertEquals("ORTY", catalog.findBySlot("SearchPurchaseOrder", "OrderType").orElseThrow().m3Field());
+        assertEquals("POTC", catalog.findBySlot("SearchPurchaseOrder", "PurchaseCategory").orElseThrow().m3Field());
+        assertEquals("PURC", catalog.findBySlot("SearchPurchaseOrder", "RequisitionBy").orElseThrow().m3Field());
+        assertEquals("PUSL", catalog.findBySlot("SearchPurchaseOrder", "LowestStatus").orElseThrow().m3Field());
+    }
+
+    @Test
+    void searchDistributionOrder_findBySlot_mapsWarehouseAndFacility() {
+        assertEquals("WHLO", catalog.findBySlot("SearchDistributionOrder", "Warehouse").orElseThrow().m3Field());
+        assertEquals("FACI", catalog.findBySlot("SearchDistributionOrder", "Facility").orElseThrow().m3Field());
+        assertEquals("TRNR", catalog.findBySlot("SearchDistributionOrder", "DistributionOrderNumber").orElseThrow().m3Field());
+        assertEquals("RESP", catalog.findBySlot("SearchDistributionOrder", "Responsible").orElseThrow().m3Field());
+        assertEquals("RIDT", catalog.findBySlot("SearchDistributionOrder", "ReceivingDate").orElseThrow().m3Field());
+        assertEquals("TRTP", catalog.findBySlot("SearchDistributionOrder", "OrderType").orElseThrow().m3Field());
+    }
+
+    @Test
+    void searchManufacturingOrder_findBySlot_mapsLexSlotsToM3Fields() {
+        assertEquals("PRNO", catalog.findBySlot("SearchManufacturingOrder", "ProductNumber").orElseThrow().m3Field());
+        assertEquals("MFNO", catalog.findBySlot("SearchManufacturingOrder", "ManufacturingOrderNumber").orElseThrow().m3Field());
+        assertEquals("WHST", catalog.findBySlot("SearchManufacturingOrder", "ManufacturingStatus").orElseThrow().m3Field());
+        assertEquals("FACI", catalog.findBySlot("SearchManufacturingOrder", "Facility").orElseThrow().m3Field());
+        assertEquals("STDT", catalog.findBySlot("SearchManufacturingOrder", "PlannedStartDate").orElseThrow().m3Field());
+        assertEquals("FIDT", catalog.findBySlot("SearchManufacturingOrder", "PlannedFinishDate").orElseThrow().m3Field());
+        assertEquals("RORN", catalog.findBySlot("SearchManufacturingOrder", "ReferenceOrderNumber").orElseThrow().m3Field());
+        assertEquals("PRIO", catalog.findBySlot("SearchManufacturingOrder", "Priority").orElseThrow().m3Field());
     }
 }

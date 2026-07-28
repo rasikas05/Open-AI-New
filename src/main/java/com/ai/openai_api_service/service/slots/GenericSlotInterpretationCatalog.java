@@ -23,7 +23,8 @@ public class GenericSlotInterpretationCatalog {
 
     private final Map<String, List<InterpretationRule>> rulesByIntent = Map.of(
             "SearchCustomerOrder", List.of(
-                    new InterpretationRule("Status", InterpretationType.RANGE, "HighestStatus", "LowestStatus")
+                    new InterpretationRule("Status", InterpretationType.RANGE, "HighestStatus", "LowestStatus"),
+                    new InterpretationRule("OrderNumber", InterpretationType.ALIAS, "CustomerOrderNumber", null)
             ),
             "SearchPurchaseOrder", List.of(
                     new InterpretationRule("Status", InterpretationType.RANGE, "HighestStatus", "LowestStatus")
