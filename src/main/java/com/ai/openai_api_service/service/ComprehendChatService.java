@@ -148,61 +148,72 @@ public class ComprehendChatService {
                 sanitizedUserText
         );
 
-        long routeStartMs = System.currentTimeMillis();
-        PythonRouteResponse routeResponse = pythonRagService.route(originalUserText);
-        routeDecisionMs = System.currentTimeMillis() - routeStartMs;
-        String route = routeResponse != null ? routeResponse.getRoute() : "rag";
-        log.info(
-                "Comprehend route decision: route='{}', handler='{}', original='{}', sanitized='{}'",
-                route,
-                ROUTE_LIVE.equalsIgnoreCase(route)
-                        ? (lexService.isEnabled() ? "live/lex" : "live/python-chat")
-                        : "documentation/retrieval",
-                originalUserText,
-                sanitizedUserText
-        );
-
-        ChatResponse chatResponse;
+        boolean guidedHandled = false;
+        ChatResponse chatResponse = null;
         List<SourceItem> sourcesForSuggestions = null;
         List<SourceItem> responseSources = null;
         String retrievalReason = null;
         Integer retrievalTimeMs = null;
         Float maxScore = null;
+        String route = null;
 
-        if (ROUTE_LIVE.equalsIgnoreCase(route)) {
-            if (lexService.isEnabled()) {
-                LexLiveRouteResult lexResult = handleLexLiveRoute(
-                        request,
-                        originalUserText,
-                        sanitizedUserText
-                );
-                chatResponse = lexResult.chatResponse();
-                if (lexResult.fallbackToDoc()) {
-                    sourcesForSuggestions = lexResult.sourcesForSuggestions();
-                    responseSources = lexResult.responseSources();
-                    retrievalReason = lexResult.retrievalReason();
-                    retrievalTimeMs = lexResult.retrievalTimeMs();
-                    maxScore = lexResult.maxScore();
+        GuidedRouteAttempt guidedAttempt = tryHandleActiveGuidedTurn(request, originalUserText);
+        if (guidedAttempt.guidedHandled()) {
+            guidedHandled = true;
+            chatResponse = guidedAttempt.response();
+            route = "guided";
+        }
+
+        if (!guidedHandled) {
+            long routeStartMs = System.currentTimeMillis();
+            PythonRouteResponse routeResponse = pythonRagService.route(originalUserText);
+            routeDecisionMs = System.currentTimeMillis() - routeStartMs;
+            route = routeResponse != null ? routeResponse.getRoute() : "rag";
+            log.info(
+                    "Comprehend route decision: route='{}', handler='{}', original='{}', sanitized='{}'",
+                    route,
+                    ROUTE_LIVE.equalsIgnoreCase(route)
+                            ? (lexService.isEnabled() ? "live/lex" : "live/python-chat")
+                            : "documentation/retrieval",
+                    originalUserText,
+                    sanitizedUserText
+            );
+
+            if (ROUTE_LIVE.equalsIgnoreCase(route)) {
+                if (lexService.isEnabled()) {
+                    LexLiveRouteResult lexResult = handleLexLiveRoute(
+                            request,
+                            originalUserText,
+                            sanitizedUserText
+                    );
+                    chatResponse = lexResult.chatResponse();
+                    if (lexResult.fallbackToDoc()) {
+                        sourcesForSuggestions = lexResult.sourcesForSuggestions();
+                        responseSources = lexResult.responseSources();
+                        retrievalReason = lexResult.retrievalReason();
+                        retrievalTimeMs = lexResult.retrievalTimeMs();
+                        maxScore = lexResult.maxScore();
+                    }
+                } else {
+                    chatResponse = handleLiveRoute(workingRequest, sanitizedUserText);
                 }
             } else {
-                chatResponse = handleLiveRoute(workingRequest, sanitizedUserText);
+                DocRouteResult docResult = handleDocumentationRoute(workingRequest, originalUserText, sanitizedUserText);
+                chatResponse = docResult.chatResponse();
+                sourcesForSuggestions = docResult.sourcesForSuggestions();
+                responseSources = docResult.responseSources();
+                retrievalReason = docResult.retrievalReason();
+                retrievalTimeMs = docResult.retrievalTimeMs();
+                maxScore = docResult.maxScore();
+                queryRewriteMs = docResult.queryRewriteTimeMs();
+                retrievalMs = docResult.retrievalStageTimeMs();
+                groundedMs = docResult.groundedTimeMs();
+                gapFillMs = docResult.gapFillTimeMs();
+                generalGptMs = docResult.generalGptTimeMs();
+                groundedTokens = docResult.groundedTokens();
+                gapFillTokens = docResult.gapFillTokens();
+                generalGptTokens = docResult.generalGptTokens();
             }
-        } else {
-            DocRouteResult docResult = handleDocumentationRoute(workingRequest, originalUserText, sanitizedUserText);
-            chatResponse = docResult.chatResponse();
-            sourcesForSuggestions = docResult.sourcesForSuggestions();
-            responseSources = docResult.responseSources();
-            retrievalReason = docResult.retrievalReason();
-            retrievalTimeMs = docResult.retrievalTimeMs();
-            maxScore = docResult.maxScore();
-            queryRewriteMs = docResult.queryRewriteTimeMs();
-            retrievalMs = docResult.retrievalStageTimeMs();
-            groundedMs = docResult.groundedTimeMs();
-            gapFillMs = docResult.gapFillTimeMs();
-            generalGptMs = docResult.generalGptTimeMs();
-            groundedTokens = docResult.groundedTokens();
-            gapFillTokens = docResult.gapFillTokens();
-            generalGptTokens = docResult.generalGptTokens();
         }
 
         if (Boolean.TRUE.equals(chatResponse.getLimitExceeded())) {
@@ -298,6 +309,64 @@ public class ComprehendChatService {
         );
 
         return chatResponse;
+    }
+
+    /**
+     * Primary Guided Search ownership gate. Must run before Python route / Lex / RAG.
+     * Returns guidedHandled=true only when handleTurn owns the reply (including cancel).
+     */
+    private GuidedRouteAttempt tryHandleActiveGuidedTurn(ChatRequest request, String originalUserText) {
+        LexFulfillmentSession fulfillmentSession = LexFulfillmentSession.of(
+                request.getTenantCode(),
+                request.getUserId(),
+                request.getSessionId()
+        );
+        if (request.getM3ClientReport() != null) {
+            searchContextService.applyClientReport(fulfillmentSession, request.getM3ClientReport());
+        }
+
+        Optional<GuidedSearchState> guidedState = guidedSearchSessionService.find(fulfillmentSession);
+        if (guidedState.isEmpty()) {
+            log.debug(
+                    "Guided routing gate: guidedSessionFound=false sessionId='{}'",
+                    request.getSessionId()
+            );
+            return GuidedRouteAttempt.notHandled();
+        }
+
+        GuidedSearchState state = guidedState.get();
+        log.info(
+                "Guided routing gate: guidedSessionFound=true intent='{}' phase='{}' sessionId='{}'",
+                state.intentName(),
+                state.phase(),
+                request.getSessionId()
+        );
+        log.info(
+                "Guided routing gate: entering GuidedSearchService.handleTurn intent='{}' sessionId='{}' userTextLength={}",
+                state.intentName(),
+                request.getSessionId(),
+                originalUserText != null ? originalUserText.length() : 0
+        );
+
+        GuidedSearchService.GuidedTurnResult turn =
+                guidedSearchService.handleTurn(fulfillmentSession, state, originalUserText);
+        if (turn.abandonToLex()) {
+            log.info(
+                    "Guided routing gate: guided requested abandonToLex=true intent='{}' sessionId='{}'",
+                    state.intentName(),
+                    request.getSessionId()
+            );
+            return GuidedRouteAttempt.notHandled();
+        }
+
+        ChatResponse response = turn.response();
+        log.info(
+                "Guided routing gate: guided handled request actionTaken='{}' intent='{}' sessionId='{}'",
+                response != null ? response.getActionTaken() : null,
+                state.intentName(),
+                request.getSessionId()
+        );
+        return GuidedRouteAttempt.handled(response);
     }
 
     private LexLiveRouteResult handleLexLiveRoute(
@@ -981,6 +1050,19 @@ public class ComprehendChatService {
             Integer gapFillTokens,
             Integer generalGptTokens
     ) {
+    }
+
+    private record GuidedRouteAttempt(
+            boolean guidedHandled,
+            ChatResponse response
+    ) {
+        static GuidedRouteAttempt handled(ChatResponse response) {
+            return new GuidedRouteAttempt(true, response);
+        }
+
+        static GuidedRouteAttempt notHandled() {
+            return new GuidedRouteAttempt(false, null);
+        }
     }
 
     private record LexLiveRouteResult(
