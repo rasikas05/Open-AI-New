@@ -27,11 +27,12 @@ public class InMemoryPendingLexSessionService {
     public InMemoryPendingLexSessionService(
             @Value("${pending-lex.ttl-seconds:3600}") long ttlSeconds
     ) {
-        this(ttlSeconds, Clock.systemUTC());
+        this.ttlSeconds = ttlSeconds;
+        this.clock = Clock.systemUTC();
     }
 
-    /** Package-visible for tests that need a controllable clock. */
-    public InMemoryPendingLexSessionService(long ttlSeconds, Clock clock) {
+    /** Same-package tests only (not a Spring injection candidate). */
+    InMemoryPendingLexSessionService(long ttlSeconds, Clock clock) {
         this.ttlSeconds = ttlSeconds;
         this.clock = clock != null ? clock : Clock.systemUTC();
     }

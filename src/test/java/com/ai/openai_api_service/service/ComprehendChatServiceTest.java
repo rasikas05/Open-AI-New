@@ -35,14 +35,10 @@ import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
-import java.time.Clock;
-import java.time.Instant;
-import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -1340,33 +1336,16 @@ class ComprehendChatServiceTest {
     }
 
     @Test
-    void pendingLex_ttlExpiry_resumesPythonRouting() {
+    void pendingLex_ttlExpiry_resumesPythonRouting() throws InterruptedException {
         stubQuotaAllowed();
         stubSanitize();
         when(lexService.isEnabled()).thenReturn(true);
         when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
 
-        AtomicReference<Instant> now = new AtomicReference<>(Instant.parse("2026-07-28T10:00:00Z"));
-        Clock clock = new Clock() {
-            @Override
-            public ZoneOffset getZone() {
-                return ZoneOffset.UTC;
-            }
-
-            @Override
-            public Clock withZone(java.time.ZoneId zone) {
-                return this;
-            }
-
-            @Override
-            public Instant instant() {
-                return now.get();
-            }
-        };
-        pendingLexSessionService = new InMemoryPendingLexSessionService(60, clock);
+        pendingLexSessionService = new InMemoryPendingLexSessionService(0);
         ReflectionTestUtils.setField(comprehendChatService, "pendingLexSessionService", pendingLexSessionService);
         pendingLexSessionService.markPending("tenant1:user1:session1");
-        now.set(Instant.parse("2026-07-28T10:02:00Z"));
+        Thread.sleep(5);
 
         when(pythonRagService.route("Y11100")).thenReturn(new PythonRouteResponse("rag"));
         PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
