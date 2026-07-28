@@ -34,4 +34,29 @@ public final class SearchCriteriaValidator {
         }
         return false;
     }
+
+    /**
+     * True when at least one post-repair search criterion can be used for SQRY (guided-search gate).
+     */
+    public static boolean hasSearchableCriteria(List<SearchCriterion> criteria) {
+        return hasUsableCriteria(criteria);
+    }
+
+    public static int searchableCriteriaCount(List<SearchCriterion> criteria) {
+        if (criteria == null || criteria.isEmpty()) {
+            return 0;
+        }
+        int count = 0;
+        for (SearchCriterion criterion : criteria) {
+            if (criterion == null) {
+                continue;
+            }
+            String field = criterion.field();
+            String value = criterion.value();
+            if (field != null && !field.isBlank() && value != null && !value.isBlank()) {
+                count++;
+            }
+        }
+        return count;
+    }
 }

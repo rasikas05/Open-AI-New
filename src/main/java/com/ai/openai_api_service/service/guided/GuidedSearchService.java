@@ -3,27 +3,33 @@ package com.ai.openai_api_service.service.guided;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.GuidedSearchPhase;
 import com.ai.openai_api_service.model.GuidedSearchState;
+import com.ai.openai_api_service.model.LexFulfillmentOutcome;
 import com.ai.openai_api_service.model.LexFulfillmentSession;
 import com.ai.openai_api_service.model.RequestType;
 import com.ai.openai_api_service.model.SearchFieldDefinition;
 import com.ai.openai_api_service.service.IntentApiCatalog;
+import com.ai.openai_api_service.service.LexFulfillmentService;
 import com.ai.openai_api_service.service.SearchFieldCatalog;
 import com.ai.openai_api_service.service.normalizer.FieldDefinition;
 import com.ai.openai_api_service.service.normalizer.FieldDefinitionRegistry;
+import com.ai.openai_api_service.service.normalizer.SlotNormalizer;
+import com.ai.openai_api_service.service.normalizer.SlotValue;
 import com.ai.openai_api_service.service.validation.FieldValueValidator;
+import com.ai.openai_api_service.service.validation.SearchCriteriaValidator;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 /**
- * Catalog-driven guided search menu and turn handling for SEARCH intents.
- * Does not fulfill M3 itself — callers resume via LexFulfillmentService.fulfillSearch.
+ * Metadata-driven guided collector for SEARCH intents with zero criteria.
  */
 @Service
 public class GuidedSearchService {
@@ -31,24 +37,31 @@ public class GuidedSearchService {
     public static final String ACTION_SELECT_FIELD = "guided_search_select_field";
     public static final String ACTION_COLLECT_VALUE = "guided_search_collect_value";
     public static final String ACTION_CANCELLED = "guided_search_cancelled";
-    public static final String NEXT_FIELD_CHOICE = "guided_field_choice";
+
     private static final String CANCEL_HINT = "Type cancel to exit.";
     private static final Set<String> CANCEL_WORDS = Set.of("cancel", "stop", "abort");
+    private static final Pattern NEW_SEARCH_PATTERN = Pattern.compile("^(?:actually\\s+)?(?:search|show|find|list|get)\\b", Pattern.CASE_INSENSITIVE);
 
     private final SearchFieldCatalog searchFieldCatalog;
     private final IntentApiCatalog intentApiCatalog;
+    private final SlotNormalizer slotNormalizer;
     private final FieldDefinitionRegistry fieldDefinitionRegistry;
+    private final LexFulfillmentService lexFulfillmentService;
     private final InMemoryGuidedSearchSessionService guidedSearchSessionService;
 
     public GuidedSearchService(
             SearchFieldCatalog searchFieldCatalog,
             IntentApiCatalog intentApiCatalog,
+            SlotNormalizer slotNormalizer,
             FieldDefinitionRegistry fieldDefinitionRegistry,
+            LexFulfillmentService lexFulfillmentService,
             InMemoryGuidedSearchSessionService guidedSearchSessionService
     ) {
         this.searchFieldCatalog = searchFieldCatalog;
         this.intentApiCatalog = intentApiCatalog;
+        this.slotNormalizer = slotNormalizer;
         this.fieldDefinitionRegistry = fieldDefinitionRegistry;
+        this.lexFulfillmentService = lexFulfillmentService;
         this.guidedSearchSessionService = guidedSearchSessionService;
     }
 
@@ -56,8 +69,7 @@ public class GuidedSearchService {
         if (!isSearchIntent(intentName)) {
             throw new IllegalArgumentException("Guided search only supports SEARCH intents: " + intentName);
         }
-        List<SearchFieldDefinition> fields = guidedFields(intentName);
-        if (fields.isEmpty()) {
+        if (guidedFields(intentName).isEmpty()) {
             ChatResponse empty = new ChatResponse(
                     "Unable to process the request because no search criteria were provided.",
                     false
@@ -67,211 +79,281 @@ public class GuidedSearchService {
             return empty;
         }
         guidedSearchSessionService.put(session, GuidedSearchState.selectField(intentName));
-        return buildMenuResponse(intentName, fields);
+        return buildMenuResponse(intentName, null);
     }
 
-    /**
-     * Process a user turn while guided search is active.
-     * Returns either another guided ChatResponse, or a Resume with slots for fulfillSearch.
-     */
     public GuidedTurnResult handleTurn(
             LexFulfillmentSession session,
             GuidedSearchState state,
-            String userMessage
+            String userText
     ) {
-        String trimmed = userMessage != null ? userMessage.trim() : "";
+        if (state == null) {
+            return GuidedTurnResult.abandoned();
+        }
+        String trimmed = userText != null ? userText.trim() : "";
         if (isCancel(trimmed)) {
             guidedSearchSessionService.clear(session);
-            ChatResponse cancelled = new ChatResponse("Guided search cancelled. How else can I help?", false);
-            cancelled.setActionTaken(ACTION_CANCELLED);
-            cancelled.setLexIntent(state.intentName());
-            return GuidedTurnResult.response(cancelled);
+            return GuidedTurnResult.response(buildCancelResponse(state.intentName()));
         }
-
         if (state.phase() == GuidedSearchPhase.SELECT_FIELD) {
             return handleSelectField(session, state, trimmed);
         }
         return handleCollectValue(session, state, trimmed);
     }
 
+    public ChatResponse buildCancelResponse(String intentName) {
+        ChatResponse cancelled = new ChatResponse("Guided search cancelled. How else can I help?", false);
+        cancelled.setActionTaken(ACTION_CANCELLED);
+        cancelled.setLexIntent(intentName);
+        return cancelled;
+    }
+
     private GuidedTurnResult handleSelectField(
             LexFulfillmentSession session,
             GuidedSearchState state,
-            String trimmed
+            String trimmedInput
     ) {
-        List<SearchFieldDefinition> fields = guidedFields(state.intentName());
-        Optional<SearchFieldDefinition> chosen = resolveChoice(fields, trimmed);
-        if (chosen.isEmpty()) {
-            ChatResponse retry = buildMenuResponse(state.intentName(), fields);
-            retry.setReply(
-                    "I didn't understand that choice.\n\n" + retry.getReply() + "\n\n" + CANCEL_HINT
-            );
-            return GuidedTurnResult.response(retry);
+        if (trimmedInput.isBlank()) {
+            return GuidedTurnResult.response(buildMenuResponse(
+                    state.intentName(),
+                    "Please choose a field number or name."
+            ));
         }
-
-        SearchFieldDefinition field = chosen.get();
-        GuidedSearchState next = GuidedSearchState.collectValue(
-                state.intentName(),
-                field.m3Field(),
-                field.lexSlotName()
+        List<SearchFieldDefinition> fields = guidedFields(state.intentName());
+        Optional<SearchFieldDefinition> selected = resolveFieldChoice(fields, trimmedInput);
+        if (selected.isEmpty()) {
+            if (shouldAbandonToLex(trimmedInput)) {
+                guidedSearchSessionService.clear(session);
+                return GuidedTurnResult.abandoned();
+            }
+            return GuidedTurnResult.response(buildMenuResponse(
+                    state.intentName(),
+                    "I couldn't match that to a searchable field."
+            ));
+        }
+        SearchFieldDefinition field = selected.get();
+        guidedSearchSessionService.put(
+                session,
+                GuidedSearchState.collectValue(
+                        state.intentName(),
+                        field.m3Field(),
+                        field.lexSlotName(),
+                        state.collectedCriteria()
+                )
         );
-        guidedSearchSessionService.put(session, next);
         return GuidedTurnResult.response(buildCollectValueResponse(state.intentName(), field, null));
     }
 
     private GuidedTurnResult handleCollectValue(
             LexFulfillmentSession session,
             GuidedSearchState state,
-            String trimmed
+            String trimmedInput
     ) {
-        SearchFieldDefinition field = searchFieldCatalog.find(state.intentName(), state.selectedM3Field())
-                .orElse(null);
-        String label = field != null && field.description() != null && !field.description().isBlank()
-                ? field.description()
-                : state.selectedM3Field();
-
-        if (trimmed.isBlank()) {
+        if (trimmedInput.isBlank()) {
+            SearchFieldDefinition field = findSelectedField(state);
+            if (field == null) {
+                guidedSearchSessionService.put(session, GuidedSearchState.selectField(state.intentName()));
+                return GuidedTurnResult.response(buildMenuResponse(
+                        state.intentName(),
+                        "Let's choose a field first."
+                ));
+            }
             return GuidedTurnResult.response(buildCollectValueResponse(
                     state.intentName(),
-                    field != null ? field : syntheticField(state),
-                    "A value is required. " + CANCEL_HINT
+                    field,
+                    "Please provide a value."
             ));
         }
 
-        Optional<FieldDefinition> definition = fieldDefinitionRegistry.get(state.selectedM3Field());
-        if (definition.isPresent()) {
-            FieldValueValidator.ValidationOutcome outcome =
-                    FieldValueValidator.validate(definition.get(), trimmed);
-            if (!outcome.passed()) {
-                String reason = outcome.reason() != null ? outcome.reason() : "Invalid value";
-                return GuidedTurnResult.response(buildCollectValueResponse(
-                        state.intentName(),
-                        field != null ? field : syntheticField(state),
-                        reason + ". Please try again. " + CANCEL_HINT
-                ));
-            }
+        SearchFieldDefinition field = findSelectedField(state);
+        if (field == null) {
+            guidedSearchSessionService.put(session, GuidedSearchState.selectField(state.intentName()));
+            return GuidedTurnResult.response(buildMenuResponse(
+                    state.intentName(),
+                    "Let's choose a field first."
+            ));
         }
 
-        Map<String, String> slots = new LinkedHashMap<>();
-        String slotKey = state.selectedLexSlot() != null && !state.selectedLexSlot().isBlank()
-                ? state.selectedLexSlot()
-                : state.selectedM3Field();
-        slots.put(slotKey, trimmed);
+        ValidationResult validation = normalizeAndValidate(state.intentName(), field, trimmedInput);
+        if (!validation.valid()) {
+            if (shouldAbandonToLex(trimmedInput)) {
+                guidedSearchSessionService.clear(session);
+                return GuidedTurnResult.abandoned();
+            }
+            return GuidedTurnResult.response(buildCollectValueResponse(
+                    state.intentName(),
+                    field,
+                    validation.reason()
+            ));
+        }
 
-        guidedSearchSessionService.clear(session);
-        return GuidedTurnResult.resume(state.intentName(), slots);
-    }
-
-    private SearchFieldDefinition syntheticField(GuidedSearchState state) {
-        return new SearchFieldDefinition(
+        Map<String, String> slots = new LinkedHashMap<>(state.collectedCriteria());
+        slots.put(field.lexSlotName(), validation.normalizedValue());
+        LexFulfillmentOutcome outcome = lexFulfillmentService.fulfillSearch(
                 state.intentName(),
-                state.selectedM3Field(),
-                List.of(),
-                state.selectedM3Field(),
-                state.selectedLexSlot()
+                Map.copyOf(slots),
+                trimmedInput,
+                session
         );
-    }
-
-    private ChatResponse buildMenuResponse(String intentName, List<SearchFieldDefinition> fields) {
-        StringBuilder reply = new StringBuilder();
-        reply.append("I can search ").append(humanizeIntent(intentName)).append(".\n\n");
-        reply.append("How would you like to search?\n\n");
-        List<Map<String, Object>> options = new ArrayList<>();
-        for (int i = 0; i < fields.size(); i++) {
-            SearchFieldDefinition field = fields.get(i);
-            int index = i + 1;
-            String label = field.description() != null ? field.description() : field.m3Field();
-            reply.append(index).append(". ").append(label).append('\n');
-            Map<String, Object> option = new LinkedHashMap<>();
-            option.put("index", index);
-            option.put("field", field.m3Field());
-            option.put("label", label);
-            options.add(option);
-        }
-        reply.append('\n').append(CANCEL_HINT);
-
-        ChatResponse response = new ChatResponse(reply.toString().trim(), false);
-        response.setActionTaken(ACTION_SELECT_FIELD);
-        response.setLexIntent(intentName);
-        response.setCollectingTool(intentName);
-        response.setNextField(NEXT_FIELD_CHOICE);
-        response.setNextFieldOptional(false);
-        Map<String, Object> args = new LinkedHashMap<>();
-        args.put("options", options);
-        response.setCollectedArgs(args);
-        return response;
-    }
-
-    private ChatResponse buildCollectValueResponse(
-            String intentName,
-            SearchFieldDefinition field,
-            String errorPrefix
-    ) {
-        String label = field.description() != null && !field.description().isBlank()
-                ? field.description()
-                : field.m3Field();
-        String prompt = "Please enter the " + label.toLowerCase(Locale.ROOT) + ".";
-        String reply = errorPrefix != null && !errorPrefix.isBlank()
-                ? errorPrefix + "\n\n" + prompt
-                : prompt;
-
-        ChatResponse response = new ChatResponse(reply, false);
-        response.setActionTaken(ACTION_COLLECT_VALUE);
-        response.setLexIntent(intentName);
-        response.setCollectingTool(intentName);
-        response.setNextField(field.m3Field());
-        response.setNextFieldOptional(false);
-        Map<String, Object> args = new LinkedHashMap<>();
-        args.put("field", field.m3Field());
-        args.put("label", label);
-        response.setCollectedArgs(args);
-        return response;
-    }
-
-    private Optional<SearchFieldDefinition> resolveChoice(List<SearchFieldDefinition> fields, String input) {
-        if (input == null || input.isBlank() || fields.isEmpty()) {
-            return Optional.empty();
-        }
-        String normalized = input.trim();
-        if (normalized.matches("\\d+")) {
-            int index = Integer.parseInt(normalized);
-            if (index >= 1 && index <= fields.size()) {
-                return Optional.of(fields.get(index - 1));
-            }
-            return Optional.empty();
+        ChatResponse response = outcome.response();
+        if (response != null && shouldClearAfterFulfillment(outcome)) {
+            guidedSearchSessionService.clear(session);
+            return GuidedTurnResult.response(response);
         }
 
-        String lower = normalized.toLowerCase(Locale.ROOT);
-        for (SearchFieldDefinition field : fields) {
-            if (field.description() != null && field.description().equalsIgnoreCase(normalized)) {
-                return Optional.of(field);
-            }
-            if (field.m3Field() != null && field.m3Field().equalsIgnoreCase(normalized)) {
-                return Optional.of(field);
-            }
-            if (field.lexSlotName() != null && field.lexSlotName().equalsIgnoreCase(normalized)) {
-                return Optional.of(field);
-            }
-            if (field.keywords() != null) {
-                for (String keyword : field.keywords()) {
-                    if (keyword != null && keyword.equalsIgnoreCase(lower)) {
-                        return Optional.of(field);
-                    }
-                }
-            }
-        }
-        return Optional.empty();
+        guidedSearchSessionService.put(
+                session,
+                GuidedSearchState.collectValue(state.intentName(), field.m3Field(), field.lexSlotName(), slots)
+        );
+        return GuidedTurnResult.response(buildCollectValueResponse(
+                state.intentName(),
+                field,
+                "I couldn't use that value yet. Please try again."
+        ));
     }
 
     private List<SearchFieldDefinition> guidedFields(String intentName) {
         List<SearchFieldDefinition> all = searchFieldCatalog.fieldsFor(intentName);
         List<SearchFieldDefinition> result = new ArrayList<>();
         for (SearchFieldDefinition field : all) {
-            if (field.description() != null && !field.description().isBlank()) {
+            if (field.description() != null && !field.description().isBlank()
+                    && field.lexSlotName() != null && !field.lexSlotName().isBlank()) {
                 result.add(field);
             }
         }
+        result.sort(Comparator.comparingInt(field ->
+                field.displayOrder() > 0 ? field.displayOrder() : Integer.MAX_VALUE));
         return result;
+    }
+
+    private ChatResponse buildMenuResponse(String intentName, String prefix) {
+        List<SearchFieldDefinition> fields = guidedFields(intentName);
+        StringBuilder body = new StringBuilder();
+        if (prefix != null && !prefix.isBlank()) {
+            body.append(prefix.trim()).append("\n\n");
+        }
+        body.append("I can search ").append(humanizeIntent(intentName)).append(".\n")
+                .append("Please select a search field.\n\n");
+        for (int i = 0; i < fields.size(); i++) {
+            body.append(i + 1).append(". ").append(fields.get(i).description()).append("\n");
+        }
+        body.append("\nType the number or field name.\n")
+                .append(CANCEL_HINT);
+
+        ChatResponse response = new ChatResponse(body.toString().trim(), false);
+        response.setActionTaken(ACTION_SELECT_FIELD);
+        response.setLexIntent(intentName);
+        response.setCollectingTool(intentName);
+        response.setNextFieldOptional(false);
+        return response;
+    }
+
+    private Optional<SearchFieldDefinition> resolveFieldChoice(List<SearchFieldDefinition> fields, String input) {
+        try {
+            int index = Integer.parseInt(input);
+            if (index >= 1 && index <= fields.size()) {
+                return Optional.of(fields.get(index - 1));
+            }
+        } catch (NumberFormatException ignored) {
+            // fall through to alias/name matching
+        }
+
+        String normalized = normalizeText(input);
+        for (SearchFieldDefinition field : fields) {
+            if (normalized.equals(normalizeText(field.description()))) {
+                return Optional.of(field);
+            }
+            for (String alias : field.aliases()) {
+                if (normalized.equals(normalizeText(alias))) {
+                    return Optional.of(field);
+                }
+            }
+            for (String keyword : field.keywords()) {
+                if (normalized.equals(normalizeText(keyword))) {
+                    return Optional.of(field);
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    private ChatResponse buildCollectValueResponse(String intentName, SearchFieldDefinition field, String prefix) {
+        String prompt = field.prompt() != null && !field.prompt().isBlank()
+                ? field.prompt()
+                : "Please enter " + field.description() + ".";
+        StringBuilder body = new StringBuilder();
+        if (prefix != null && !prefix.isBlank()) {
+            body.append(prefix.trim()).append("\n\n");
+        }
+        body.append(prompt);
+        if (field.example() != null && !field.example().isBlank()) {
+            body.append("\nExample: ").append(field.example());
+        }
+        body.append("\n").append(CANCEL_HINT);
+
+        ChatResponse response = new ChatResponse(body.toString().trim(), false);
+        response.setActionTaken(ACTION_COLLECT_VALUE);
+        response.setLexIntent(intentName);
+        response.setCollectingTool(intentName);
+        response.setNextField(field.m3Field());
+        response.setNextFieldOptional(false);
+        return response;
+    }
+
+    private SearchFieldDefinition findSelectedField(GuidedSearchState state) {
+        if (state.selectedM3Field() == null || state.selectedM3Field().isBlank()) {
+            return null;
+        }
+        return searchFieldCatalog.find(state.intentName(), state.selectedM3Field()).orElse(null);
+    }
+
+    private ValidationResult normalizeAndValidate(String intentName, SearchFieldDefinition field, String rawValue) {
+        Map<String, SlotValue> normalizedSlots = slotNormalizer.normalize(
+                intentName,
+                SlotNormalizer.toSlotValues(Map.of(field.lexSlotName(), rawValue))
+        );
+        String normalizedValue = SlotNormalizer.toStringMap(normalizedSlots)
+                .getOrDefault(field.lexSlotName(), rawValue != null ? rawValue.trim() : "");
+
+        Optional<FieldDefinition> fieldDefinition = fieldDefinitionRegistry.get(field.m3Field());
+        if (fieldDefinition.isPresent()) {
+            FieldValueValidator.ValidationOutcome outcome =
+                    FieldValueValidator.validate(fieldDefinition.get(), normalizedValue);
+            if (!outcome.passed()) {
+                return ValidationResult.invalid("Invalid value: " + outcome.reason());
+            }
+        }
+        if (normalizedValue.isBlank()) {
+            return ValidationResult.invalid("Value cannot be empty.");
+        }
+        return ValidationResult.valid(normalizedValue);
+    }
+
+    private static boolean shouldClearAfterFulfillment(LexFulfillmentOutcome outcome) {
+        if (SearchCriteriaValidator.hasSearchableCriteria(outcome.searchCriteria())) {
+            return true;
+        }
+        ChatResponse response = outcome.response();
+        return response != null
+                && "search".equals(response.getActionTaken())
+                && response.getM3Request() != null;
+    }
+
+    private static boolean shouldAbandonToLex(String trimmedInput) {
+        if (trimmedInput == null || trimmedInput.isBlank()) {
+            return false;
+        }
+        if (trimmedInput.split("\\s+").length < 2) {
+            return false;
+        }
+        return NEW_SEARCH_PATTERN.matcher(trimmedInput).find();
+    }
+
+    private static String normalizeText(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
     }
 
     private boolean isSearchIntent(String intentName) {
@@ -280,7 +362,7 @@ public class GuidedSearchService {
                 .isPresent();
     }
 
-    static boolean isCancel(String trimmed) {
+    public static boolean isCancel(String trimmed) {
         if (trimmed == null || trimmed.isBlank()) {
             return false;
         }
@@ -299,17 +381,23 @@ public class GuidedSearchService {
         return spaced.toLowerCase(Locale.ROOT);
     }
 
-    public record GuidedTurnResult(ChatResponse response, String intentName, Map<String, String> slots) {
-        public static GuidedTurnResult response(ChatResponse response) {
-            return new GuidedTurnResult(response, null, null);
+    public record GuidedTurnResult(ChatResponse response, boolean abandonToLex) {
+        static GuidedTurnResult response(ChatResponse response) {
+            return new GuidedTurnResult(response, false);
         }
 
-        public static GuidedTurnResult resume(String intentName, Map<String, String> slots) {
-            return new GuidedTurnResult(null, intentName, Map.copyOf(slots));
+        static GuidedTurnResult abandoned() {
+            return new GuidedTurnResult(null, true);
+        }
+    }
+
+    private record ValidationResult(boolean valid, String normalizedValue, String reason) {
+        static ValidationResult valid(String value) {
+            return new ValidationResult(true, value, null);
         }
 
-        public boolean shouldResumeFulfillment() {
-            return intentName != null && slots != null && !slots.isEmpty();
+        static ValidationResult invalid(String reason) {
+            return new ValidationResult(false, null, reason);
         }
     }
 }

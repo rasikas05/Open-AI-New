@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -37,12 +38,13 @@ class SearchCriteriaValidatorTest {
     }
 
     @Test
-    void hasUsableCriteria_mixedEntries_returnsTrueWhenAnyValid() {
-        assertTrue(SearchCriteriaValidator.hasUsableCriteria(
-                java.util.Arrays.asList(
-                        new SearchCriterion("", "x"),
-                        new SearchCriterion("ORST", "33")
-                )
+    void hasSearchableCriteria_delegatesToHasUsableCriteria() {
+        assertFalse(SearchCriteriaValidator.hasSearchableCriteria(null));
+        assertTrue(SearchCriteriaValidator.hasSearchableCriteria(
+                List.of(new SearchCriterion("ORNO", "1000001234"))
+        ));
+        assertEquals(1, SearchCriteriaValidator.searchableCriteriaCount(
+                List.of(new SearchCriterion("ORNO", "1000001234"))
         ));
     }
 }
