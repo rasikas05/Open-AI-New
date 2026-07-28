@@ -8,8 +8,10 @@ import com.ai.openai_api_service.model.LexFulfillmentSession;
 import com.ai.openai_api_service.model.SessionSummaryDto;
 import com.ai.openai_api_service.service.ComprehendChatService;
 import com.ai.openai_api_service.service.ChatPersistenceService;
+import com.ai.openai_api_service.service.LexService;
 import com.ai.openai_api_service.service.TenantService;
 import com.ai.openai_api_service.service.guided.InMemoryGuidedSearchSessionService;
+import com.ai.openai_api_service.service.lex.InMemoryPendingLexSessionService;
 import com.ai.openai_api_service.service.query.SearchContextService;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
@@ -44,19 +46,25 @@ public class ComprehendChatController {
     private final TenantService tenantService;
     private final SearchContextService searchContextService;
     private final InMemoryGuidedSearchSessionService guidedSearchSessionService;
+    private final InMemoryPendingLexSessionService pendingLexSessionService;
+    private final LexService lexService;
 
     public ComprehendChatController(
             ComprehendChatService comprehendChatService,
             ChatPersistenceService chatPersistenceService,
             TenantService tenantService,
             SearchContextService searchContextService,
-            InMemoryGuidedSearchSessionService guidedSearchSessionService
+            InMemoryGuidedSearchSessionService guidedSearchSessionService,
+            InMemoryPendingLexSessionService pendingLexSessionService,
+            LexService lexService
     ) {
         this.comprehendChatService = comprehendChatService;
         this.chatPersistenceService = chatPersistenceService;
         this.tenantService = tenantService;
         this.searchContextService = searchContextService;
         this.guidedSearchSessionService = guidedSearchSessionService;
+        this.pendingLexSessionService = pendingLexSessionService;
+        this.lexService = lexService;
     }
 
     @PostMapping
@@ -189,6 +197,17 @@ public class ComprehendChatController {
                 session.getUser().getUsername(),
                 session.getSessionId()
         ));
+        ChatRequest lexKeyRequest = new ChatRequest();
+        lexKeyRequest.setTenantCode(session.getTenant().getTenantCode());
+        lexKeyRequest.setUserId(session.getUser().getUsername());
+        lexKeyRequest.setSessionId(session.getSessionId());
+        String lexSessionId = lexService.buildLexSessionId(lexKeyRequest);
+        pendingLexSessionService.clear(lexSessionId);
+        logger.debug(
+                "Pending Lex cleared. Reason=SessionClose sessionId='{}' lexSessionId='{}'",
+                session.getSessionId(),
+                lexSessionId
+        );
 
         SessionSummaryDto response = new SessionSummaryDto(
                 session.getSessionId(),

@@ -22,6 +22,7 @@ import com.ai.openai_api_service.model.rag.RagStatus;
 import com.ai.openai_api_service.service.query.SearchContextService;
 import com.ai.openai_api_service.service.guided.GuidedSearchService;
 import com.ai.openai_api_service.service.guided.InMemoryGuidedSearchSessionService;
+import com.ai.openai_api_service.service.lex.InMemoryPendingLexSessionService;
 import com.ai.openai_api_service.service.api.InformationRequestCatalog;
 import com.ai.openai_api_service.service.TenantQuotaService.QuotaCheckResult;
 import org.junit.jupiter.api.BeforeEach;
@@ -34,10 +35,14 @@ import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import java.time.Clock;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -83,6 +88,8 @@ class ComprehendChatServiceTest {
     @Mock
     private InMemoryGuidedSearchSessionService guidedSearchSessionService;
     @Spy
+    private InMemoryPendingLexSessionService pendingLexSessionService = new InMemoryPendingLexSessionService(3600);
+    @Spy
     private LiveHistorySummaryBuilder liveHistorySummaryBuilder = new LiveHistorySummaryBuilder();
     @Spy
     private RequestedInformationResolver requestedInformationResolver =
@@ -97,6 +104,8 @@ class ComprehendChatServiceTest {
     void setUp() {
         ReflectionTestUtils.setField(comprehendChatService, "ragPartialGapFillEnabled", true);
         ReflectionTestUtils.setField(comprehendChatService, "queryRewriteEnabled", false);
+        pendingLexSessionService = new InMemoryPendingLexSessionService(3600);
+        ReflectionTestUtils.setField(comprehendChatService, "pendingLexSessionService", pendingLexSessionService);
         lenient().when(guidedSearchSessionService.find(any())).thenReturn(Optional.empty());
     }
 
@@ -1195,6 +1204,282 @@ class ComprehendChatServiceTest {
         verify(guidedSearchService).handleTurn(any(), eq(state), eq("actually search purchase orders"));
         verify(pythonRagService).route("actually search purchase orders");
         verify(lexService).recognizeText(anyString(), eq("actually search purchase orders"));
+    }
+
+    @Test
+    void pendingLex_elicitSlot_storesPendingMarker() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("Show customer credit limit")).thenReturn(new PythonRouteResponse("live"));
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomerFinancial",
+                "InProgress",
+                "ElicitSlot",
+                "CustomerNumber",
+                Map.of(),
+                List.of("Please provide the customer number.")
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "Show customer credit limit")).thenReturn(lexResult);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("Show customer credit limit"));
+
+        assertEquals("lex_elicit_slot", response.getActionTaken());
+        assertEquals("GetCustomerFinancial", response.getLexIntent());
+        assertTrue(pendingLexSessionService.get("tenant1:user1:session1").isPresent());
+    }
+
+    @Test
+    void pendingLex_slotReply_skipsPythonRouteAndCallsLex() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        pendingLexSessionService.markPending("tenant1:user1:session1");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomerFinancial",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "Y11100"),
+                List.of(),
+                Map.of(LexRecognizeResult.ATTR_REQUESTED_INFORMATION, "CREDIT_LIMIT")
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "Y11100")).thenReturn(lexResult);
+
+        M3RequestDto m3Request = new M3RequestDto(true, "CRS610MI", "GetFinancial", Map.of("CUNO", "Y11100"));
+        ChatResponse fulfillResponse = new ChatResponse("Credit limit for Y11100...", false);
+        fulfillResponse.setActionTaken("read");
+        fulfillResponse.setM3Request(m3Request);
+        when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq("Y11100"), any()))
+                .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("Y11100"));
+
+        assertEquals("read", response.getActionTaken());
+        verify(pythonRagService, never()).route(anyString());
+        verify(lexService).recognizeText("tenant1:user1:session1", "Y11100");
+        assertTrue(pendingLexSessionService.get("tenant1:user1:session1").isEmpty());
+    }
+
+    @Test
+    void pendingLex_fulfillmentClears_andNextTurnRoutes() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        pendingLexSessionService.markPending("tenant1:user1:session1");
+
+        LexRecognizeResult fulfillLex = new LexRecognizeResult(
+                "GetCustomerFinancial",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "Y11100"),
+                List.of()
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "Y11100")).thenReturn(fulfillLex);
+        ChatResponse fulfillResponse = new ChatResponse("ok", false);
+        fulfillResponse.setActionTaken("read");
+        fulfillResponse.setM3Request(new M3RequestDto(true, "CRS610MI", "GetFinancial", Map.of("CUNO", "Y11100")));
+        when(lexFulfillmentService.fulfillOutcome(eq(fulfillLex), eq("Y11100"), any()))
+                .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        comprehendChatService.chat(baseRequest("Y11100"));
+        assertTrue(pendingLexSessionService.get("tenant1:user1:session1").isEmpty());
+
+        when(pythonRagService.route("how to create customer")).thenReturn(new PythonRouteResponse("rag"));
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        retrieval.setPromptChunks(List.of());
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
+        when(openAIService.chatWithRagContext(any(), anyList()))
+                .thenReturn(new GroundedRagCallResult(
+                        new GroundedRagResult(RagStatus.FULL, "docs", List.of()),
+                        new OpenAIUsage(1, 1, 2, "gpt"),
+                        "{}"
+                ));
+
+        comprehendChatService.chat(baseRequest("how to create customer"));
+
+        verify(pythonRagService).route("how to create customer");
+    }
+
+    @Test
+    void pendingLex_unrelatedMessageAfterCompletion_invokesRoute() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        assertTrue(pendingLexSessionService.get("tenant1:user1:session1").isEmpty());
+
+        when(pythonRagService.route("Explain CRS610")).thenReturn(new PythonRouteResponse("rag"));
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        retrieval.setPromptChunks(List.of());
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
+        when(openAIService.chatWithRagContext(any(), anyList()))
+                .thenReturn(new GroundedRagCallResult(
+                        new GroundedRagResult(RagStatus.FULL, "CRS610 docs", List.of()),
+                        new OpenAIUsage(1, 1, 2, "gpt"),
+                        "{}"
+                ));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("Explain CRS610"));
+
+        assertEquals("CRS610 docs", response.getReply());
+        verify(pythonRagService).route("Explain CRS610");
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void pendingLex_ttlExpiry_resumesPythonRouting() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+
+        AtomicReference<Instant> now = new AtomicReference<>(Instant.parse("2026-07-28T10:00:00Z"));
+        Clock clock = new Clock() {
+            @Override
+            public ZoneOffset getZone() {
+                return ZoneOffset.UTC;
+            }
+
+            @Override
+            public Clock withZone(java.time.ZoneId zone) {
+                return this;
+            }
+
+            @Override
+            public Instant instant() {
+                return now.get();
+            }
+        };
+        pendingLexSessionService = new InMemoryPendingLexSessionService(60, clock);
+        ReflectionTestUtils.setField(comprehendChatService, "pendingLexSessionService", pendingLexSessionService);
+        pendingLexSessionService.markPending("tenant1:user1:session1");
+        now.set(Instant.parse("2026-07-28T10:02:00Z"));
+
+        when(pythonRagService.route("Y11100")).thenReturn(new PythonRouteResponse("rag"));
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        retrieval.setPromptChunks(List.of());
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
+        when(openAIService.chatWithRagContext(any(), anyList()))
+                .thenReturn(new GroundedRagCallResult(
+                        new GroundedRagResult(RagStatus.FULL, "rag after ttl", List.of()),
+                        new OpenAIUsage(1, 1, 2, "gpt"),
+                        "{}"
+                ));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("Y11100"));
+
+        assertEquals("rag after ttl", response.getReply());
+        verify(pythonRagService).route("Y11100");
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void pendingLex_fallbackIntent_clearsPending() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        pendingLexSessionService.markPending("tenant1:user1:session1");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "FallbackIntent",
+                "Failed",
+                "Close",
+                null,
+                Map.of(),
+                List.of("Sorry")
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "nonsense")).thenReturn(lexResult);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("nonsense"));
+
+        assertEquals("lex_fallback", response.getActionTaken());
+        assertTrue(pendingLexSessionService.get("tenant1:user1:session1").isEmpty());
+        verify(pythonRagService, never()).route(anyString());
+    }
+
+    @Test
+    void pendingLex_normalRagUnchanged_whenNoPending() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        when(pythonRagService.route("Explain CRS610")).thenReturn(new PythonRouteResponse("rag"));
+
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        ChunkItem chunk = new ChunkItem(
+                "chunk", 0.9f, "CRS610", "http://example.com", List.of("CRS610"), null, null, null, null
+        );
+        retrieval.setPromptChunks(List.of(chunk));
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk))))
+                .thenReturn(new GroundedRagCallResult(
+                        new GroundedRagResult(RagStatus.FULL, "CRS610 explanation", List.of()),
+                        new OpenAIUsage(1, 1, 2, "gpt"),
+                        "{}"
+                ));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("Explain CRS610"));
+
+        assertEquals("CRS610 explanation", response.getReply());
+        verify(pythonRagService).route("Explain CRS610");
+        assertTrue(pendingLexSessionService.get("tenant1:user1:session1").isEmpty());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void pendingLex_oneShotLiveWithCuno_leavesPendingEmpty() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("Show customer Y11100 credit limit"))
+                .thenReturn(new PythonRouteResponse("live"));
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomerFinancial",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "Y11100"),
+                List.of()
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "Show customer Y11100 credit limit"))
+                .thenReturn(lexResult);
+
+        M3RequestDto m3Request = new M3RequestDto(true, "CRS610MI", "GetFinancial", Map.of("CUNO", "Y11100"));
+        ChatResponse fulfillResponse = new ChatResponse("Credit limit...", false);
+        fulfillResponse.setActionTaken("read");
+        fulfillResponse.setM3Request(m3Request);
+        when(lexFulfillmentService.fulfillOutcome(
+                eq(lexResult), eq("Show customer Y11100 credit limit"), any()
+        )).thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("Show customer Y11100 credit limit"));
+
+        assertEquals("read", response.getActionTaken());
+        assertTrue(pendingLexSessionService.get("tenant1:user1:session1").isEmpty());
+        verify(pythonRagService).route("Show customer Y11100 credit limit");
+        verify(lexService).recognizeText("tenant1:user1:session1", "Show customer Y11100 credit limit");
     }
 
     private void stubQuotaAllowed() {
