@@ -28,6 +28,7 @@ import com.ai.openai_api_service.model.rag.GroundedRagResult;
 import com.ai.openai_api_service.model.rag.RagStatus;
 import com.ai.openai_api_service.service.guided.GuidedSearchService;
 import com.ai.openai_api_service.service.guided.InMemoryGuidedSearchSessionService;
+import com.ai.openai_api_service.service.lex.InMemoryPendingLexSessionService;
 import com.ai.openai_api_service.service.query.SearchContextService;
 import com.ai.openai_api_service.service.rag.ProgramIdDetector;
 import com.ai.openai_api_service.service.rag.SearchQueryAssembler;
@@ -71,6 +72,7 @@ public class ComprehendChatService {
     private final SearchContextService searchContextService;
     private final GuidedSearchService guidedSearchService;
     private final InMemoryGuidedSearchSessionService guidedSearchSessionService;
+    private final InMemoryPendingLexSessionService pendingLexSessionService;
 
     @Value("${openai.response.include-sanitization-debug:false}")
     private boolean includeSanitizationDebug;
@@ -95,7 +97,8 @@ public class ComprehendChatService {
             IntentApiCatalog intentApiCatalog,
             SearchContextService searchContextService,
             GuidedSearchService guidedSearchService,
-            InMemoryGuidedSearchSessionService guidedSearchSessionService
+            InMemoryGuidedSearchSessionService guidedSearchSessionService,
+            InMemoryPendingLexSessionService pendingLexSessionService
     ) {
         this.comprehendAnonymizationService = comprehendAnonymizationService;
         this.chatPersistenceService = chatPersistenceService;
@@ -111,6 +114,7 @@ public class ComprehendChatService {
         this.searchContextService = searchContextService;
         this.guidedSearchService = guidedSearchService;
         this.guidedSearchSessionService = guidedSearchSessionService;
+        this.pendingLexSessionService = pendingLexSessionService;
     }
 
     public ChatResponse chat(ChatRequest request) {
@@ -164,7 +168,26 @@ public class ComprehendChatService {
             route = "guided";
         }
 
+        boolean pendingLexHandled = false;
         if (!guidedHandled) {
+            PendingLexRouteAttempt pendingLexAttempt =
+                    tryHandlePendingLexTurn(request, originalUserText, sanitizedUserText);
+            if (pendingLexAttempt.pendingHandled()) {
+                pendingLexHandled = true;
+                LexLiveRouteResult lexResult = pendingLexAttempt.lexResult();
+                chatResponse = lexResult.chatResponse();
+                route = "live";
+                if (lexResult.fallbackToDoc()) {
+                    sourcesForSuggestions = lexResult.sourcesForSuggestions();
+                    responseSources = lexResult.responseSources();
+                    retrievalReason = lexResult.retrievalReason();
+                    retrievalTimeMs = lexResult.retrievalTimeMs();
+                    maxScore = lexResult.maxScore();
+                }
+            }
+        }
+
+        if (!guidedHandled && !pendingLexHandled) {
             long routeStartMs = System.currentTimeMillis();
             PythonRouteResponse routeResponse = pythonRagService.route(originalUserText);
             routeDecisionMs = System.currentTimeMillis() - routeStartMs;
@@ -369,6 +392,80 @@ public class ComprehendChatService {
         return GuidedRouteAttempt.handled(response);
     }
 
+    /**
+     * Pending-Lex ownership gate. Runs after Guided Search and before Python route.
+     * Continues Lex dialog when a prior turn elicited a slot for this Lex session.
+     */
+    private PendingLexRouteAttempt tryHandlePendingLexTurn(
+            ChatRequest request,
+            String originalUserText,
+            String sanitizedUserText
+    ) {
+        if (!lexService.isEnabled()) {
+            String lexSessionId = lexService.buildLexSessionId(request);
+            if (pendingLexSessionService.get(lexSessionId).isPresent()) {
+                pendingLexSessionService.clear(lexSessionId);
+                log.debug(
+                        "Pending Lex cleared. Reason=LexDisabled sessionId='{}' lexSessionId='{}'",
+                        request.getSessionId(),
+                        lexSessionId
+                );
+            }
+            return PendingLexRouteAttempt.notHandled();
+        }
+
+        String lexSessionId = lexService.buildLexSessionId(request);
+        if (pendingLexSessionService.get(lexSessionId).isEmpty()) {
+            return PendingLexRouteAttempt.notHandled();
+        }
+
+        log.debug(
+                "Pending Lex detected. Skipping Python routing. Continuing Lex dialog. "
+                        + "sessionId='{}' lexSessionId='{}'",
+                request.getSessionId(),
+                lexSessionId
+        );
+
+        try {
+            LexLiveRouteResult lexResult = handleLexLiveRoute(request, originalUserText, sanitizedUserText);
+            return PendingLexRouteAttempt.handled(lexResult);
+        } catch (RuntimeException e) {
+            pendingLexSessionService.clear(lexSessionId);
+            log.debug(
+                    "Pending Lex cleared. Reason=HandleLexLiveRouteFailed sessionId='{}' lexSessionId='{}'",
+                    request.getSessionId(),
+                    lexSessionId
+            );
+            throw e;
+        }
+    }
+
+    private void updatePendingLexState(String lexSessionId, LexRecognizeResult result) {
+        if (result == null || lexSessionId == null || lexSessionId.isBlank()) {
+            return;
+        }
+        if (result.isElicitSlot()) {
+            pendingLexSessionService.markPending(lexSessionId);
+            log.debug("Pending Lex marked. Reason=ElicitSlot lexSessionId='{}'", lexSessionId);
+            return;
+        }
+        if (result.isReadyForFulfillment()) {
+            pendingLexSessionService.clear(lexSessionId);
+            log.debug(
+                    "Pending Lex cleared. Reason=ReadyForFulfillment lexSessionId='{}'",
+                    lexSessionId
+            );
+            return;
+        }
+        if (result.isFallbackIntent()) {
+            pendingLexSessionService.clear(lexSessionId);
+            log.debug(
+                    "Pending Lex cleared. Reason=FallbackIntent lexSessionId='{}'",
+                    lexSessionId
+            );
+        }
+    }
+
     private LexLiveRouteResult handleLexLiveRoute(
             ChatRequest request,
             String originalUserText,
@@ -398,6 +495,7 @@ public class ComprehendChatService {
 
         String lexSessionId = lexService.buildLexSessionId(request);
         LexRecognizeResult lexResult = lexService.recognizeText(lexSessionId, originalUserText);
+        updatePendingLexState(lexSessionId, lexResult);
 
         if (lexResult.isFallbackIntent()) {
             return lexFallbackRouteResult(request, lexResult);
@@ -1062,6 +1160,19 @@ public class ComprehendChatService {
 
         static GuidedRouteAttempt notHandled() {
             return new GuidedRouteAttempt(false, null);
+        }
+    }
+
+    private record PendingLexRouteAttempt(
+            boolean pendingHandled,
+            LexLiveRouteResult lexResult
+    ) {
+        static PendingLexRouteAttempt handled(LexLiveRouteResult lexResult) {
+            return new PendingLexRouteAttempt(true, lexResult);
+        }
+
+        static PendingLexRouteAttempt notHandled() {
+            return new PendingLexRouteAttempt(false, null);
         }
     }
 
