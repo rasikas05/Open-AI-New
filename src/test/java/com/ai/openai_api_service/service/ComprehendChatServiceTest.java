@@ -991,89 +991,123 @@ class ComprehendChatServiceTest {
         when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq("Show customer orders"), any()))
                 .thenReturn(new LexFulfillmentOutcome(missing, List.of()));
 
-        ChatResponse menu = new ChatResponse("I can search customer orders.", false);
+        ChatResponse menu = new ChatResponse("Please select a search field.", false);
         menu.setActionTaken(GuidedSearchService.ACTION_SELECT_FIELD);
         menu.setLexIntent("SearchCustomerOrder");
         menu.setCollectingTool("SearchCustomerOrder");
-        menu.setNextField(GuidedSearchService.NEXT_FIELD_CHOICE);
         when(guidedSearchService.start(eq("SearchCustomerOrder"), any())).thenReturn(menu);
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("Show customer orders"));
 
         assertEquals(GuidedSearchService.ACTION_SELECT_FIELD, response.getActionTaken());
-        assertTrue(response.getReply().contains("customer orders"));
         verify(guidedSearchService).start(eq("SearchCustomerOrder"), any());
         verify(lexService).recognizeText(anyString(), anyString());
     }
 
     @Test
-    void liveRoute_activeGuidedSession_skipsLexAndHandlesTurn() {
+    void liveRoute_readyForFulfillmentWithCriteria_doesNotStartGuided() {
         stubQuotaAllowed();
         stubSanitize();
         when(lexService.isEnabled()).thenReturn(true);
-        when(pythonRagService.route("2")).thenReturn(new PythonRouteResponse("live"));
+        when(pythonRagService.route("Show customer orders with highest status 77"))
+                .thenReturn(new PythonRouteResponse("live"));
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "SearchCustomerOrder",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("HighestStatus", "77"),
+                List.of()
+        );
+        when(lexService.recognizeText(anyString(), eq("Show customer orders with highest status 77")))
+                .thenReturn(lexResult);
+
+        M3RequestDto m3Request = new M3RequestDto(
+                true, "OIS100MI", "SearchHead", Map.of("SQRY", "ORST:'77'"));
+        ChatResponse search = new ChatResponse("Processing...", false);
+        search.setActionTaken("search");
+        search.setM3Request(m3Request);
+        when(lexFulfillmentService.fulfillOutcome(eq(lexResult), anyString(), any()))
+                .thenReturn(new LexFulfillmentOutcome(
+                        search,
+                        List.of(new SearchCriterion("ORST", "77"))
+                ));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(
+                baseRequest("Show customer orders with highest status 77"));
+
+        assertEquals("search", response.getActionTaken());
+        verify(guidedSearchService, never()).start(anyString(), any());
+    }
+
+    @Test
+    void liveRoute_activeGuidedSession_delegatesTurnAndSkipsLexWhenNotAbandoned() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("order 1000001234")).thenReturn(new PythonRouteResponse("live"));
 
         GuidedSearchState state = GuidedSearchState.selectField("SearchCustomerOrder");
         when(guidedSearchSessionService.find(any())).thenReturn(Optional.of(state));
 
-        ChatResponse collect = new ChatResponse("Please enter the customer order number.", false);
+        ChatResponse collect = new ChatResponse("Please enter Highest Status.", false);
         collect.setActionTaken(GuidedSearchService.ACTION_COLLECT_VALUE);
-        collect.setNextField("ORNO");
-        when(guidedSearchService.handleTurn(any(), eq(state), eq("2")))
-                .thenReturn(GuidedSearchService.GuidedTurnResult.response(collect));
+        when(guidedSearchService.handleTurn(any(), eq(state), eq("order 1000001234")))
+                .thenReturn(new GuidedSearchService.GuidedTurnResult(collect, false));
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
-        ChatResponse response = comprehendChatService.chat(baseRequest("2"));
+        ChatResponse response = comprehendChatService.chat(baseRequest("order 1000001234"));
 
         assertEquals(GuidedSearchService.ACTION_COLLECT_VALUE, response.getActionTaken());
-        assertEquals("ORNO", response.getNextField());
+        verify(guidedSearchService).handleTurn(any(), eq(state), eq("order 1000001234"));
         verify(lexService, never()).recognizeText(anyString(), anyString());
-        verify(lexFulfillmentService, never()).fulfillSearch(anyString(), any(), anyString(), any());
+        verify(guidedSearchService, never()).start(anyString(), any());
     }
 
     @Test
-    void liveRoute_guidedValueCollected_resumesFulfillSearch() {
+    void liveRoute_activeGuidedSession_abandonsToLexForNewSearchRequest() {
         stubQuotaAllowed();
         stubSanitize();
         when(lexService.isEnabled()).thenReturn(true);
-        when(pythonRagService.route("1000001234")).thenReturn(new PythonRouteResponse("live"));
+        when(pythonRagService.route("actually search purchase orders")).thenReturn(new PythonRouteResponse("live"));
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
 
-        GuidedSearchState state = GuidedSearchState.collectValue(
-                "SearchCustomerOrder", "ORNO", "CustomerOrderNumber");
+        GuidedSearchState state = GuidedSearchState.selectField("SearchCustomerOrder");
         when(guidedSearchSessionService.find(any())).thenReturn(Optional.of(state));
-        when(guidedSearchService.handleTurn(any(), eq(state), eq("1000001234")))
-                .thenReturn(GuidedSearchService.GuidedTurnResult.resume(
-                        "SearchCustomerOrder",
-                        Map.of("CustomerOrderNumber", "1000001234")
-                ));
+        when(guidedSearchService.handleTurn(any(), eq(state), eq("actually search purchase orders")))
+                .thenReturn(new GuidedSearchService.GuidedTurnResult(null, true));
 
-        M3RequestDto m3Request = new M3RequestDto(
-                true, "OIS100MI", "SearchHead", Map.of("SQRY", "ORNO:'1000001234'"));
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "SearchPurchaseOrder",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("Supplier", "S00001"),
+                List.of()
+        );
+        when(lexService.recognizeText(anyString(), eq("actually search purchase orders"))).thenReturn(lexResult);
+
         ChatResponse fulfilled = new ChatResponse("Processing your request...", false);
         fulfilled.setActionTaken("search");
-        fulfilled.setM3Request(m3Request);
-        fulfilled.setLexIntent("SearchCustomerOrder");
-        when(lexFulfillmentService.fulfillSearch(
-                eq("SearchCustomerOrder"),
-                eq(Map.of("CustomerOrderNumber", "1000001234")),
-                eq("1000001234"),
-                any()
-        )).thenReturn(new LexFulfillmentOutcome(fulfilled, List.of(new SearchCriterion("ORNO", "1000001234"))));
+        fulfilled.setM3Request(new M3RequestDto(
+                true, "PPS200MI", "SearchHead", Map.of("SQRY", "SUNO:'S00001'")
+        ));
+        when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq("actually search purchase orders"), any()))
+                .thenReturn(new LexFulfillmentOutcome(
+                        fulfilled,
+                        List.of(new SearchCriterion("SUNO", "S00001"))
+                ));
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
-        ChatResponse response = comprehendChatService.chat(baseRequest("1000001234"));
+        ChatResponse response = comprehendChatService.chat(baseRequest("actually search purchase orders"));
 
         assertEquals("search", response.getActionTaken());
-        assertNotNull(response.getM3Request());
-        assertEquals("OIS100MI", response.getM3Request().getProgram());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
-        verify(lexFulfillmentService).fulfillSearch(
-                eq("SearchCustomerOrder"),
-                eq(Map.of("CustomerOrderNumber", "1000001234")),
-                eq("1000001234"),
-                any()
-        );
+        verify(guidedSearchService).handleTurn(any(), eq(state), eq("actually search purchase orders"));
+        verify(lexService).recognizeText(anyString(), eq("actually search purchase orders"));
     }
 
     private void stubQuotaAllowed() {

@@ -13,6 +13,7 @@ import com.ai.openai_api_service.model.LiveHistoryResult;
 import com.ai.openai_api_service.model.OpenAIUsage;
 import com.ai.openai_api_service.model.QueryRewriteResult;
 import com.ai.openai_api_service.model.RequestType;
+import com.ai.openai_api_service.model.SearchCriterion;
 import com.ai.openai_api_service.model.SuggestionContext;
 import com.ai.openai_api_service.model.SuggestionResult;
 import com.ai.openai_api_service.model.lex.LexRecognizeResult;
@@ -314,8 +315,16 @@ public class ComprehendChatService {
         }
 
         Optional<GuidedSearchState> guidedState = guidedSearchSessionService.find(fulfillmentSession);
-        if (guidedState.isPresent()) {
-            return handleGuidedSearchTurn(fulfillmentSession, guidedState.get(), originalUserText);
+        boolean guidedActive = guidedState.isPresent();
+        String guidedIntent = guidedState.map(GuidedSearchState::intentName).orElse(null);
+        if (guidedActive) {
+            GuidedSearchService.GuidedTurnResult turn =
+                    guidedSearchService.handleTurn(fulfillmentSession, guidedState.get(), originalUserText);
+            if (!turn.abandonToLex()) {
+                return LexLiveRouteResult.lex(turn.response());
+            }
+            guidedActive = false;
+            guidedIntent = null;
         }
 
         String lexSessionId = lexService.buildLexSessionId(request);
@@ -341,22 +350,57 @@ public class ComprehendChatService {
         }
 
         if (lexResult.isReadyForFulfillment()) {
-            var fulfillmentOutcome = lexFulfillmentService.fulfillOutcome(
+            LexFulfillmentOutcome fulfillmentOutcome = lexFulfillmentService.fulfillOutcome(
                     lexResult,
                     originalUserText,
                     fulfillmentSession
             );
             ChatResponse chatResponse = fulfillmentOutcome.response();
+            logGuidedSearchCriteriaDecision(
+                    guidedActive,
+                    guidedIntent,
+                    lexResult.getIntentName(),
+                    fulfillmentOutcome
+            );
+
+            if (shouldClearGuidedAfterFulfillment(fulfillmentOutcome)) {
+                if (guidedActive) {
+                    guidedSearchSessionService.clear(fulfillmentSession);
+                    log.info("Guided search: cleared after searchable criteria detected for intent='{}'", guidedIntent);
+                }
+                chatResponse.setLexIntent(lexResult.getIntentName());
+                chatResponse.setLexDialogAction(lexResult.getDialogActionType());
+                List<String> requestedInformation = resolveRequestedInformationForFulfillment(
+                        originalUserText,
+                        lexResult,
+                        fulfillmentOutcome
+                );
+                chatResponse.setRequestedInformation(requestedInformation);
+                return LexLiveRouteResult.lex(chatResponse);
+            }
 
             if (SearchCriteriaValidator.ACTION_SEARCH_CRITERIA_MISSING.equals(chatResponse.getActionTaken())
-                    && isSearchIntent(lexResult.getIntentName())) {
+                    && isSearchIntent(lexResult.getIntentName())
+                    && !SearchCriteriaValidator.hasSearchableCriteria(fulfillmentOutcome.searchCriteria())) {
+                log.info(
+                        "Guided search: starting zero-criteria fallback for intent='{}'",
+                        lexResult.getIntentName()
+                );
                 ChatResponse guided = guidedSearchService.start(lexResult.getIntentName(), fulfillmentSession);
                 return LexLiveRouteResult.lex(guided);
             }
 
+            if (SearchCriteriaValidator.ACTION_SEARCH_CRITERIA_MISSING.equals(chatResponse.getActionTaken())
+                    && SearchCriteriaValidator.hasSearchableCriteria(fulfillmentOutcome.searchCriteria())) {
+                log.warn(
+                        "Guided search: search_criteria_missing but searchable criteria present; intent='{}' criteria={}",
+                        lexResult.getIntentName(),
+                        fulfillmentOutcome.searchCriteria()
+                );
+            }
+
             chatResponse.setLexIntent(lexResult.getIntentName());
             chatResponse.setLexDialogAction(lexResult.getDialogActionType());
-
             List<String> requestedInformation = resolveRequestedInformationForFulfillment(
                     originalUserText,
                     lexResult,
@@ -369,29 +413,64 @@ public class ComprehendChatService {
         return lexFallbackRouteResult(request, lexResult);
     }
 
-    private LexLiveRouteResult handleGuidedSearchTurn(
-            LexFulfillmentSession fulfillmentSession,
-            GuidedSearchState state,
-            String originalUserText
-    ) {
-        GuidedSearchService.GuidedTurnResult turn =
-                guidedSearchService.handleTurn(fulfillmentSession, state, originalUserText);
-        if (!turn.shouldResumeFulfillment()) {
-            return LexLiveRouteResult.lex(turn.response());
+    private static boolean shouldClearGuidedAfterFulfillment(LexFulfillmentOutcome fulfillmentOutcome) {
+        if (SearchCriteriaValidator.hasSearchableCriteria(fulfillmentOutcome.searchCriteria())) {
+            return true;
         }
+        ChatResponse response = fulfillmentOutcome.response();
+        return response != null
+                && "search".equals(response.getActionTaken())
+                && response.getM3Request() != null;
+    }
 
-        LexFulfillmentOutcome outcome = lexFulfillmentService.fulfillSearch(
-                turn.intentName(),
-                turn.slots(),
-                originalUserText,
-                fulfillmentSession
-        );
-        ChatResponse chatResponse = outcome.response();
-        chatResponse.setLexIntent(turn.intentName());
-        if (outcome.queryContext() != null && !outcome.queryContext().requestedInformation().isEmpty()) {
-            chatResponse.setRequestedInformation(outcome.queryContext().requestedInformation());
+    private void logGuidedSearchCriteriaDecision(
+            boolean guidedActive,
+            String guidedIntent,
+            String lexIntent,
+            LexFulfillmentOutcome fulfillmentOutcome
+    ) {
+        List<SearchCriterion> criteria = fulfillmentOutcome.searchCriteria();
+        int count = SearchCriteriaValidator.searchableCriteriaCount(criteria);
+        boolean hasCriteria = SearchCriteriaValidator.hasSearchableCriteria(criteria);
+        String criteriaSummary = formatCriteriaForLog(criteria);
+        if (hasCriteria) {
+            log.info(
+                    "Guided search decision: searchableCriteriaCount={} criteria=[{}] guidedActive={} "
+                            + "guidedIntent='{}' lexIntent='{}' guidedSearchSkipped=true reason=has_criteria",
+                    count,
+                    criteriaSummary,
+                    guidedActive,
+                    guidedIntent,
+                    lexIntent
+            );
+        } else if (guidedActive) {
+            log.info(
+                    "Guided search decision: searchableCriteriaCount=0 guidedActive=true guidedIntent='{}' "
+                            + "lexIntent='{}' guidedSearchSkipped=false reason=awaiting_criteria",
+                    guidedIntent,
+                    lexIntent
+            );
+        } else {
+            log.info(
+                    "Guided search decision: searchableCriteriaCount=0 lexIntent='{}' "
+                            + "guidedSearchSkipped=false reason=zero_criteria_fallback",
+                    lexIntent
+            );
         }
-        return LexLiveRouteResult.lex(chatResponse);
+    }
+
+    private static String formatCriteriaForLog(List<SearchCriterion> criteria) {
+        if (criteria == null || criteria.isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (SearchCriterion c : criteria) {
+            if (!sb.isEmpty()) {
+                sb.append(", ");
+            }
+            sb.append(c.field()).append('=').append(c.value());
+        }
+        return sb.toString();
     }
 
     private boolean isSearchIntent(String intentName) {
