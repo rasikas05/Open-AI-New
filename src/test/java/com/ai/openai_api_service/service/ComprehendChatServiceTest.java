@@ -1048,8 +1048,6 @@ class ComprehendChatServiceTest {
     void liveRoute_activeGuidedSession_delegatesTurnAndSkipsLexWhenNotAbandoned() {
         stubQuotaAllowed();
         stubSanitize();
-        when(lexService.isEnabled()).thenReturn(true);
-        when(pythonRagService.route("order 1000001234")).thenReturn(new PythonRouteResponse("live"));
 
         GuidedSearchState state = GuidedSearchState.selectField("SearchCustomerOrder");
         when(guidedSearchSessionService.find(any())).thenReturn(Optional.of(state));
@@ -1064,8 +1062,94 @@ class ComprehendChatServiceTest {
 
         assertEquals(GuidedSearchService.ACTION_COLLECT_VALUE, response.getActionTaken());
         verify(guidedSearchService).handleTurn(any(), eq(state), eq("order 1000001234"));
+        verify(pythonRagService, never()).route(anyString());
         verify(lexService, never()).recognizeText(anyString(), anyString());
         verify(guidedSearchService, never()).start(anyString(), any());
+    }
+
+    @Test
+    void guidedSession_cancelSkipsPythonRouteAndLex() {
+        stubQuotaAllowed();
+        stubSanitize();
+
+        GuidedSearchState state = GuidedSearchState.selectField("SearchCustomerOrder");
+        when(guidedSearchSessionService.find(any())).thenReturn(Optional.of(state));
+
+        ChatResponse cancelled = new ChatResponse("Guided search cancelled. How else can I help?", false);
+        cancelled.setActionTaken(GuidedSearchService.ACTION_CANCELLED);
+        when(guidedSearchService.handleTurn(any(), eq(state), eq("cancel")))
+                .thenReturn(new GuidedSearchService.GuidedTurnResult(cancelled, false));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("cancel"));
+
+        assertEquals(GuidedSearchService.ACTION_CANCELLED, response.getActionTaken());
+        verify(guidedSearchService).handleTurn(any(), eq(state), eq("cancel"));
+        verify(pythonRagService, never()).route(anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any());
+        verify(openAIService, never()).chatWithRagContext(any(), anyList());
+    }
+
+    @Test
+    void guidedSession_invalidInputStaysGuidedAndSkipsRoute() {
+        stubQuotaAllowed();
+        stubSanitize();
+
+        GuidedSearchState state = GuidedSearchState.selectField("SearchCustomerOrder");
+        when(guidedSearchSessionService.find(any())).thenReturn(Optional.of(state));
+
+        ChatResponse retry = new ChatResponse("I couldn't match that to a searchable field.", false);
+        retry.setActionTaken(GuidedSearchService.ACTION_SELECT_FIELD);
+        when(guidedSearchService.handleTurn(any(), eq(state), eq("something")))
+                .thenReturn(new GuidedSearchService.GuidedTurnResult(retry, false));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("something"));
+
+        assertEquals(GuidedSearchService.ACTION_SELECT_FIELD, response.getActionTaken());
+        verify(guidedSearchService).handleTurn(any(), eq(state), eq("something"));
+        verify(pythonRagService, never()).route(anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void guidedSessionEnded_nextQuestionUsesNormalRagRoute() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(guidedSearchSessionService.find(any())).thenReturn(Optional.empty());
+        when(pythonRagService.route("What is OIS100?")).thenReturn(new PythonRouteResponse("rag"));
+
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        retrieval.setRetrievalTimeMs(42);
+        retrieval.setMaxScore(0.62f);
+        ChunkItem chunk = new ChunkItem(
+                "OIS100 is a customer order program.",
+                0.62f,
+                "OIS100",
+                "http://example.com/ois100",
+                List.of("OIS100"),
+                null,
+                null,
+                null,
+                null
+        );
+        retrieval.setPromptChunks(List.of(chunk));
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
+
+        OpenAIUsage usage = new OpenAIUsage(10, 20, 30, "gpt-4.1");
+        GroundedRagResult grounded = new GroundedRagResult(RagStatus.FULL, "OIS100 is used for customer order entry.", List.of());
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk))))
+                .thenReturn(new GroundedRagCallResult(grounded, usage, "{\"status\":\"FULL\"}"));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("What is OIS100?"));
+
+        assertEquals("OIS100 is used for customer order entry.", response.getReply());
+        assertEquals("rag", response.getActionTaken());
+        verify(pythonRagService).route("What is OIS100?");
+        verify(guidedSearchService, never()).handleTurn(any(), any(), anyString());
     }
 
     @Test
@@ -1077,7 +1161,9 @@ class ComprehendChatServiceTest {
         when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
 
         GuidedSearchState state = GuidedSearchState.selectField("SearchCustomerOrder");
-        when(guidedSearchSessionService.find(any())).thenReturn(Optional.of(state));
+        when(guidedSearchSessionService.find(any()))
+                .thenReturn(Optional.of(state))
+                .thenReturn(Optional.empty());
         when(guidedSearchService.handleTurn(any(), eq(state), eq("actually search purchase orders")))
                 .thenReturn(new GuidedSearchService.GuidedTurnResult(null, true));
 
@@ -1107,6 +1193,7 @@ class ComprehendChatServiceTest {
 
         assertEquals("search", response.getActionTaken());
         verify(guidedSearchService).handleTurn(any(), eq(state), eq("actually search purchase orders"));
+        verify(pythonRagService).route("actually search purchase orders");
         verify(lexService).recognizeText(anyString(), eq("actually search purchase orders"));
     }
 
