@@ -44,7 +44,7 @@ class SlotValidatorTest {
     void validate_status_valid() {
         var result = validator.validate(
                 "SearchPurchaseOrder",
-                Map.of("Status", new SlotValue("33"))
+                Map.of("HighestStatus", new SlotValue("33"))
         ).getFirst();
 
         assertTrue(result.valid());
@@ -54,7 +54,7 @@ class SlotValidatorTest {
     void validate_status_invalid() {
         var result = validator.validate(
                 "SearchPurchaseOrder",
-                Map.of("Status", new SlotValue("89033"))
+                Map.of("HighestStatus", new SlotValue("89033"))
         ).getFirst();
 
         assertFalse(result.valid());

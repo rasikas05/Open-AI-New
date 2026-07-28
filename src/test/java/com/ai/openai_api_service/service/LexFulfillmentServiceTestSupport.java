@@ -19,6 +19,8 @@ import com.ai.openai_api_service.service.repair.rules.KeywordUtteranceRepairRule
 import com.ai.openai_api_service.service.repair.rules.MergedStatusSplitRule;
 import com.ai.openai_api_service.service.repair.rules.MergedTextSplitRule;
 import com.ai.openai_api_service.service.repair.rules.MisassignmentRepairRule;
+import com.ai.openai_api_service.service.slots.GenericSlotInterpretationCatalog;
+import com.ai.openai_api_service.service.slots.GenericSlotInterpreter;
 import com.ai.openai_api_service.service.normalizer.SlotNormalizer;
 import com.ai.openai_api_service.service.validation.M3RequestExecutionValidator;
 import com.ai.openai_api_service.service.validation.SlotValidator;
@@ -42,10 +44,13 @@ final class LexFulfillmentServiceTestSupport {
         SlotNormalizer slotNormalizer = new SlotNormalizer(searchFieldCatalog, fieldDefinitionRegistry);
         SlotValidator slotValidator = new SlotValidator(searchFieldCatalog, fieldDefinitionRegistry);
         SlotKeywordRegistry keywordRegistry = new SlotKeywordRegistry(searchFieldCatalog);
+        GenericSlotInterpreter genericSlotInterpreter =
+                new GenericSlotInterpreter(new GenericSlotInterpretationCatalog());
         SlotRepairService slotRepairService = new SlotRepairService(
                 slotValidator,
                 searchFieldCatalog,
                 fieldDefinitionRegistry,
+                genericSlotInterpreter,
                 new KeywordUtteranceRepairRule(keywordRegistry),
                 new MisassignmentRepairRule(),
                 new MergedStatusSplitRule(keywordRegistry),
@@ -55,14 +60,14 @@ final class LexFulfillmentServiceTestSupport {
                 searchFieldCatalog,
                 new InformationRequestCatalog()
         );
-        ReturnColumnCatalog returnColumnCatalog = new ReturnColumnCatalog(intentApiCatalog);
+        ApiFieldCatalog apiFieldCatalog = new ApiFieldCatalog();
+        ReturnColumnCatalog returnColumnCatalog = new ReturnColumnCatalog(intentApiCatalog, apiFieldCatalog);
         QueryUnderstander queryUnderstander = new QueryUnderstander(
                 requestedInformationResolver,
                 intentApiCatalog,
                 returnColumnCatalog
         );
         InformationRequestCatalog informationRequestCatalog = new InformationRequestCatalog();
-        ApiFieldCatalog apiFieldCatalog = new ApiFieldCatalog();
         ApiCapabilityResolver apiCapabilityResolver = new ApiCapabilityResolver(
                 apiFieldCatalog,
                 new ApiCapabilityMessageBuilder(informationRequestCatalog)
@@ -71,7 +76,8 @@ final class LexFulfillmentServiceTestSupport {
                 new InMemorySearchContextService(intentApiCatalog, 3600);
         return createFulfillmentService(searchContextService, intentApiCatalog, searchResolver,
                 m3RequestBuilder, slotNormalizer, slotRepairService, slotValidator,
-                queryUnderstander, apiCapabilityResolver, searchFieldCatalog, fieldDefinitionRegistry);
+                queryUnderstander, apiCapabilityResolver, searchFieldCatalog, fieldDefinitionRegistry,
+                informationRequestCatalog);
     }
 
     static LexFulfillmentService createFulfillmentService(InMemorySearchContextService searchContextService) {
@@ -85,10 +91,13 @@ final class LexFulfillmentServiceTestSupport {
         SlotNormalizer slotNormalizer = new SlotNormalizer(searchFieldCatalog, fieldDefinitionRegistry);
         SlotValidator slotValidator = new SlotValidator(searchFieldCatalog, fieldDefinitionRegistry);
         SlotKeywordRegistry keywordRegistry = new SlotKeywordRegistry(searchFieldCatalog);
+        GenericSlotInterpreter genericSlotInterpreter =
+                new GenericSlotInterpreter(new GenericSlotInterpretationCatalog());
         SlotRepairService slotRepairService = new SlotRepairService(
                 slotValidator,
                 searchFieldCatalog,
                 fieldDefinitionRegistry,
+                genericSlotInterpreter,
                 new KeywordUtteranceRepairRule(keywordRegistry),
                 new MisassignmentRepairRule(),
                 new MergedStatusSplitRule(keywordRegistry),
@@ -98,21 +107,22 @@ final class LexFulfillmentServiceTestSupport {
                 searchFieldCatalog,
                 new InformationRequestCatalog()
         );
-        ReturnColumnCatalog returnColumnCatalog = new ReturnColumnCatalog(intentApiCatalog);
+        ApiFieldCatalog apiFieldCatalog = new ApiFieldCatalog();
+        ReturnColumnCatalog returnColumnCatalog = new ReturnColumnCatalog(intentApiCatalog, apiFieldCatalog);
         QueryUnderstander queryUnderstander = new QueryUnderstander(
                 requestedInformationResolver,
                 intentApiCatalog,
                 returnColumnCatalog
         );
         InformationRequestCatalog informationRequestCatalog = new InformationRequestCatalog();
-        ApiFieldCatalog apiFieldCatalog = new ApiFieldCatalog();
         ApiCapabilityResolver apiCapabilityResolver = new ApiCapabilityResolver(
                 apiFieldCatalog,
                 new ApiCapabilityMessageBuilder(informationRequestCatalog)
         );
         return createFulfillmentService(searchContextService, intentApiCatalog, searchResolver,
                 m3RequestBuilder, slotNormalizer, slotRepairService, slotValidator,
-                queryUnderstander, apiCapabilityResolver, searchFieldCatalog, fieldDefinitionRegistry);
+                queryUnderstander, apiCapabilityResolver, searchFieldCatalog, fieldDefinitionRegistry,
+                informationRequestCatalog);
     }
 
     private static LexFulfillmentService createFulfillmentService(
@@ -126,24 +136,30 @@ final class LexFulfillmentServiceTestSupport {
             QueryUnderstander queryUnderstander,
             ApiCapabilityResolver apiCapabilityResolver,
             SearchFieldCatalog searchFieldCatalog,
-            FieldDefinitionRegistry fieldDefinitionRegistry
+            FieldDefinitionRegistry fieldDefinitionRegistry,
+            InformationRequestCatalog informationRequestCatalog
     ) {
         M3RequestExecutionValidator m3RequestExecutionValidator = new M3RequestExecutionValidator(
                 searchFieldCatalog,
                 fieldDefinitionRegistry
         );
+        GenericSlotInterpreter genericSlotInterpreter =
+                new GenericSlotInterpreter(new GenericSlotInterpretationCatalog());
         return new LexFulfillmentService(
                 intentApiCatalog,
                 searchResolver,
                 m3RequestBuilder,
                 slotNormalizer,
                 slotRepairService,
+                genericSlotInterpreter,
                 slotValidator,
                 new QueryContextAssembler(),
                 queryUnderstander,
                 searchContextService,
                 apiCapabilityResolver,
-                m3RequestExecutionValidator
+                m3RequestExecutionValidator,
+                informationRequestCatalog,
+                searchFieldCatalog
         );
     }
 

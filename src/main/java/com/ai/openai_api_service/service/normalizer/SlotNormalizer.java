@@ -42,6 +42,7 @@ public class SlotNormalizer {
             }
 
             Optional<String> m3Field = searchFieldCatalog.findBySlot(intentName, lexSlot)
+                    .or(() -> searchFieldCatalog.find(intentName, lexSlot))
                     .map(definition -> definition.m3Field());
 
             if (m3Field.isEmpty()) {

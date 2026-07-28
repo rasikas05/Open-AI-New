@@ -9,6 +9,7 @@ import com.ai.openai_api_service.service.repair.rules.KeywordUtteranceRepairRule
 import com.ai.openai_api_service.service.repair.rules.MergedStatusSplitRule;
 import com.ai.openai_api_service.service.repair.rules.MergedTextSplitRule;
 import com.ai.openai_api_service.service.repair.rules.MisassignmentRepairRule;
+import com.ai.openai_api_service.service.slots.GenericSlotInterpreter;
 import com.ai.openai_api_service.service.validation.SlotValidator;
 import com.ai.openai_api_service.service.validation.ValidatedSlot;
 import org.slf4j.Logger;
@@ -33,12 +34,14 @@ public class SlotRepairService {
     private final SlotValidator slotValidator;
     private final SearchFieldCatalog searchFieldCatalog;
     private final FieldDefinitionRegistry fieldDefinitionRegistry;
+    private final GenericSlotInterpreter genericSlotInterpreter;
     private final List<SlotRepairRule> repairRules;
 
     public SlotRepairService(
             SlotValidator slotValidator,
             SearchFieldCatalog searchFieldCatalog,
             FieldDefinitionRegistry fieldDefinitionRegistry,
+            GenericSlotInterpreter genericSlotInterpreter,
             KeywordUtteranceRepairRule keywordUtteranceRepairRule,
             MisassignmentRepairRule misassignmentRepairRule,
             MergedStatusSplitRule mergedStatusSplitRule,
@@ -47,6 +50,7 @@ public class SlotRepairService {
         this.slotValidator = slotValidator;
         this.searchFieldCatalog = searchFieldCatalog;
         this.fieldDefinitionRegistry = fieldDefinitionRegistry;
+        this.genericSlotInterpreter = genericSlotInterpreter;
         this.repairRules = List.of(
                 keywordUtteranceRepairRule,
                 misassignmentRepairRule,
@@ -59,6 +63,8 @@ public class SlotRepairService {
         Map<String, SlotValue> current = normalizedSlots != null
                 ? new LinkedHashMap<>(normalizedSlots)
                 : new LinkedHashMap<>();
+
+        current = new LinkedHashMap<>(genericSlotInterpreter.interpret(intentName, current));
 
         log.info("Lex slots: {}", formatSlots(current));
 
@@ -91,6 +97,8 @@ public class SlotRepairService {
                     formatActions(actions)
             );
         }
+
+        current = new LinkedHashMap<>(genericSlotInterpreter.interpret(intentName, current));
 
         log.info("Final slots: {}", formatSlots(current));
         return Map.copyOf(current);

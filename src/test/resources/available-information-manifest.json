@@ -1,0 +1,11 @@
+[
+  {"program": "OIS100MI", "transaction": "SearchHead", "code": "NET_ORDER_VALUE", "columns": ["ORNO", "NTAM"]},
+  {"program": "OIS100MI", "transaction": "SearchHead", "code": "DELIVERY_METHOD", "columns": ["ORNO", "MODL"]},
+  {"program": "PPS200MI", "transaction": "SearchHead", "code": "BUYER", "columns": ["PUNO", "BUYE"]},
+  {"program": "PPS200MI", "transaction": "SearchHead", "code": "WAREHOUSE", "columns": ["PUNO", "WHLO"]},
+  {"program": "PMS100MI", "transaction": "SearchMO", "code": "REFERENCE_ORDER_NUMBER", "columns": ["MFNO", "RORN"]},
+  {"program": "PMS100MI", "transaction": "SearchMO", "code": "PRIORITY", "columns": ["MFNO", "PRIO"]},
+  {"program": "MMS100MI", "transaction": "SearchHead", "code": "RECEIVING_DATE", "columns": ["TRNR", "RIDT"]},
+  {"program": "CRS610MI", "transaction": "GetBasicData", "code": "COUNTRY", "columns": ["ECAR"]},
+  {"program": "CRS610MI", "transaction": "GetFinancial", "code": "TOTAL_DUE_INVOICES", "columns": ["TDIN"]}
+]

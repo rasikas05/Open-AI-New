@@ -17,6 +17,7 @@ class ApiCapabilityResolverTest {
 
     private ApiCapabilityResolver resolver;
     private IntentDefinition getCustomer;
+    private IntentDefinition getCustomerFinancial;
     private IntentDefinition searchCustomerOrder;
 
     @BeforeEach
@@ -28,6 +29,7 @@ class ApiCapabilityResolverTest {
         );
         IntentApiCatalog catalog = new IntentApiCatalog();
         getCustomer = catalog.find("GetCustomer").orElseThrow();
+        getCustomerFinancial = catalog.find("GetCustomerFinancial").orElseThrow();
         searchCustomerOrder = catalog.find("SearchCustomerOrder").orElseThrow();
     }
 
@@ -114,6 +116,31 @@ class ApiCapabilityResolverTest {
     }
 
     @Test
+    void resolve_creditLimitOnGetFinancial_executesWithCrlmColumns() {
+        ApiCapabilityResult result = resolver.resolve(
+                getCustomerFinancial,
+                List.of(RequestedInformationResolver.CREDIT_LIMIT)
+        );
+
+        assertTrue(result.shouldExecuteM3());
+        assertTrue(result.supportedReturnColumns().contains("CRLM"));
+    }
+
+    @Test
+    void resolve_paymentAndCurrencyOnGetFinancial_executesWithBothColumns() {
+        ApiCapabilityResult result = resolver.resolve(
+                getCustomerFinancial,
+                List.of(RequestedInformationResolver.PAYMENT, RequestedInformationResolver.CURRENCY)
+        );
+
+        assertTrue(result.shouldExecuteM3());
+        assertEquals(
+                java.util.Set.of("TEPY", "CUCD"),
+                java.util.Set.copyOf(result.supportedReturnColumns())
+        );
+    }
+
+    @Test
     void resolve_statusAndEmailOnSearch_partialExecuteKeepsUnsupportedEmail() {
         ApiCapabilityResult result = resolver.resolve(
                 searchCustomerOrder,
@@ -125,5 +152,23 @@ class ApiCapabilityResolverTest {
         assertEquals(List.of(RequestedInformationResolver.STATUS), result.supportedCodes());
         assertEquals(List.of(RequestedInformationResolver.EMAIL), result.unsupportedCodes());
         assertTrue(result.userMessage().toLowerCase().contains("email"));
+    }
+
+    @Test
+    void resolve_buyerOnSearchPurchaseOrder_executesWithBuyeColumns() {
+        IntentDefinition searchPo = new IntentApiCatalog().find("SearchPurchaseOrder").orElseThrow();
+        ApiCapabilityResult result = resolver.resolve(searchPo, List.of("BUYER"));
+
+        assertTrue(result.shouldExecuteM3());
+        assertEquals(List.of("PUNO", "BUYE"), List.copyOf(result.supportedReturnColumns()));
+    }
+
+    @Test
+    void resolve_priorityOnSearchManufacturingOrder_executesWithPrioColumns() {
+        IntentDefinition searchMo = new IntentApiCatalog().find("SearchManufacturingOrder").orElseThrow();
+        ApiCapabilityResult result = resolver.resolve(searchMo, List.of("PRIORITY"));
+
+        assertTrue(result.shouldExecuteM3());
+        assertEquals(List.of("MFNO", "PRIO"), List.copyOf(result.supportedReturnColumns()));
     }
 }

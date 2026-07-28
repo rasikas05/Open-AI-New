@@ -28,6 +28,16 @@ public class RequestedInformationResolver {
     public static final String STATUS = "STATUS";
     public static final String BASIC = "BASIC";
     public static final String FULL = "FULL";
+    public static final String CREDIT_LIMIT = "CREDIT_LIMIT";
+    public static final String OUTSTANDING_INVOICES = "OUTSTANDING_INVOICES";
+    public static final String OVERDUE_INVOICES = "OVERDUE_INVOICES";
+    public static final String PAYMENT = "PAYMENT";
+    public static final String INSURANCE = "INSURANCE";
+    public static final String CURRENCY = "CURRENCY";
+    public static final String VAT = "VAT";
+    public static final String INVOICE_RECIPIENT = "INVOICE_RECIPIENT";
+    public static final String PAYER = "PAYER";
+    public static final String GROUP_PAYER = "GROUP_PAYER";
 
     private static final List<String> SEARCH_INTENTS_FOR_FIELD_INDEX = List.of(
             "SearchCustomerOrder",

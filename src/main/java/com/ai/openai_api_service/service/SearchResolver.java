@@ -29,6 +29,7 @@ public class SearchResolver {
             }
 
             searchFieldCatalog.findBySlot(intentName, entry.getKey())
+                    .or(() -> searchFieldCatalog.find(intentName, entry.getKey()))
                     .ifPresent(definition ->
                             criteria.add(new SearchCriterion(definition.m3Field(), value.trim())));
         }

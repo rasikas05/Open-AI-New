@@ -33,6 +33,14 @@ public class FieldDefinitionRegistry {
         seedIdentifier(definitions, "PRNO", FieldRole.GENERIC, 15);
         seedIdentifier(definitions, "TRNR", FieldRole.ORDER_NUMBER, 10);
         seedIdentifier(definitions, "PYNO", FieldRole.PARTY, 10);
+        seedIdentifier(definitions, "RORN", FieldRole.ORDER_NUMBER, 15);
+        seedIdentifier(definitions, "PRIO", FieldRole.GENERIC, 3);
+        seedIdentifier(definitions, "POTC", FieldRole.GENERIC, 10);
+        seedIdentifier(definitions, "PURC", FieldRole.PERSON, 10);
+
+        seedCode(definitions, "ORTP", FieldRole.GENERIC, 3);
+        seedCode(definitions, "ORTY", FieldRole.GENERIC, 3);
+        seedCode(definitions, "TRTP", FieldRole.GENERIC, 3);
 
         seedCode(definitions, "FACI", FieldRole.FACILITY, 3);
         seedCode(definitions, "WHLO", FieldRole.WAREHOUSE, 3);

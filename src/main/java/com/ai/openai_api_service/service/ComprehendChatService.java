@@ -4,6 +4,7 @@ import com.ai.openai_api_service.exception.TenantQuotaExceededException;
 import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
+import com.ai.openai_api_service.model.GuidedSearchState;
 import com.ai.openai_api_service.model.IntentDefinition;
 import com.ai.openai_api_service.model.LexFulfillmentSession;
 import com.ai.openai_api_service.model.LexFulfillmentOutcome;
@@ -21,7 +22,15 @@ import com.ai.openai_api_service.model.python_rag.PythonQueryResponse;
 import com.ai.openai_api_service.model.python_rag.PythonRetrievalResponse;
 import com.ai.openai_api_service.model.python_rag.PythonRouteResponse;
 import com.ai.openai_api_service.model.python_rag.SourceItem;
+import com.ai.openai_api_service.model.rag.GroundedRagCallResult;
+import com.ai.openai_api_service.model.rag.GroundedRagResult;
+import com.ai.openai_api_service.model.rag.RagStatus;
+import com.ai.openai_api_service.service.guided.GuidedSearchService;
+import com.ai.openai_api_service.service.guided.InMemoryGuidedSearchSessionService;
 import com.ai.openai_api_service.service.query.SearchContextService;
+import com.ai.openai_api_service.service.rag.ProgramIdDetector;
+import com.ai.openai_api_service.service.rag.SearchQueryAssembler;
+import com.ai.openai_api_service.service.validation.SearchCriteriaValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -31,9 +40,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 @Service
 public class ComprehendChatService {
@@ -46,19 +55,6 @@ public class ComprehendChatService {
                     + "Examples:\n"
                     + "• Show customer Y00111\n"
                     + "• Get customer details for Y00111";
-    private static final List<String> RAG_INSUFFICIENT_SIGNALS = List.of(
-            "not available in the current documentation",
-            "not available in the context",
-            "##insufficient##",
-            "context does not",
-            "context provided does not",
-            "not covered in the",
-            "no information",
-            "does not contain",
-            "cannot provide",
-            "not include specific",
-            "does not provide"
-    );
 
     private final ComprehendAnonymizationService comprehendAnonymizationService;
     private final ChatPersistenceService chatPersistenceService;
@@ -72,6 +68,8 @@ public class ComprehendChatService {
     private final RequestedInformationResolver requestedInformationResolver;
     private final IntentApiCatalog intentApiCatalog;
     private final SearchContextService searchContextService;
+    private final GuidedSearchService guidedSearchService;
+    private final InMemoryGuidedSearchSessionService guidedSearchSessionService;
 
     @Value("${openai.response.include-sanitization-debug:false}")
     private boolean includeSanitizationDebug;
@@ -79,8 +77,8 @@ public class ComprehendChatService {
     @Value("${rag.query-rewrite.enabled:false}")
     private boolean queryRewriteEnabled;
 
-    @Value("${rag.fallback-on-no-answer:true}")
-    private boolean ragFallbackOnNoAnswer;
+    @Value("${rag.partial.gap-fill.enabled:true}")
+    private boolean ragPartialGapFillEnabled;
 
     public ComprehendChatService(
             ComprehendAnonymizationService comprehendAnonymizationService,
@@ -94,7 +92,9 @@ public class ComprehendChatService {
             LiveHistorySummaryBuilder liveHistorySummaryBuilder,
             RequestedInformationResolver requestedInformationResolver,
             IntentApiCatalog intentApiCatalog,
-            SearchContextService searchContextService
+            SearchContextService searchContextService,
+            GuidedSearchService guidedSearchService,
+            InMemoryGuidedSearchSessionService guidedSearchSessionService
     ) {
         this.comprehendAnonymizationService = comprehendAnonymizationService;
         this.chatPersistenceService = chatPersistenceService;
@@ -108,12 +108,25 @@ public class ComprehendChatService {
         this.requestedInformationResolver = requestedInformationResolver;
         this.intentApiCatalog = intentApiCatalog;
         this.searchContextService = searchContextService;
+        this.guidedSearchService = guidedSearchService;
+        this.guidedSearchSessionService = guidedSearchSessionService;
     }
 
     public ChatResponse chat(ChatRequest request) {
         if (request == null || request.getUserMessage() == null || request.getUserMessage().isBlank()) {
             throw new OpenAIException("User message cannot be empty", 400);
         }
+        long requestStartMs = System.currentTimeMillis();
+        long piiDetectionMs = 0L;
+        long routeDecisionMs = 0L;
+        long queryRewriteMs = 0L;
+        long retrievalMs = 0L;
+        long groundedMs = 0L;
+        long gapFillMs = 0L;
+        long generalGptMs = 0L;
+        int groundedTokens = 0;
+        int gapFillTokens = 0;
+        int generalGptTokens = 0;
 
         TenantQuotaService.QuotaCheckResult quotaCheck = tenantQuotaService.checkBeforeChat(request.getTenantCode());
         if (!quotaCheck.allowed()) {
@@ -121,7 +134,9 @@ public class ComprehendChatService {
         }
 
         String originalUserText = request.getUserMessage();
+        long piiStartMs = System.currentTimeMillis();
         String sanitizedUserText = sanitizeTextWithComprehend(originalUserText);
+        piiDetectionMs = System.currentTimeMillis() - piiStartMs;
         ChatRequest workingRequest = copyRequestWithUserMessage(request, sanitizedUserText);
 
         log.info(
@@ -132,7 +147,9 @@ public class ComprehendChatService {
                 sanitizedUserText
         );
 
+        long routeStartMs = System.currentTimeMillis();
         PythonRouteResponse routeResponse = pythonRagService.route(originalUserText);
+        routeDecisionMs = System.currentTimeMillis() - routeStartMs;
         String route = routeResponse != null ? routeResponse.getRoute() : "rag";
         log.info(
                 "Comprehend route decision: route='{}', handler='{}', original='{}', sanitized='{}'",
@@ -177,6 +194,14 @@ public class ComprehendChatService {
             retrievalReason = docResult.retrievalReason();
             retrievalTimeMs = docResult.retrievalTimeMs();
             maxScore = docResult.maxScore();
+            queryRewriteMs = docResult.queryRewriteTimeMs();
+            retrievalMs = docResult.retrievalStageTimeMs();
+            groundedMs = docResult.groundedTimeMs();
+            gapFillMs = docResult.gapFillTimeMs();
+            generalGptMs = docResult.generalGptTimeMs();
+            groundedTokens = docResult.groundedTokens();
+            gapFillTokens = docResult.gapFillTokens();
+            generalGptTokens = docResult.generalGptTokens();
         }
 
         if (Boolean.TRUE.equals(chatResponse.getLimitExceeded())) {
@@ -205,6 +230,7 @@ public class ComprehendChatService {
         LiveHistoryAuditMetadata auditMetadata = liveHistory != null
                 ? liveHistory.auditMetadata()
                 : null;
+        long persistenceStartMs = System.currentTimeMillis();
         chatPersistenceService.persistChat(
                 request.getTenantCode(),
                 request.getUserId(),
@@ -219,6 +245,7 @@ public class ComprehendChatService {
                 retrievalTimeMs,
                 auditMetadata
         );
+        long persistenceMs = System.currentTimeMillis() - persistenceStartMs;
 
         chatResponse.setRetrievalReason(retrievalReason);
         chatResponse.setRetrievalTimeMs(retrievalTimeMs);
@@ -245,6 +272,29 @@ public class ComprehendChatService {
                 chatResponse.getCollectingTool(),
                 consumedTokens
         );
+        log.info(
+                "Request Token Summary | grounded={} | gapFill={} | generalGPT={} | prompt={} | completion={} | total={}",
+                groundedTokens,
+                gapFillTokens,
+                generalGptTokens,
+                nullSafeInt(openAiUsage != null ? openAiUsage.getPromptTokens() : null),
+                nullSafeInt(openAiUsage != null ? openAiUsage.getCompletionTokens() : null),
+                nullSafeInt(openAiUsage != null ? openAiUsage.getTotalTokens() : null)
+        );
+
+        long totalRequestMs = System.currentTimeMillis() - requestStartMs;
+        log.info(
+                "Request Timing Summary | pii={}ms | route={}ms | rewrite={}ms | retrieval={}ms | grounded={}ms | gapFill={}ms | generalGPT={}ms | persistence={}ms | total={}ms",
+                piiDetectionMs,
+                routeDecisionMs,
+                queryRewriteMs,
+                retrievalMs,
+                groundedMs,
+                gapFillMs,
+                generalGptMs,
+                persistenceMs,
+                totalRequestMs
+        );
 
         return chatResponse;
     }
@@ -261,6 +311,11 @@ public class ComprehendChatService {
         );
         if (request.getM3ClientReport() != null) {
             searchContextService.applyClientReport(fulfillmentSession, request.getM3ClientReport());
+        }
+
+        Optional<GuidedSearchState> guidedState = guidedSearchSessionService.find(fulfillmentSession);
+        if (guidedState.isPresent()) {
+            return handleGuidedSearchTurn(fulfillmentSession, guidedState.get(), originalUserText);
         }
 
         String lexSessionId = lexService.buildLexSessionId(request);
@@ -292,6 +347,13 @@ public class ComprehendChatService {
                     fulfillmentSession
             );
             ChatResponse chatResponse = fulfillmentOutcome.response();
+
+            if (SearchCriteriaValidator.ACTION_SEARCH_CRITERIA_MISSING.equals(chatResponse.getActionTaken())
+                    && isSearchIntent(lexResult.getIntentName())) {
+                ChatResponse guided = guidedSearchService.start(lexResult.getIntentName(), fulfillmentSession);
+                return LexLiveRouteResult.lex(guided);
+            }
+
             chatResponse.setLexIntent(lexResult.getIntentName());
             chatResponse.setLexDialogAction(lexResult.getDialogActionType());
 
@@ -305,6 +367,37 @@ public class ComprehendChatService {
         }
 
         return lexFallbackRouteResult(request, lexResult);
+    }
+
+    private LexLiveRouteResult handleGuidedSearchTurn(
+            LexFulfillmentSession fulfillmentSession,
+            GuidedSearchState state,
+            String originalUserText
+    ) {
+        GuidedSearchService.GuidedTurnResult turn =
+                guidedSearchService.handleTurn(fulfillmentSession, state, originalUserText);
+        if (!turn.shouldResumeFulfillment()) {
+            return LexLiveRouteResult.lex(turn.response());
+        }
+
+        LexFulfillmentOutcome outcome = lexFulfillmentService.fulfillSearch(
+                turn.intentName(),
+                turn.slots(),
+                originalUserText,
+                fulfillmentSession
+        );
+        ChatResponse chatResponse = outcome.response();
+        chatResponse.setLexIntent(turn.intentName());
+        if (outcome.queryContext() != null && !outcome.queryContext().requestedInformation().isEmpty()) {
+            chatResponse.setRequestedInformation(outcome.queryContext().requestedInformation());
+        }
+        return LexLiveRouteResult.lex(chatResponse);
+    }
+
+    private boolean isSearchIntent(String intentName) {
+        return intentApiCatalog.find(intentName)
+                .filter(def -> def.requestType() == RequestType.SEARCH)
+                .isPresent();
     }
 
     private List<String> resolveRequestedInformationForFulfillment(
@@ -405,34 +498,75 @@ public class ComprehendChatService {
             String originalUserText,
             String sanitizedUserText
     ) {
+        long queryRewriteMs = 0L;
+        long retrievalStageMs = 0L;
+        long groundedMs = 0L;
+        long gapFillMs = 0L;
+        long generalGptMs = 0L;
+        int groundedTokens = 0;
+        int gapFillTokens = 0;
+        int generalGptTokens = 0;
         PythonQueryRequest ragRequest = new PythonQueryRequest();
         ragRequest.setMessage(sanitizedUserText);
         ragRequest.setHistory(request.getHistory());
 
-        List<String> searchQueries;
+        List<String> rewrittenQueries = List.of();
         OpenAIUsage rewriteUsage = null;
         if (queryRewriteEnabled) {
+            long rewriteStartMs = System.currentTimeMillis();
             QueryRewriteResult rewriteResult = openAIService.rewriteQueries(sanitizedUserText);
-            searchQueries = rewriteResult.queries();
+            queryRewriteMs = System.currentTimeMillis() - rewriteStartMs;
+            rewrittenQueries = rewriteResult.queries();
             rewriteUsage = rewriteResult.usage();
-        } else {
-            searchQueries = List.of(sanitizedUserText);
         }
+        List<String> searchQueries = SearchQueryAssembler.assemble(sanitizedUserText, rewrittenQueries, 4);
+
+        List<String> boostProgramIds = ProgramIdDetector.detect(sanitizedUserText, originalUserText);
+        log.info(
+                "Doc retrieval program boost: detectedProgramIds={}",
+                boostProgramIds.isEmpty() ? "none" : boostProgramIds
+        );
 
         PythonRetrievalResponse retrieval;
         try {
-            retrieval = pythonRagService.retrieve(sanitizedUserText, searchQueries, ragRequest);
+            long retrievalStartMs = System.currentTimeMillis();
+            retrieval = pythonRagService.retrieve(
+                    sanitizedUserText,
+                    searchQueries,
+                    ragRequest,
+                    boostProgramIds
+            );
+            retrievalStageMs = System.currentTimeMillis() - retrievalStartMs;
         } catch (OpenAIException e) {
             log.warn(
                     "Python retrieval call failed (status={}), falling back to OpenAI: {}",
                     e.getStatusCode(),
                     e.getMessage()
             );
+            long generalStartMs = System.currentTimeMillis();
             ChatResponse chatResponse = openAIService.chatWithoutPersistence(request);
+            generalGptMs = System.currentTimeMillis() - generalStartMs;
+            logUsage("General", chatResponse.getOpenAiUsage(), generalGptMs);
+            generalGptTokens = nullSafeInt(chatResponse.getOpenAiUsage() != null ? chatResponse.getOpenAiUsage().getTotalTokens() : null);
             if (rewriteUsage != null) {
                 chatResponse.setOpenAiUsage(mergeUsage(rewriteUsage, chatResponse.getOpenAiUsage()));
             }
-            return new DocRouteResult(chatResponse, List.of(), List.of(), "retrieval_error", null, null);
+            return new DocRouteResult(
+                    chatResponse,
+                    List.of(),
+                    List.of(),
+                    "retrieval_error",
+                    null,
+                    null,
+                    (int) queryRewriteMs,
+                    (int) retrievalStageMs,
+                    0,
+                    0,
+                    (int) generalGptMs,
+                    groundedTokens,
+                    gapFillTokens,
+                    generalGptTokens
+            );
         }
 
         String reason = retrieval.getRetrievalReason();
@@ -451,26 +585,74 @@ public class ComprehendChatService {
         List<ChunkItem> promptChunks = retrieval.getPromptChunks() != null
                 ? retrieval.getPromptChunks()
                 : List.of();
+        log.info(
+                "Retrieval Summary | chunksRetrieved={} | chunksSentToPrompt={} | maxScore={} | retrievalReason={}",
+                retrieval.getTotal() != null ? retrieval.getTotal() : 0,
+                retrieval.getPromptChunkCount() != null ? retrieval.getPromptChunkCount() : promptChunks.size(),
+                retrieval.getMaxScore(),
+                reason
+        );
         List<SourceItem> responseSources = toChunkSources(promptChunks);
 
         ChatResponse chatResponse;
         if (RETRIEVAL_READY.equals(reason)) {
-            chatResponse = openAIService.chatWithRagContext(request, promptChunks);
-            if (rewriteUsage != null) {
-                chatResponse.setOpenAiUsage(mergeUsage(rewriteUsage, chatResponse.getOpenAiUsage()));
-            }
-            if (ragFallbackOnNoAnswer && isRagInsufficientAnswer(chatResponse.getReply())) {
-                log.info("RAG grounded answer insufficient, falling back to OpenAI general knowledge");
-                OpenAIUsage ragUsage = chatResponse.getOpenAiUsage();
+            try {
+                long groundedStartMs = System.currentTimeMillis();
+                GroundedRagCallResult groundedCall = openAIService.chatWithRagContext(request, promptChunks);
+                groundedMs = System.currentTimeMillis() - groundedStartMs;
+                logUsage("Grounded", groundedCall.usage(), groundedMs);
+                groundedTokens = nullSafeInt(groundedCall.usage() != null ? groundedCall.usage().getTotalTokens() : null);
+                OpenAIUsage groundedUsage = groundedCall.usage();
+                if (rewriteUsage != null) {
+                    groundedUsage = mergeUsage(rewriteUsage, groundedUsage);
+                }
+
+                GroundedRagResult grounded = groundedCall.grounded();
+                log.info(
+                        "Grounded Response Parsed | status={} | missingTopics={}",
+                        grounded.getStatus(),
+                        grounded.getMissingTopics() != null ? grounded.getMissingTopics().size() : 0
+                );
+                log.debug("Grounded Response (raw): {}", groundedCall.rawContent());
+
+                DocAnswerOutcome outcome = orchestrateGroundedStatus(request, grounded, groundedUsage);
+                chatResponse = outcome.chatResponse();
+                reason = outcome.retrievalReason();
+                gapFillMs = outcome.gapFillTimeMs();
+                generalGptMs = outcome.generalGptTimeMs();
+                gapFillTokens = outcome.gapFillTokens();
+                generalGptTokens = outcome.generalGptTokens();
+                logUsage("Merged", chatResponse.getOpenAiUsage(), 0);
+            } catch (OpenAIException e) {
+                log.warn("Grounded JSON parsing failed, falling back to General GPT: {}", e.getMessage());
+                long generalStartMs = System.currentTimeMillis();
                 chatResponse = openAIService.chatWithoutPersistence(request);
-                chatResponse.setOpenAiUsage(mergeUsage(ragUsage, chatResponse.getOpenAiUsage()));
+                generalGptMs = System.currentTimeMillis() - generalStartMs;
+                logUsage("General", chatResponse.getOpenAiUsage(), generalGptMs);
+                generalGptTokens = nullSafeInt(chatResponse.getOpenAiUsage() != null ? chatResponse.getOpenAiUsage().getTotalTokens() : null);
+                if (rewriteUsage != null) {
+                    chatResponse.setOpenAiUsage(mergeUsage(rewriteUsage, chatResponse.getOpenAiUsage()));
+                }
                 reason = RETRIEVAL_RAG_NO_ANSWER;
+                log.info(
+                        "RAG Decision | status={} | retrievalReason={} | grounded={} | gapFill={} | generalGPT={} | finalAction={}",
+                        "PARSE_FAILED",
+                        reason,
+                        true,
+                        false,
+                        true,
+                        chatResponse.getActionTaken()
+                );
             }
         } else {
             if (retrieval.getError() != null) {
                 log.warn("Retrieval error from Python, falling back to OpenAI: {}", retrieval.getError());
             }
+            long generalStartMs = System.currentTimeMillis();
             chatResponse = openAIService.chatWithoutPersistence(request);
+            generalGptMs = System.currentTimeMillis() - generalStartMs;
+            logUsage("General", chatResponse.getOpenAiUsage(), generalGptMs);
+            generalGptTokens = nullSafeInt(chatResponse.getOpenAiUsage() != null ? chatResponse.getOpenAiUsage().getTotalTokens() : null);
             if (rewriteUsage != null) {
                 chatResponse.setOpenAiUsage(mergeUsage(rewriteUsage, chatResponse.getOpenAiUsage()));
             }
@@ -482,8 +664,134 @@ public class ComprehendChatService {
                 responseSources,
                 reason,
                 retrieval.getRetrievalTimeMs(),
-                retrieval.getMaxScore()
+                retrieval.getMaxScore(),
+                (int) queryRewriteMs,
+                retrieval.getRetrievalTimeMs() != null ? retrieval.getRetrievalTimeMs() : (int) retrievalStageMs,
+                (int) groundedMs,
+                (int) gapFillMs,
+                (int) generalGptMs,
+                groundedTokens,
+                gapFillTokens,
+                generalGptTokens
         );
+    }
+
+    private DocAnswerOutcome orchestrateGroundedStatus(
+            ChatRequest request,
+            GroundedRagResult grounded,
+            OpenAIUsage usageSoFar
+    ) {
+        RagStatus status = grounded.getStatus() != null ? grounded.getStatus() : RagStatus.INSUFFICIENT;
+        String docAnswer = grounded.getAnswer() != null ? grounded.getAnswer() : "";
+
+        if (status == RagStatus.FULL) {
+            ChatResponse response = buildRagChatResponse(request, docAnswer, usageSoFar);
+            log.info(
+                    "RAG Decision | status={} | retrievalReason={} | grounded={} | gapFill={} | generalGPT={} | finalAction={}",
+                    "FULL",
+                    RETRIEVAL_READY,
+                    true,
+                    false,
+                    false,
+                    response.getActionTaken()
+            );
+            return new DocAnswerOutcome(response, RETRIEVAL_READY, 0, 0, 0, 0);
+        }
+
+        if (status == RagStatus.PARTIAL) {
+            List<String> missingTopics = grounded.getMissingTopics() != null
+                    ? grounded.getMissingTopics()
+                    : List.of();
+            if (ragPartialGapFillEnabled && !missingTopics.isEmpty()) {
+                long gapFillStartMs = System.currentTimeMillis();
+                ChatResponse gapFill = openAIService.chatGapFill(request, docAnswer, missingTopics);
+                int gapFillTimeMs = (int) (System.currentTimeMillis() - gapFillStartMs);
+                logUsage("GapFill", gapFill.getOpenAiUsage(), gapFillTimeMs);
+                int gapFillTokens = nullSafeInt(gapFill.getOpenAiUsage() != null ? gapFill.getOpenAiUsage().getTotalTokens() : null);
+                String combined = "## Documentation\n\n"
+                        + docAnswer.strip()
+                        + "\n\n## Additional AI Information\n\n"
+                        + (gapFill.getReply() != null ? gapFill.getReply().strip() : "");
+                ChatResponse response = buildRagChatResponse(request, combined, mergeUsage(usageSoFar, gapFill.getOpenAiUsage()));
+                log.info(
+                        "RAG Decision | status={} | retrievalReason={} | grounded={} | gapFill={} | generalGPT={} | finalAction={} | missingTopics={}",
+                        "PARTIAL",
+                        RETRIEVAL_READY,
+                        true,
+                        true,
+                        false,
+                        response.getActionTaken(),
+                        missingTopics.size()
+                );
+                return new DocAnswerOutcome(
+                        response,
+                        RETRIEVAL_READY,
+                        gapFillTimeMs,
+                        0,
+                        gapFillTokens,
+                        0
+                );
+            }
+            ChatResponse response = buildRagChatResponse(request, docAnswer, usageSoFar);
+            log.info(
+                    "RAG Decision | status={} | retrievalReason={} | grounded={} | gapFill={} | generalGPT={} | finalAction={} | missingTopics={}",
+                    "PARTIAL",
+                    RETRIEVAL_READY,
+                    true,
+                    false,
+                    false,
+                    response.getActionTaken(),
+                    missingTopics.size()
+            );
+            return new DocAnswerOutcome(response, RETRIEVAL_READY, 0, 0, 0, 0);
+        }
+
+        long generalStartMs = System.currentTimeMillis();
+        ChatResponse general = openAIService.chatWithoutPersistence(request);
+        int generalTimeMs = (int) (System.currentTimeMillis() - generalStartMs);
+        logUsage("General", general.getOpenAiUsage(), generalTimeMs);
+        general.setOpenAiUsage(mergeUsage(usageSoFar, general.getOpenAiUsage()));
+        int generalTokens = nullSafeInt(general.getOpenAiUsage() != null ? general.getOpenAiUsage().getTotalTokens() : null);
+        log.info(
+                "RAG Decision | status={} | retrievalReason={} | grounded={} | gapFill={} | generalGPT={} | finalAction={}",
+                "INSUFFICIENT",
+                RETRIEVAL_RAG_NO_ANSWER,
+                true,
+                false,
+                true,
+                general.getActionTaken()
+        );
+        return new DocAnswerOutcome(general, RETRIEVAL_RAG_NO_ANSWER, 0, generalTimeMs, 0, generalTokens);
+    }
+
+    private ChatResponse buildRagChatResponse(ChatRequest request, String reply, OpenAIUsage usage) {
+        ChatResponse chatResponse = new ChatResponse(reply != null ? reply : "", false);
+        chatResponse.setHistory(request.getHistory());
+        chatResponse.setActionTaken("rag");
+        chatResponse.setOpenAiUsage(usage);
+        return chatResponse;
+    }
+
+    private void logUsage(String stage, OpenAIUsage usage, long latencyMs) {
+        log.info(
+                "OpenAI Usage | stage={} | model={} | promptTokens={} | completionTokens={} | totalTokens={} | latency={}ms",
+                stage,
+                usage != null ? usage.getModel() : "unknown",
+                nullSafeInt(usage != null ? usage.getPromptTokens() : null),
+                nullSafeInt(usage != null ? usage.getCompletionTokens() : null),
+                nullSafeInt(usage != null ? usage.getTotalTokens() : null),
+                latencyMs
+        );
+    }
+
+    private record DocAnswerOutcome(
+            ChatResponse chatResponse,
+            String retrievalReason,
+            int gapFillTimeMs,
+            int generalGptTimeMs,
+            int gapFillTokens,
+            int generalGptTokens
+    ) {
     }
 
     private List<SourceItem> toChunkSources(List<ChunkItem> chunks) {
@@ -584,7 +892,15 @@ public class ComprehendChatService {
             List<SourceItem> responseSources,
             String retrievalReason,
             Integer retrievalTimeMs,
-            Float maxScore
+            Float maxScore,
+            Integer queryRewriteTimeMs,
+            Integer retrievalStageTimeMs,
+            Integer groundedTimeMs,
+            Integer gapFillTimeMs,
+            Integer generalGptTimeMs,
+            Integer groundedTokens,
+            Integer gapFillTokens,
+            Integer generalGptTokens
     ) {
     }
 
@@ -612,14 +928,6 @@ public class ComprehendChatService {
                     docResult.maxScore()
             );
         }
-    }
-
-    private boolean isRagInsufficientAnswer(String reply) {
-        if (reply == null || reply.isBlank()) {
-            return true;
-        }
-        String lower = reply.toLowerCase(Locale.ROOT);
-        return RAG_INSUFFICIENT_SIGNALS.stream().anyMatch(lower::contains);
     }
 
     private OpenAIUsage mergeUsage(OpenAIUsage first, OpenAIUsage second) {
