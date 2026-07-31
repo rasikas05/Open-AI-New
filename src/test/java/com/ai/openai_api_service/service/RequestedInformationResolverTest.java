@@ -26,6 +26,33 @@ class RequestedInformationResolverTest {
     }
 
     @Test
+    void resolve_addressId_doesNotMatchAddress() {
+        assertEquals(
+                List.of("ADDRESS_ID"),
+                resolver.resolve("Show address id for the order", "SearchCustomerOrder", Map.of())
+        );
+    }
+
+    @Test
+    void resolveForSearch_lowestStatus_notCollapsedToStatus() {
+        assertEquals(
+                List.of("LOWEST_STATUS"),
+                resolver.resolveForSearch("Show lowest status", List.of())
+        );
+    }
+
+    @Test
+    void resolveForSearch_orderTypeAndResponsible() {
+        assertTrue(resolver.resolveForSearch("Show order type and responsible", List.of())
+                .containsAll(List.of("ORDER_TYPE", "RESPONSIBLE")));
+    }
+
+    @Test
+    void resolveForSearch_ownerSynonym_mapsToResponsible() {
+        assertTrue(resolver.resolveForSearch("Show owner", List.of()).contains("RESPONSIBLE"));
+    }
+
+    @Test
     void resolve_phoneKeyword_returnsPhone() {
         assertEquals(
                 List.of(RequestedInformationResolver.PHONE),
@@ -241,10 +268,11 @@ class RequestedInformationResolverTest {
     }
 
     @Test
-    void normalizeBusinessGroup_highestAndLowestStatus_mapToStatus() {
+    void normalizeBusinessGroup_highestAndOrderStatus_mapToStatus_lowestKept() {
         assertEquals(RequestedInformationResolver.STATUS, RequestedInformationResolver.normalizeBusinessGroup("HIGHEST_STATUS"));
-        assertEquals(RequestedInformationResolver.STATUS, RequestedInformationResolver.normalizeBusinessGroup("LOWEST_STATUS"));
         assertEquals(RequestedInformationResolver.STATUS, RequestedInformationResolver.normalizeBusinessGroup("ORDER_STATUS"));
+        assertEquals(RequestedInformationResolver.STATUS, RequestedInformationResolver.normalizeBusinessGroup("PURCHASE_STATUS"));
+        assertEquals("LOWEST_STATUS", RequestedInformationResolver.normalizeBusinessGroup("LOWEST_STATUS"));
     }
 
     @Test
@@ -253,6 +281,9 @@ class RequestedInformationResolverTest {
         assertEquals(RequestedInformationResolver.STATUS, RequestedInformationResolver.BUSINESS_GROUP_BY_M3_FIELD.get("ORST"));
         assertEquals(RequestedInformationResolver.STATUS, RequestedInformationResolver.BUSINESS_GROUP_BY_M3_FIELD.get("WHST"));
         assertEquals(RequestedInformationResolver.STATUS, RequestedInformationResolver.BUSINESS_GROUP_BY_M3_FIELD.get("TRSH"));
+        assertEquals("LOWEST_STATUS", RequestedInformationResolver.BUSINESS_GROUP_BY_M3_FIELD.get("ORSL"));
+        assertEquals("LOWEST_STATUS", RequestedInformationResolver.BUSINESS_GROUP_BY_M3_FIELD.get("PUSL"));
+        assertEquals("LOWEST_STATUS", RequestedInformationResolver.BUSINESS_GROUP_BY_M3_FIELD.get("TRSL"));
         assertEquals("SUPPLIER", RequestedInformationResolver.BUSINESS_GROUP_BY_M3_FIELD.get("SUNO"));
         assertEquals("FACILITY", RequestedInformationResolver.BUSINESS_GROUP_BY_M3_FIELD.get("FACI"));
         assertEquals("DELIVERY_DATE", RequestedInformationResolver.BUSINESS_GROUP_BY_M3_FIELD.get("RLDZ"));

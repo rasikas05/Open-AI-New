@@ -45,7 +45,7 @@ public class RequestedInformationResolver {
     static final Map<String, String> BUSINESS_GROUP_BY_M3_FIELD = Map.copyOf(buildBusinessGroupByM3Field());
 
     private static final Pattern ADDRESS_PATTERN = Pattern.compile(
-            "\\b(address|location|street|town|city|postal|zip)\\b",
+            "\\b(address(?!\\s+id\\b)|location|street|town|city|postal|zip)\\b",
             Pattern.CASE_INSENSITIVE
     );
     private static final Pattern PHONE_PATTERN = Pattern.compile(
@@ -154,6 +154,15 @@ public class RequestedInformationResolver {
 
         requestedGroups.removeAll(criteriaGroups);
 
+        // Specific status variants win over generic STATUS when both matched
+        if (requestedGroups.contains("LOWEST_STATUS")) {
+            requestedGroups.remove(STATUS);
+        }
+        // Address id must not also pull GetCustomer ADDRESS columns
+        if (requestedGroups.contains("ADDRESS_ID")) {
+            requestedGroups.remove(ADDRESS);
+        }
+
         if (requestedGroups.isEmpty()) {
             return List.of(FULL);
         }
@@ -170,7 +179,7 @@ public class RequestedInformationResolver {
         }
         String normalized = code.trim().toUpperCase(Locale.ROOT);
         return switch (normalized) {
-            case "HIGHEST_STATUS", "LOWEST_STATUS", "ORDER_STATUS" -> STATUS;
+            case "HIGHEST_STATUS", "ORDER_STATUS", "PURCHASE_STATUS" -> STATUS;
             case "CUSTOMER_NUMBER" -> "CUSTOMER";
             case "SUPPLIER_NUMBER" -> "SUPPLIER";
             case "PRODUCT" -> "PRODUCT_NUMBER";
@@ -258,7 +267,8 @@ public class RequestedInformationResolver {
 
     private static Map<String, String> buildBusinessGroupByM3Field() {
         Map<String, String> map = new LinkedHashMap<>();
-        putFields(map, STATUS, "ORST", "ORSL", "PUST", "PUSL", "WHST", "TRSH", "TRSL");
+        putFields(map, STATUS, "ORST", "PUST", "WHST", "TRSH");
+        putFields(map, "LOWEST_STATUS", "ORSL", "PUSL", "TRSL");
         putFields(map, "CUSTOMER", "CUNO");
         putFields(map, "SUPPLIER", "SUNO");
         putFields(map, "FACILITY", "FACI");
@@ -298,6 +308,12 @@ public class RequestedInformationResolver {
         }
         Set<String> groups = new LinkedHashSet<>(parseFromText(userText));
         groups.addAll(informationRequestCatalog.matchCodesFromUtterance(userText));
+        if (groups.contains("ADDRESS_ID")) {
+            groups.remove(ADDRESS);
+        }
+        if (groups.contains("LOWEST_STATUS")) {
+            groups.remove(STATUS);
+        }
         return List.copyOf(groups);
     }
 

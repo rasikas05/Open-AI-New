@@ -22,7 +22,10 @@ import java.util.regex.Pattern;
 public class QueryUnderstander {
 
     private static final Pattern LIMIT_PATTERN = Pattern.compile(
-            "\\b(?:last|top|recent|first)\\s+(\\d{1,4})\\b",
+            "\\b(?:last|top|recent|first)\\s+(\\d{1,4})\\b"
+                    + "|\\b(?:show|display|list|give\\s+me|return|fetch|only)\\s+(\\d{1,4})\\s+"
+                    + "(?:orders?|purchase\\s+orders?|manufacturing\\s+orders?|distribution\\s+orders?"
+                    + "|customers?|results?|records?)\\b",
             Pattern.CASE_INSENSITIVE
     );
     private static final Pattern CONTINUATION_PATTERN = Pattern.compile(
@@ -114,7 +117,8 @@ public class QueryUnderstander {
             return null;
         }
         try {
-            int value = Integer.parseInt(matcher.group(1));
+            String raw = matcher.group(1) != null ? matcher.group(1) : matcher.group(2);
+            int value = Integer.parseInt(raw);
             return value > 0 ? value : null;
         } catch (NumberFormatException e) {
             return null;

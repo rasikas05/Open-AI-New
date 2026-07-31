@@ -54,6 +54,32 @@ class M3RequestBuilderTest {
                 "CUNO:C00001 AND FACI:A01 AND ORST:33 AND ORDT:20260424",
                 mapped.params().get("SQRY")
         );
+        assertEquals("YMD8", mapped.params().get("dateformat"));
+    }
+
+    @Test
+    void build_searchWithoutDateCriteria_omitsDateformat() {
+        List<SearchCriterion> criteria = List.of(
+                new SearchCriterion("CUNO", "C00001"),
+                new SearchCriterion("FACI", "A01")
+        );
+
+        LexIntentMapper.MappedM3Request mapped = builder.buildFromCriteria(SEARCH_CUSTOMER_ORDER, criteria);
+
+        assertFalse(mapped.params().containsKey("dateformat"));
+    }
+
+    @Test
+    void build_searchWithRldz_addsDateformat() {
+        List<SearchCriterion> criteria = List.of(
+                new SearchCriterion("CUNO", "C00001"),
+                new SearchCriterion("RLDZ", "01/02/2026")
+        );
+
+        LexIntentMapper.MappedM3Request mapped = builder.buildFromCriteria(SEARCH_CUSTOMER_ORDER, criteria);
+
+        assertEquals("YMD8", mapped.params().get("dateformat"));
+        assertEquals("CUNO:C00001 AND RLDZ:20260201", mapped.params().get("SQRY"));
     }
 
     @Test

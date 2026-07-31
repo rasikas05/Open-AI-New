@@ -150,7 +150,8 @@ public class InformationRequestCatalog {
     private static Map<String, InformationRequestDefinition> seed() {
         Map<String, InformationRequestDefinition> map = new LinkedHashMap<>();
         put(map, "GROUP_PAYER", "group payer", 100, "\\bgroup\\s+payer\\b");
-        put(map, "PAYMENT_TERMS", "payment terms", 90, "\\bpayment terms?\\b", "\\bpay terms?\\b");
+        put(map, "PAYMENT_TERMS", "payment terms", 90,
+                "\\bpayment terms?\\b", "\\bpay terms?\\b");
         put(map, "INVOICE_RECIPIENT", "invoice recipient", 80,
                 "\\binvoice\\s+recipient\\b", "\\binvoice\\s+receiver\\b");
         put(map, "OUTSTANDING_INVOICES", "outstanding invoices", 70,
@@ -163,12 +164,16 @@ public class InformationRequestCatalog {
                 "\\bpayment info\\b",
                 "\\bpayment\\b");
         put(map, "INSURANCE", "insurance", 40, "\\binsurance\\b", "\\bcredit\\s+insurance\\b");
-        put(map, "CURRENCY", "currency", 40, "\\bcurrency\\b");
+        put(map, "CURRENCY", "currency", 40, "\\bcurrency\\b", "\\border currency\\b");
         put(map, "VAT", "VAT", 40, "\\bvat\\b", "\\btax\\s+code\\b", "\\bvat\\s+code\\b");
         put(map, "PAYER", "payer", 10, "\\bpayer\\b");
         put(map, "EMAIL", "email", 30, "\\be-?mail\\b", "\\bmail\\b");
         put(map, "SALESPERSON", "salesperson", 30, "\\bsalesperson\\b", "\\bsales rep\\b", "\\bhandled by\\b");
-        put(map, "DELIVERY_DATE", "delivery date", 30, "\\bdelivery date\\b", "\\bdelivery\\s+date\\b");
+        put(map, "DELIVERY_DATE", "delivery date", 30,
+                "\\bdelivery date\\b",
+                "\\bdelivery\\s+date\\b",
+                "\\brequested delivery date\\b",
+                "\\brequested delivery\\b");
         put(map, "ORDER_AMOUNT", "order amount", 20, "\\border amount\\b", "\\bamount\\b");
         put(map, "ORDER_STATUS", "order status", 50, "\\border status\\b");
         put(map, "ORDER_NUMBER", "order number", 30, "\\border number\\b", "\\border no\\b");
@@ -183,16 +188,17 @@ public class InformationRequestCatalog {
         put(map, "TIME_ZONE", "time zone", 30, "\\btime zone\\b", "\\btimezone\\b");
         put(map, "FREIGHT", "freight", 30, "\\bfreight\\b");
         put(map, "DELIVERY_MODEL", "delivery model", 30, "\\bdelivery model\\b");
-        put(map, "ADDRESS_ID", "address id", 25, "\\baddress id\\b");
+        put(map, "ADDRESS_ID", "address id", 55, "\\baddress id\\b", "\\border address id\\b");
         put(map, "CUSTOMER", "customer number", 25,
                 "\\bcustomer number\\b", "\\bcustomer no\\b", "\\bcustomer id\\b");
         put(map, "ORDER_DATE", "order date", 35, "\\border date\\b");
         put(map, "BUYER", "buyer", 40, "\\bbuyer\\b", "\\bpurchaser\\b");
         put(map, "SUPPLIER", "supplier", 40, "\\bsupplier\\b", "\\bvendor\\b");
-        put(map, "WAREHOUSE", "warehouse", 35, "\\bwarehouse\\b");
+        put(map, "WAREHOUSE", "warehouse", 35, "\\bwarehouse\\b", "\\blocation\\b");
+        put(map, "FACILITY", "facility", 35, "\\bfacility\\b");
         put(map, "PURCHASE_CATEGORY", "purchase category", 35,
                 "\\bpurchase category\\b", "\\bpurchase cat\\b");
-        put(map, "ORDER_TYPE", "order type", 30, "\\border type\\b");
+        put(map, "ORDER_TYPE", "order type", 30, "\\border type\\b", "\\btype\\b");
         put(map, "DIVISION", "division", 30, "\\bdivision\\b");
         put(map, "PURCHASE_ORDER_NUMBER", "purchase order number", 35,
                 "\\bpurchase order number\\b", "\\bpo number\\b");
@@ -204,18 +210,31 @@ public class InformationRequestCatalog {
                 "\\breference order number\\b", "\\breference order\\b");
         put(map, "REFERENCE_ORDER_LINE", "reference order line", 30, "\\breference order line\\b");
         put(map, "PRIORITY", "priority", 30, "\\bpriority\\b");
-        put(map, "PLANNED_START_DATE", "planned start date", 35,
-                "\\bplanned start\\b", "\\bplanned start date\\b");
-        put(map, "PLANNED_FINISH_DATE", "planned finish date", 35,
-                "\\bplanned finish\\b", "\\bplanned finish date\\b");
+        put(map, "PLANNED_START_DATE", "planned start date", 45,
+                "\\bplanned start date\\b", "\\bplanned start\\b", "\\bmanufacturing start date\\b");
+        put(map, "PLANNED_FINISH_DATE", "planned finish date", 45,
+                "\\bplanned finish date\\b", "\\bplanned finish\\b", "\\bmanufacturing finish date\\b");
+        put(map, "PLANNED_START_TIME", "planned start time", 25,
+                "\\bplanned start time\\b",
+                "\\bmanufacturing start time\\b",
+                "\\bstart time\\b");
+        put(map, "PLANNED_FINISH_TIME", "planned finish time", 25,
+                "\\bplanned finish time\\b",
+                "\\bmanufacturing finish time\\b",
+                "\\bfinish time\\b");
         put(map, "DISTRIBUTION_ORDER_NUMBER", "distribution order number", 35,
                 "\\bdistribution order number\\b");
         put(map, "RECEIVING_DATE", "receiving date", 35, "\\breceiving date\\b");
-        put(map, "RESPONSIBLE", "responsible", 30, "\\bresponsible\\b", "\\bassigned to\\b");
-        put(map, "HIGHEST_STATUS", "highest status", 40, "\\bhighest status\\b");
-        put(map, "LOWEST_STATUS", "lowest status", 40, "\\blowest status\\b");
+        put(map, "REQUISITION_BY", "requisition by", 45,
+                "\\brequisition by\\b", "\\bpurchasing responsible\\b");
+        put(map, "RESPONSIBLE", "responsible", 30,
+                "\\bresponsible\\b", "\\bassigned to\\b", "\\bowner\\b");
+        put(map, "HIGHEST_STATUS", "highest status", 50,
+                "\\bhighest status\\b", "\\bmaximum status\\b", "\\bmax status\\b");
+        put(map, "LOWEST_STATUS", "lowest status", 50,
+                "\\blowest status\\b", "\\blow status\\b", "\\bminimum status\\b", "\\bmin status\\b");
         put(map, "COUNTRY", "country", 30, "\\bcountry\\b");
-        put(map, "CUSTOMER_TYPE", "customer type", 30, "\\bcustomer type\\b");
+        put(map, "CUSTOMER_TYPE", "customer type", 35, "\\bcustomer type\\b");
         put(map, "FAX", "fax", 25, "\\bfax\\b");
         put(map, "CITY", "city", 25, "\\bcity\\b");
         put(map, "POSTAL_CODE", "postal code", 25, "\\bpostal code\\b", "\\bzip code\\b");
@@ -232,6 +251,7 @@ public class InformationRequestCatalog {
         put(map, "TERMS_CODE", "terms code", 30, "\\bterms code\\b");
         put(map, "TAX_CODE", "tax code", 30, "\\btax code\\b");
         put(map, "BLOCK_CODE", "block code", 30, "\\bblock code\\b");
+        put(map, "PURCHASE_STATUS", "purchase status", 45, "\\bpurchase status\\b");
         return map;
     }
 

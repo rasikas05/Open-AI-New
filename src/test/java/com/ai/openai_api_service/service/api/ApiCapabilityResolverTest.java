@@ -135,7 +135,7 @@ class ApiCapabilityResolverTest {
 
         assertTrue(result.shouldExecuteM3());
         assertEquals(
-                java.util.Set.of("TEPY", "CUCD"),
+                java.util.Set.of("PYCD", "CUCD"),
                 java.util.Set.copyOf(result.supportedReturnColumns())
         );
     }
