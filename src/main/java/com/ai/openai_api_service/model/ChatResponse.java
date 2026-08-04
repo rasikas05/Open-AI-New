@@ -12,6 +12,11 @@ public class ChatResponse {
     private boolean truncated;
     private Boolean sanitizationApplied;
     private String sanitizedUserMessage;
+    private String originalUserMessage;
+    private String businessProtectedMessage;
+    private Boolean businessProtectionApplied;
+    private List<BusinessProtectedEntityDto> businessProtectedEntities;
+    private String replyBeforeRestore;
     private List<MessageDto> history;
     private String actionTaken;
     private String pendingTool;
@@ -78,6 +83,46 @@ public class ChatResponse {
 
     public void setSanitizedUserMessage(String sanitizedUserMessage) {
         this.sanitizedUserMessage = sanitizedUserMessage;
+    }
+
+    public String getOriginalUserMessage() {
+        return originalUserMessage;
+    }
+
+    public void setOriginalUserMessage(String originalUserMessage) {
+        this.originalUserMessage = originalUserMessage;
+    }
+
+    public String getBusinessProtectedMessage() {
+        return businessProtectedMessage;
+    }
+
+    public void setBusinessProtectedMessage(String businessProtectedMessage) {
+        this.businessProtectedMessage = businessProtectedMessage;
+    }
+
+    public Boolean getBusinessProtectionApplied() {
+        return businessProtectionApplied;
+    }
+
+    public void setBusinessProtectionApplied(Boolean businessProtectionApplied) {
+        this.businessProtectionApplied = businessProtectionApplied;
+    }
+
+    public List<BusinessProtectedEntityDto> getBusinessProtectedEntities() {
+        return businessProtectedEntities;
+    }
+
+    public void setBusinessProtectedEntities(List<BusinessProtectedEntityDto> businessProtectedEntities) {
+        this.businessProtectedEntities = businessProtectedEntities;
+    }
+
+    public String getReplyBeforeRestore() {
+        return replyBeforeRestore;
+    }
+
+    public void setReplyBeforeRestore(String replyBeforeRestore) {
+        this.replyBeforeRestore = replyBeforeRestore;
     }
 
     public List<MessageDto> getHistory() {

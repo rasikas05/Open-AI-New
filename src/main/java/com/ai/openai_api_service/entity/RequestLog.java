@@ -23,6 +23,33 @@ public class RequestLog {
     @Lob
     @Column(name = "sanitized_text", columnDefinition = "TEXT")
     private String sanitizedText;
+
+    @Lob
+    @Column(name = "business_protected_text", columnDefinition = "TEXT")
+    private String businessProtectedText;
+
+    @Lob
+    @Column(name = "pii_sanitized_text", columnDefinition = "TEXT")
+    private String piiSanitizedText;
+
+    @Lob
+    @Column(name = "openai_response_raw", columnDefinition = "TEXT")
+    private String openaiResponseRaw;
+
+    @Lob
+    @Column(name = "final_response", columnDefinition = "TEXT")
+    private String finalResponse;
+
+    @Column(name = "business_protection_flag", columnDefinition = "BIT(1)")
+    private Boolean businessProtectionFlag;
+
+    @Column(name = "business_entities_count")
+    private Integer businessEntitiesCount;
+
+    @Lob
+    @Column(name = "business_entities_json", columnDefinition = "TEXT")
+    private String businessEntitiesJson;
+
     @Column(name = "action_taken", length = 255)
     private String actionTaken;
     @Column(name = "sanitized_flag", columnDefinition = "BIT(1)")
@@ -89,6 +116,62 @@ public class RequestLog {
 
     public void setSanitizedText(String sanitizedText) {
         this.sanitizedText = sanitizedText;
+    }
+
+    public String getBusinessProtectedText() {
+        return businessProtectedText;
+    }
+
+    public void setBusinessProtectedText(String businessProtectedText) {
+        this.businessProtectedText = businessProtectedText;
+    }
+
+    public String getPiiSanitizedText() {
+        return piiSanitizedText;
+    }
+
+    public void setPiiSanitizedText(String piiSanitizedText) {
+        this.piiSanitizedText = piiSanitizedText;
+    }
+
+    public String getOpenaiResponseRaw() {
+        return openaiResponseRaw;
+    }
+
+    public void setOpenaiResponseRaw(String openaiResponseRaw) {
+        this.openaiResponseRaw = openaiResponseRaw;
+    }
+
+    public String getFinalResponse() {
+        return finalResponse;
+    }
+
+    public void setFinalResponse(String finalResponse) {
+        this.finalResponse = finalResponse;
+    }
+
+    public Boolean getBusinessProtectionFlag() {
+        return businessProtectionFlag;
+    }
+
+    public void setBusinessProtectionFlag(Boolean businessProtectionFlag) {
+        this.businessProtectionFlag = businessProtectionFlag;
+    }
+
+    public Integer getBusinessEntitiesCount() {
+        return businessEntitiesCount;
+    }
+
+    public void setBusinessEntitiesCount(Integer businessEntitiesCount) {
+        this.businessEntitiesCount = businessEntitiesCount;
+    }
+
+    public String getBusinessEntitiesJson() {
+        return businessEntitiesJson;
+    }
+
+    public void setBusinessEntitiesJson(String businessEntitiesJson) {
+        this.businessEntitiesJson = businessEntitiesJson;
     }
 
     public String getActionTaken() {

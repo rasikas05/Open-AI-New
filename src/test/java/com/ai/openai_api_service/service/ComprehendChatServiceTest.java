@@ -19,6 +19,10 @@ import com.ai.openai_api_service.model.python_rag.PythonRouteResponse;
 import com.ai.openai_api_service.model.rag.GroundedRagCallResult;
 import com.ai.openai_api_service.model.rag.GroundedRagResult;
 import com.ai.openai_api_service.model.rag.RagStatus;
+import com.ai.openai_api_service.service.protection.BusinessInformationProtectionService;
+import com.ai.openai_api_service.service.protection.BusinessPlaceholderRestorer;
+import com.ai.openai_api_service.service.protection.PiiProtectionService;
+import com.ai.openai_api_service.service.protection.ProtectionSession;
 import com.ai.openai_api_service.service.query.SearchContextService;
 import com.ai.openai_api_service.service.guided.GuidedSearchService;
 import com.ai.openai_api_service.service.guided.InMemoryGuidedSearchSessionService;
@@ -62,8 +66,6 @@ import static org.mockito.Mockito.when;
 class ComprehendChatServiceTest {
 
     @Mock
-    private ComprehendAnonymizationService comprehendAnonymizationService;
-    @Mock
     private ChatPersistenceService chatPersistenceService;
     @Mock
     private TenantQuotaService tenantQuotaService;
@@ -83,6 +85,12 @@ class ComprehendChatServiceTest {
     private GuidedSearchService guidedSearchService;
     @Mock
     private InMemoryGuidedSearchSessionService guidedSearchSessionService;
+    @Mock
+    private BusinessInformationProtectionService businessInformationProtectionService;
+    @Mock
+    private PiiProtectionService piiProtectionService;
+    @Mock
+    private BusinessPlaceholderRestorer businessPlaceholderRestorer;
     @Spy
     private InMemoryPendingLexSessionService pendingLexSessionService = new InMemoryPendingLexSessionService(3600);
     @Spy
@@ -103,6 +111,28 @@ class ComprehendChatServiceTest {
         pendingLexSessionService = new InMemoryPendingLexSessionService(3600);
         ReflectionTestUtils.setField(comprehendChatService, "pendingLexSessionService", pendingLexSessionService);
         lenient().when(guidedSearchSessionService.find(any())).thenReturn(Optional.empty());
+        lenient().when(businessInformationProtectionService.isEnabled()).thenReturn(false);
+        lenient().when(businessInformationProtectionService.protect(any(ProtectionSession.class), any())).thenAnswer(inv -> inv.getArgument(0));
+        lenient().when(piiProtectionService.anonymize(anyString())).thenAnswer(inv -> inv.getArgument(0));
+        lenient().when(piiProtectionService.protect(any())).thenAnswer(inv -> {
+            ProtectionSession session = inv.getArgument(0);
+            if (session == null) {
+                return null;
+            }
+            String input = session.businessProtectedText() != null
+                    ? session.businessProtectedText()
+                    : session.originalText();
+            session.applyPiiSanitizedText(input);
+            return session;
+        });
+        lenient().when(businessPlaceholderRestorer.restoreIntoSession(anyString(), any())).thenAnswer(inv -> {
+            String reply = inv.getArgument(0);
+            ProtectionSession session = inv.getArgument(1);
+            if (session != null) {
+                session.applyRestoredReply(reply, reply);
+            }
+            return reply;
+        });
     }
 
     @Test
@@ -121,7 +151,7 @@ class ComprehendChatServiceTest {
 
         OpenAIUsage usage = new OpenAIUsage(10, 20, 30, "gpt-4.1");
         GroundedRagResult grounded = new GroundedRagResult(RagStatus.FULL, "grounded answer", List.of());
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk))))
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any()))
                 .thenReturn(new GroundedRagCallResult(grounded, usage, "{\"status\":\"FULL\"}"));
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
@@ -138,9 +168,9 @@ class ComprehendChatServiceTest {
         assertEquals("http://example.com", response.getSources().get(0).getUrl());
         assertEquals("Title", response.getSources().get(0).getTitle());
         assertEquals(0.62f, response.getSources().get(0).getScore());
-        verify(openAIService).chatWithRagContext(any(), eq(List.of(chunk)));
-        verify(openAIService, never()).chatWithoutPersistence(any());
-        verify(openAIService, never()).chatGapFill(any(), any(), any());
+        verify(openAIService).chatWithRagContext(any(), eq(List.of(chunk)), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+        verify(openAIService, never()).chatGapFill(any(), any(), any(), any());
         verify(pythonRagService, never()).query(any());
         verify(tenantQuotaService).recordUsage(eq("tenant1"), eq(30), anyString());
     }
@@ -160,7 +190,7 @@ class ComprehendChatServiceTest {
         ChatResponse openAiResponse = new ChatResponse("fallback answer", false);
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(usage);
-        when(openAIService.chatWithoutPersistence(any())).thenReturn(openAiResponse);
+        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("weak docs"));
@@ -169,8 +199,8 @@ class ComprehendChatServiceTest {
         assertEquals("gpt_infor", response.getActionTaken());
         assertNotNull(response.getSources());
         assertTrue(response.getSources().isEmpty());
-        verify(openAIService).chatWithoutPersistence(any());
-        verify(openAIService, never()).chatWithRagContext(any(), any());
+        verify(openAIService).chatWithoutPersistence(any(), any());
+        verify(openAIService, never()).chatWithRagContext(any(), any(), any());
     }
 
     @Test
@@ -189,7 +219,7 @@ class ComprehendChatServiceTest {
 
         ChatResponse openAiResponse = new ChatResponse("grounded answer", false);
         openAiResponse.setActionTaken("rag");
-        when(openAIService.chatWithRagContext(any(), anyList())).thenReturn(
+        when(openAIService.chatWithRagContext(any(), anyList(), any())).thenReturn(
                 new GroundedRagCallResult(
                         new GroundedRagResult(RagStatus.FULL, "grounded answer", List.of()),
                         new OpenAIUsage(1, 1, 2, "gpt-4.1"),
@@ -205,6 +235,95 @@ class ComprehendChatServiceTest {
         assertEquals(0.72f, response.getSources().get(0).getScore());
         assertEquals("http://example.com/doc", response.getSources().get(1).getUrl());
         assertEquals(0.55f, response.getSources().get(1).getScore());
+    }
+
+    @Test
+    void liveRoute_bypassesBusinessProtection_usesOriginalIds() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(false);
+        String original = "show customer 45678";
+        when(pythonRagService.route(original)).thenReturn(new PythonRouteResponse("live"));
+        when(pythonRagService.query(any())).thenAnswer(invocation -> {
+            com.ai.openai_api_service.model.python_rag.PythonQueryResponse response =
+                    new com.ai.openai_api_service.model.python_rag.PythonQueryResponse();
+            response.setReply("live answer for 45678");
+            response.setActionTaken("read");
+            return response;
+        });
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest(original));
+
+        assertEquals("live answer for 45678", response.getReply());
+        verify(pythonRagService).route(eq(original));
+        verify(businessInformationProtectionService, never()).protect(any(ProtectionSession.class), any());
+        verify(businessPlaceholderRestorer, never()).restoreIntoSession(anyString(), any());
+        assertNull(response.getBusinessProtectionApplied());
+    }
+
+    @Test
+    void ragRoute_restoresPlaceholdersAndExposesAuditFields() {
+        stubQuotaAllowed();
+        when(businessInformationProtectionService.isEnabled()).thenReturn(true);
+        when(businessInformationProtectionService.protect(any(ProtectionSession.class), any())).thenAnswer(inv -> {
+            ProtectionSession session = inv.getArgument(0);
+            session.applyBusinessResult(new com.ai.openai_api_service.service.protection.ProtectedText(
+                    "How can I register customer <CUSTOMER_NUMBER>?",
+                    List.of(new com.ai.openai_api_service.service.protection.ProtectionAction(
+                            null,
+                            com.ai.openai_api_service.service.protection.LlmExposurePolicy.REPLACE,
+                            "CUSTOMER_NUMBER",
+                            "<CUSTOMER_NUMBER>",
+                            "45678"
+                    )),
+                    Map.of("<CUSTOMER_NUMBER>", "45678")
+            ));
+            return session;
+        });
+        when(businessPlaceholderRestorer.restoreIntoSession(anyString(), any())).thenAnswer(inv -> {
+            String reply = inv.getArgument(0);
+            ProtectionSession session = inv.getArgument(1);
+            String restored = reply != null ? reply.replace("<CUSTOMER_NUMBER>", "45678") : null;
+            if (session != null) {
+                session.applyRestoredReply(reply, restored);
+            }
+            return restored;
+        });
+
+        String original = "How can I register customer 45678?";
+        when(pythonRagService.route(original)).thenReturn(new PythonRouteResponse("rag"));
+
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("below_prompt_threshold");
+        retrieval.setPromptChunks(List.of());
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
+
+        ChatResponse openAiResponse = new ChatResponse(
+                "Register customer <CUSTOMER_NUMBER> in CRS610.",
+                false
+        );
+        openAiResponse.setActionTaken("gpt_infor");
+        openAiResponse.setOpenAiUsage(new OpenAIUsage(1, 1, 2, "gpt-4.1"));
+        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest(original));
+
+        assertEquals("Register customer 45678 in CRS610.", response.getReply());
+        assertEquals("Register customer <CUSTOMER_NUMBER> in CRS610.", response.getReplyBeforeRestore());
+        assertEquals(original, response.getOriginalUserMessage());
+        assertEquals("How can I register customer <CUSTOMER_NUMBER>?", response.getBusinessProtectedMessage());
+        assertTrue(response.getBusinessProtectionApplied());
+        assertNotNull(response.getBusinessProtectedEntities());
+        assertFalse(response.getBusinessProtectedEntities().isEmpty());
+        verify(pythonRagService).route(eq(original));
+        verify(pythonRagService).retrieve(
+                eq("How can I register customer <CUSTOMER_NUMBER>?"),
+                eq(List.of("How can I register customer <CUSTOMER_NUMBER>?")),
+                any(),
+                any()
+        );
     }
 
     @Test
@@ -226,8 +345,8 @@ class ComprehendChatServiceTest {
         assertEquals("live answer", response.getReply());
         assertEquals("read", response.getActionTaken());
         verify(pythonRagService).query(any());
-        verify(openAIService, never()).chatWithRagContext(any(), any());
-        verify(openAIService, never()).chatWithoutPersistence(any());
+        verify(openAIService, never()).chatWithRagContext(any(), any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any());
         verify(tenantQuotaService, never()).recordUsage(anyString(), anyInt(), anyString());
     }
 
@@ -246,7 +365,7 @@ class ComprehendChatServiceTest {
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
 
         OpenAIUsage ragUsage = new OpenAIUsage(3000, 20, 3020, "gpt-4.1");
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)))).thenReturn(
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any())).thenReturn(
                 new GroundedRagCallResult(
                         new GroundedRagResult(RagStatus.INSUFFICIENT, "", List.of()),
                         ragUsage,
@@ -258,7 +377,7 @@ class ComprehendChatServiceTest {
         ChatResponse fallbackResponse = new ChatResponse("To add a KIT on a customer order line, open OIS100...", false);
         fallbackResponse.setActionTaken("gpt_infor");
         fallbackResponse.setOpenAiUsage(fallbackUsage);
-        when(openAIService.chatWithoutPersistence(any())).thenReturn(fallbackResponse);
+        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallbackResponse);
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("how to add KIT"));
@@ -267,9 +386,9 @@ class ComprehendChatServiceTest {
         assertEquals("gpt_infor", response.getActionTaken());
         assertEquals("rag_no_answer_fallback", response.getRetrievalReason());
         assertEquals(3170, response.getOpenAiUsage().getTotalTokens());
-        verify(openAIService).chatWithRagContext(any(), eq(List.of(chunk)));
-        verify(openAIService).chatWithoutPersistence(any());
-        verify(openAIService, never()).chatGapFill(any(), any(), any());
+        verify(openAIService).chatWithRagContext(any(), eq(List.of(chunk)), any());
+        verify(openAIService).chatWithoutPersistence(any(), any());
+        verify(openAIService, never()).chatGapFill(any(), any(), any(), any());
     }
 
     @Test
@@ -286,7 +405,7 @@ class ComprehendChatServiceTest {
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
 
         OpenAIUsage ragUsage = new OpenAIUsage(100, 50, 150, "gpt-4.1");
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)))).thenReturn(
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any())).thenReturn(
                 new GroundedRagCallResult(
                         new GroundedRagResult(
                                 RagStatus.PARTIAL,
@@ -301,7 +420,7 @@ class ComprehendChatServiceTest {
         OpenAIUsage gapUsage = new OpenAIUsage(20, 30, 50, "gpt-4.1");
         ChatResponse gapResponse = new ChatResponse("Functional purpose: ...", false);
         gapResponse.setOpenAiUsage(gapUsage);
-        when(openAIService.chatGapFill(any(), anyString(), anyList())).thenReturn(gapResponse);
+        when(openAIService.chatGapFill(any(), anyString(), anyList(), any())).thenReturn(gapResponse);
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("What is MNS204 used for?"));
@@ -316,9 +435,10 @@ class ComprehendChatServiceTest {
         verify(openAIService).chatGapFill(
                 any(),
                 eq("MNS204 appears in user settings documentation."),
-                eq(List.of("Functional purpose", "Business usage"))
+                eq(List.of("Functional purpose", "Business usage")),
+                any()
         );
-        verify(openAIService, never()).chatWithoutPersistence(any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any());
     }
 
     @Test
@@ -334,7 +454,7 @@ class ComprehendChatServiceTest {
         retrieval.setPromptChunks(List.of(chunk));
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
 
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)))).thenReturn(
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any())).thenReturn(
                 new GroundedRagCallResult(
                         new GroundedRagResult(
                                 RagStatus.PARTIAL,
@@ -350,8 +470,8 @@ class ComprehendChatServiceTest {
         ChatResponse response = comprehendChatService.chat(baseRequest("What is MNS204 used for?"));
 
         assertEquals("Docs only answer", response.getReply());
-        verify(openAIService, never()).chatGapFill(any(), any(), any());
-        verify(openAIService, never()).chatWithoutPersistence(any());
+        verify(openAIService, never()).chatGapFill(any(), any(), any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any());
     }
 
     @Test
@@ -365,20 +485,20 @@ class ComprehendChatServiceTest {
         ChunkItem chunk = new ChunkItem("chunk", 0.7f, "T", "http://x", List.of(), null, null, null, null);
         retrieval.setPromptChunks(List.of(chunk));
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
-        when(openAIService.chatWithRagContext(any(), anyList()))
+        when(openAIService.chatWithRagContext(any(), anyList(), any()))
                 .thenThrow(new OpenAIException("Failed to parse grounded RAG JSON", 502));
 
         ChatResponse fallback = new ChatResponse("general answer", false);
         fallback.setActionTaken("gpt_infor");
         fallback.setOpenAiUsage(new OpenAIUsage(5, 5, 10, "gpt-4.1"));
-        when(openAIService.chatWithoutPersistence(any())).thenReturn(fallback);
+        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallback);
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("how to create customer"));
 
         assertEquals("general answer", response.getReply());
         assertEquals("rag_no_answer_fallback", response.getRetrievalReason());
-        verify(openAIService).chatWithoutPersistence(any());
+        verify(openAIService).chatWithoutPersistence(any(), any());
     }
 
     @Test
@@ -394,15 +514,15 @@ class ComprehendChatServiceTest {
         ChatResponse openAiResponse = new ChatResponse("fallback after timeout", false);
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(usage);
-        when(openAIService.chatWithoutPersistence(any())).thenReturn(openAiResponse);
+        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("how to create customer"));
 
         assertEquals("fallback after timeout", response.getReply());
         assertEquals("retrieval_error", response.getRetrievalReason());
-        verify(openAIService).chatWithoutPersistence(any());
-        verify(openAIService, never()).chatWithRagContext(any(), any());
+        verify(openAIService).chatWithoutPersistence(any(), any());
+        verify(openAIService, never()).chatWithRagContext(any(), any(), any());
     }
 
     @Test
@@ -420,7 +540,7 @@ class ComprehendChatServiceTest {
         ChatResponse openAiResponse = new ChatResponse("general m3 answer", false);
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(usage);
-        when(openAIService.chatWithoutPersistence(any())).thenReturn(openAiResponse);
+        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("unknown topic"));
@@ -428,8 +548,8 @@ class ComprehendChatServiceTest {
         assertEquals("general m3 answer", response.getReply());
         assertEquals("gpt_infor", response.getActionTaken());
         assertEquals("no_matches", response.getRetrievalReason());
-        verify(openAIService).chatWithoutPersistence(any());
-        verify(openAIService, never()).chatWithRagContext(any(), any());
+        verify(openAIService).chatWithoutPersistence(any(), any());
+        verify(openAIService, never()).chatWithRagContext(any(), any(), any());
         verify(pythonRagService, never()).query(any());
     }
 
@@ -449,7 +569,7 @@ class ComprehendChatServiceTest {
         ChatResponse openAiResponse = new ChatResponse("fallback after qdrant error", false);
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(usage);
-        when(openAIService.chatWithoutPersistence(any())).thenReturn(openAiResponse);
+        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("how to configure CRS900"));
@@ -457,7 +577,7 @@ class ComprehendChatServiceTest {
         assertEquals("fallback after qdrant error", response.getReply());
         assertEquals("retrieval_error", response.getRetrievalReason());
         assertEquals("gpt_infor", response.getActionTaken());
-        verify(openAIService).chatWithoutPersistence(any());
+        verify(openAIService).chatWithoutPersistence(any(), any());
         verify(tenantQuotaService).recordUsage(eq("tenant1"), eq(10), anyString());
     }
 
@@ -474,7 +594,7 @@ class ComprehendChatServiceTest {
         ChatResponse openAiResponse = new ChatResponse("fallback after connection error", false);
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(usage);
-        when(openAIService.chatWithoutPersistence(any())).thenReturn(openAiResponse);
+        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("how to create customer"));
@@ -482,7 +602,7 @@ class ComprehendChatServiceTest {
         assertEquals("fallback after connection error", response.getReply());
         assertEquals("retrieval_error", response.getRetrievalReason());
         assertEquals(40, response.getOpenAiUsage().getTotalTokens());
-        verify(openAIService).chatWithoutPersistence(any());
+        verify(openAIService).chatWithoutPersistence(any(), any());
         verify(tenantQuotaService).recordUsage(eq("tenant1"), eq(40), anyString());
     }
 
@@ -495,14 +615,15 @@ class ComprehendChatServiceTest {
 
         assertTrue(response.getLimitExceeded());
         assertEquals("LIMIT_EXCEEDED", response.getBlockReason());
-        verify(comprehendAnonymizationService, never()).detectAndAnonymize(anyString());
+        verify(piiProtectionService, never()).anonymize(anyString());
+        verify(piiProtectionService, never()).protect(any());
         verify(pythonRagService, never()).route(anyString());
-        verify(openAIService, never()).chatWithRagContext(any(), any());
-        verify(openAIService, never()).chatWithoutPersistence(any());
+        verify(openAIService, never()).chatWithRagContext(any(), any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any());
         verify(tenantQuotaService, never()).recordUsage(anyString(), anyInt(), anyString());
         verify(chatPersistenceService, never()).persistChat(
                 anyString(), anyString(), anyString(), anyString(), anyString(),
-                anyString(), any(), anyString(), anyBoolean(), anyString(), any(), any()
+                anyString(), any(), anyString(), anyBoolean(), anyString(), any(), any(), any()
         );
     }
 
@@ -522,7 +643,7 @@ class ComprehendChatServiceTest {
         ChatResponse openAiResponse = new ChatResponse("answer", false);
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(new OpenAIUsage(1, 1, 2, "gpt-4.1"));
-        when(openAIService.chatWithoutPersistence(any())).thenReturn(openAiResponse);
+        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest(original));
@@ -537,8 +658,8 @@ class ComprehendChatServiceTest {
     void comprehendFails_usesOriginalTextAndCompletes() {
         stubQuotaAllowed();
         String original = "how to configure purchase settings";
-        when(comprehendAnonymizationService.detectAndAnonymize(original))
-                .thenThrow(new RuntimeException("Comprehend IAM denied"));
+        org.mockito.Mockito.doThrow(new RuntimeException("Comprehend IAM denied"))
+                .when(piiProtectionService).protect(any());
         when(pythonRagService.route(original)).thenReturn(new PythonRouteResponse("rag"));
 
         PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
@@ -549,7 +670,7 @@ class ComprehendChatServiceTest {
         ChatResponse openAiResponse = new ChatResponse("still works", false);
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(new OpenAIUsage(3, 3, 6, "gpt-4.1"));
-        when(openAIService.chatWithoutPersistence(any())).thenReturn(openAiResponse);
+        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest(original));
@@ -574,7 +695,7 @@ class ComprehendChatServiceTest {
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
 
         OpenAIUsage usage = new OpenAIUsage(100, 50, 150, "gpt-4.1");
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)))).thenReturn(
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any())).thenReturn(
                 new GroundedRagCallResult(
                         new GroundedRagResult(RagStatus.FULL, "configure in CRS780", List.of()),
                         usage,
@@ -598,7 +719,8 @@ class ComprehendChatServiceTest {
                 eq(false),
                 eq("ready_for_grounding"),
                 eq(88),
-                isNull()
+                isNull(),
+                any()
         );
         assertEquals(100, usageCaptor.getValue().getPromptTokens());
         assertEquals(50, usageCaptor.getValue().getCompletionTokens());
@@ -636,7 +758,7 @@ class ComprehendChatServiceTest {
 
         ChatResponse fallback = new ChatResponse("fallback", false);
         fallback.setActionTaken("gpt_infor");
-        when(openAIService.chatWithoutPersistence(any())).thenReturn(fallback);
+        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallback);
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         comprehendChatService.chat(baseRequest("pricing issue"));
@@ -664,7 +786,7 @@ class ComprehendChatServiceTest {
         ChatResponse fallback = new ChatResponse("fallback", false);
         fallback.setActionTaken("gpt_infor");
         fallback.setOpenAiUsage(answerUsage);
-        when(openAIService.chatWithoutPersistence(any())).thenReturn(fallback);
+        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallback);
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("pricing issue"));
@@ -693,7 +815,7 @@ class ComprehendChatServiceTest {
 
         ChatResponse fallback = new ChatResponse("doc answer", false);
         fallback.setActionTaken("gpt_infor");
-        when(openAIService.chatWithoutPersistence(any())).thenReturn(fallback);
+        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallback);
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         comprehendChatService.chat(baseRequest("how to configure dispatch policy"));
@@ -837,7 +959,8 @@ class ComprehendChatServiceTest {
                 eq(false),
                 isNull(),
                 isNull(),
-                eq(new LiveHistoryAuditMetadata("GetCustomer", "Customer", "CSU001"))
+                eq(new LiveHistoryAuditMetadata("GetCustomer", "Customer", "CSU001")),
+                isNull()
         );
     }
 
@@ -937,8 +1060,8 @@ class ComprehendChatServiceTest {
         verify(pythonRagService, never()).query(any());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any());
         verify(pythonRagService, never()).executeLiveIntent(anyString(), any());
-        verify(openAIService, never()).chatWithRagContext(any(), anyList());
-        verify(openAIService, never()).chatWithoutPersistence(any());
+        verify(openAIService, never()).chatWithRagContext(any(), anyList(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any());
     }
 
     @Test
@@ -968,8 +1091,8 @@ class ComprehendChatServiceTest {
         verify(lexFulfillmentService, never()).fulfillOutcome(any(), any(), any());
         verify(pythonRagService, never()).query(any());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any());
-        verify(openAIService, never()).chatWithRagContext(any(), anyList());
-        verify(openAIService, never()).chatWithoutPersistence(any());
+        verify(openAIService, never()).chatWithRagContext(any(), anyList(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any());
     }
 
     @Test
@@ -1093,7 +1216,7 @@ class ComprehendChatServiceTest {
         verify(pythonRagService, never()).route(anyString());
         verify(lexService, never()).recognizeText(anyString(), anyString());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any());
-        verify(openAIService, never()).chatWithRagContext(any(), anyList());
+        verify(openAIService, never()).chatWithRagContext(any(), anyList(), any());
     }
 
     @Test
@@ -1145,7 +1268,7 @@ class ComprehendChatServiceTest {
 
         OpenAIUsage usage = new OpenAIUsage(10, 20, 30, "gpt-4.1");
         GroundedRagResult grounded = new GroundedRagResult(RagStatus.FULL, "OIS100 is used for customer order entry.", List.of());
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk))))
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any()))
                 .thenReturn(new GroundedRagCallResult(grounded, usage, "{\"status\":\"FULL\"}"));
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
@@ -1295,7 +1418,7 @@ class ComprehendChatServiceTest {
         retrieval.setRetrievalReason("ready_for_grounding");
         retrieval.setPromptChunks(List.of());
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
-        when(openAIService.chatWithRagContext(any(), anyList()))
+        when(openAIService.chatWithRagContext(any(), anyList(), any()))
                 .thenReturn(new GroundedRagCallResult(
                         new GroundedRagResult(RagStatus.FULL, "docs", List.of()),
                         new OpenAIUsage(1, 1, 2, "gpt"),
@@ -1320,7 +1443,7 @@ class ComprehendChatServiceTest {
         retrieval.setRetrievalReason("ready_for_grounding");
         retrieval.setPromptChunks(List.of());
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
-        when(openAIService.chatWithRagContext(any(), anyList()))
+        when(openAIService.chatWithRagContext(any(), anyList(), any()))
                 .thenReturn(new GroundedRagCallResult(
                         new GroundedRagResult(RagStatus.FULL, "CRS610 docs", List.of()),
                         new OpenAIUsage(1, 1, 2, "gpt"),
@@ -1352,7 +1475,7 @@ class ComprehendChatServiceTest {
         retrieval.setRetrievalReason("ready_for_grounding");
         retrieval.setPromptChunks(List.of());
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
-        when(openAIService.chatWithRagContext(any(), anyList()))
+        when(openAIService.chatWithRagContext(any(), anyList(), any()))
                 .thenReturn(new GroundedRagCallResult(
                         new GroundedRagResult(RagStatus.FULL, "rag after ttl", List.of()),
                         new OpenAIUsage(1, 1, 2, "gpt"),
@@ -1408,7 +1531,7 @@ class ComprehendChatServiceTest {
         );
         retrieval.setPromptChunks(List.of(chunk));
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any())).thenReturn(retrieval);
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk))))
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any()))
                 .thenReturn(new GroundedRagCallResult(
                         new GroundedRagResult(RagStatus.FULL, "CRS610 explanation", List.of()),
                         new OpenAIUsage(1, 1, 2, "gpt"),
@@ -1467,17 +1590,17 @@ class ComprehendChatServiceTest {
     }
 
     private void stubSanitize() {
-        when(comprehendAnonymizationService.detectAndAnonymize(anyString())).thenAnswer(invocation -> {
-            Map<String, Object> sanitized = new HashMap<>();
-            sanitized.put("sanitizedText", invocation.getArgument(0));
-            return sanitized;
-        });
+        // Protection stubs are installed in setUp(); kept for call-site clarity.
     }
 
     private void stubSanitizeWithPii(String original, String sanitizedText) {
-        when(comprehendAnonymizationService.detectAndAnonymize(original)).thenReturn(
-                Map.of("sanitizedText", sanitizedText)
-        );
+        org.mockito.Mockito.doAnswer(inv -> {
+            ProtectionSession session = inv.getArgument(0);
+            if (session != null) {
+                session.applyPiiSanitizedText(sanitizedText);
+            }
+            return session;
+        }).when(piiProtectionService).protect(any());
     }
 
     private ChatRequest baseRequest(String message) {

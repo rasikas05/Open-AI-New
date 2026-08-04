@@ -2,6 +2,7 @@ package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.exception.TenantQuotaExceededException;
 import com.ai.openai_api_service.exception.OpenAIException;
+import com.ai.openai_api_service.model.BusinessProtectedEntityDto;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.GuidedSearchState;
@@ -29,6 +30,13 @@ import com.ai.openai_api_service.model.rag.RagStatus;
 import com.ai.openai_api_service.service.guided.GuidedSearchService;
 import com.ai.openai_api_service.service.guided.InMemoryGuidedSearchSessionService;
 import com.ai.openai_api_service.service.lex.InMemoryPendingLexSessionService;
+import com.ai.openai_api_service.service.protection.BusinessInformationProtectionService;
+import com.ai.openai_api_service.service.protection.BusinessPlaceholderRestorer;
+import com.ai.openai_api_service.service.protection.PiiProtectionService;
+import com.ai.openai_api_service.service.protection.ProtectionAction;
+import com.ai.openai_api_service.service.protection.ProtectionContext;
+import com.ai.openai_api_service.service.protection.ProtectionPurpose;
+import com.ai.openai_api_service.service.protection.ProtectionSession;
 import com.ai.openai_api_service.service.query.SearchContextService;
 import com.ai.openai_api_service.service.rag.ProgramIdDetector;
 import com.ai.openai_api_service.service.rag.SearchQueryAssembler;
@@ -58,7 +66,6 @@ public class ComprehendChatService {
                     + "• Show customer Y00111\n"
                     + "• Get customer details for Y00111";
 
-    private final ComprehendAnonymizationService comprehendAnonymizationService;
     private final ChatPersistenceService chatPersistenceService;
     private final TenantQuotaService tenantQuotaService;
     private final SuggestionEngineService suggestionEngineService;
@@ -73,6 +80,9 @@ public class ComprehendChatService {
     private final GuidedSearchService guidedSearchService;
     private final InMemoryGuidedSearchSessionService guidedSearchSessionService;
     private final InMemoryPendingLexSessionService pendingLexSessionService;
+    private final BusinessInformationProtectionService businessInformationProtectionService;
+    private final PiiProtectionService piiProtectionService;
+    private final BusinessPlaceholderRestorer businessPlaceholderRestorer;
 
     @Value("${openai.response.include-sanitization-debug:false}")
     private boolean includeSanitizationDebug;
@@ -84,7 +94,6 @@ public class ComprehendChatService {
     private boolean ragPartialGapFillEnabled;
 
     public ComprehendChatService(
-            ComprehendAnonymizationService comprehendAnonymizationService,
             ChatPersistenceService chatPersistenceService,
             TenantQuotaService tenantQuotaService,
             SuggestionEngineService suggestionEngineService,
@@ -98,9 +107,11 @@ public class ComprehendChatService {
             SearchContextService searchContextService,
             GuidedSearchService guidedSearchService,
             InMemoryGuidedSearchSessionService guidedSearchSessionService,
-            InMemoryPendingLexSessionService pendingLexSessionService
+            InMemoryPendingLexSessionService pendingLexSessionService,
+            BusinessInformationProtectionService businessInformationProtectionService,
+            PiiProtectionService piiProtectionService,
+            BusinessPlaceholderRestorer businessPlaceholderRestorer
     ) {
-        this.comprehendAnonymizationService = comprehendAnonymizationService;
         this.chatPersistenceService = chatPersistenceService;
         this.tenantQuotaService = tenantQuotaService;
         this.suggestionEngineService = suggestionEngineService;
@@ -115,6 +126,9 @@ public class ComprehendChatService {
         this.guidedSearchService = guidedSearchService;
         this.guidedSearchSessionService = guidedSearchSessionService;
         this.pendingLexSessionService = pendingLexSessionService;
+        this.businessInformationProtectionService = businessInformationProtectionService;
+        this.piiProtectionService = piiProtectionService;
+        this.businessPlaceholderRestorer = businessPlaceholderRestorer;
     }
 
     public ChatResponse chat(ChatRequest request) {
@@ -139,17 +153,16 @@ public class ComprehendChatService {
         }
 
         String originalUserText = request.getUserMessage();
-        long piiStartMs = System.currentTimeMillis();
-        String sanitizedUserText = sanitizeTextWithComprehend(originalUserText);
-        piiDetectionMs = System.currentTimeMillis() - piiStartMs;
-        ChatRequest workingRequest = copyRequestWithUserMessage(request, sanitizedUserText);
+        String sanitizedUserText = null;
+        ChatRequest workingRequest = request;
+        ProtectionSession protectionSession = null;
 
         log.info(
-                "ComprehendChatService.chat tenantCode={}, userId={}, sessionId={}, sanitized='{}'",
+                "ComprehendChatService.chat tenantCode={}, userId={}, sessionId={}, originalLength={}",
                 request.getTenantCode(),
                 request.getUserId(),
                 request.getSessionId(),
-                sanitizedUserText
+                originalUserText != null ? originalUserText.length() : 0
         );
 
         boolean guidedHandled = false;
@@ -166,12 +179,23 @@ public class ComprehendChatService {
             guidedHandled = true;
             chatResponse = guidedAttempt.response();
             route = "guided";
+            long piiStartMs = System.currentTimeMillis();
+            sanitizedUserText = anonymizeForPersistence(originalUserText);
+            piiDetectionMs = System.currentTimeMillis() - piiStartMs;
         }
 
         boolean pendingLexHandled = false;
         if (!guidedHandled) {
+            String sanitizedForPending = originalUserText;
+            String lexSessionId = lexService.buildLexSessionId(request);
+            if (lexService.isEnabled() && pendingLexSessionService.get(lexSessionId).isPresent()) {
+                long piiStartMs = System.currentTimeMillis();
+                sanitizedForPending = anonymizeForPersistence(originalUserText);
+                piiDetectionMs = System.currentTimeMillis() - piiStartMs;
+                sanitizedUserText = sanitizedForPending;
+            }
             PendingLexRouteAttempt pendingLexAttempt =
-                    tryHandlePendingLexTurn(request, originalUserText, sanitizedUserText);
+                    tryHandlePendingLexTurn(request, originalUserText, sanitizedForPending);
             if (pendingLexAttempt.pendingHandled()) {
                 pendingLexHandled = true;
                 LexLiveRouteResult lexResult = pendingLexAttempt.lexResult();
@@ -193,16 +217,18 @@ public class ComprehendChatService {
             routeDecisionMs = System.currentTimeMillis() - routeStartMs;
             route = routeResponse != null ? routeResponse.getRoute() : "rag";
             log.info(
-                    "Comprehend route decision: route='{}', handler='{}', original='{}', sanitized='{}'",
+                    "Comprehend route decision: route='{}', handler='{}', originalLength={}",
                     route,
                     ROUTE_LIVE.equalsIgnoreCase(route)
                             ? (lexService.isEnabled() ? "live/lex" : "live/python-chat")
                             : "documentation/retrieval",
-                    originalUserText,
-                    sanitizedUserText
+                    originalUserText != null ? originalUserText.length() : 0
             );
 
             if (ROUTE_LIVE.equalsIgnoreCase(route)) {
+                long piiStartMs = System.currentTimeMillis();
+                sanitizedUserText = anonymizeForPersistence(originalUserText);
+                piiDetectionMs = System.currentTimeMillis() - piiStartMs;
                 if (lexService.isEnabled()) {
                     LexLiveRouteResult lexResult = handleLexLiveRoute(
                             request,
@@ -218,10 +244,43 @@ public class ComprehendChatService {
                         maxScore = lexResult.maxScore();
                     }
                 } else {
-                    chatResponse = handleLiveRoute(workingRequest, sanitizedUserText);
+                    chatResponse = handleLiveRoute(request, originalUserText);
                 }
             } else {
-                DocRouteResult docResult = handleDocumentationRoute(workingRequest, originalUserText, sanitizedUserText);
+                long piiStartMs = System.currentTimeMillis();
+                protectionSession = ProtectionSession.fromOriginal(
+                        originalUserText,
+                        businessInformationProtectionService.isEnabled()
+                );
+                businessInformationProtectionService.protect(
+                        protectionSession,
+                        ProtectionContext.forPurpose(ProtectionPurpose.ANSWER, true)
+                );
+                protectPiiSafely(protectionSession);
+                piiDetectionMs = System.currentTimeMillis() - piiStartMs;
+
+                String beforePii = protectionSession.businessProtectedText() != null
+                        ? protectionSession.businessProtectedText()
+                        : protectionSession.originalText();
+                boolean piiChanged = !Objects.equals(beforePii, protectionSession.piiSanitizedText());
+                int entityCount = protectionSession.actions() != null
+                        ? protectionSession.actions().size()
+                        : 0;
+                log.info(
+                        "Protection stage | businessApplied={} | entityCount={} | piiChanged={}",
+                        protectionSession.businessProtectionApplied(),
+                        entityCount,
+                        piiChanged
+                );
+
+                String llmText = protectionSession.textForLlm();
+                sanitizedUserText = llmText;
+                workingRequest = copyRequestWithUserMessage(request, llmText);
+                DocRouteResult docResult = handleDocumentationRoute(
+                        workingRequest,
+                        originalUserText,
+                        protectionSession
+                );
                 chatResponse = docResult.chatResponse();
                 sourcesForSuggestions = docResult.sourcesForSuggestions();
                 responseSources = docResult.responseSources();
@@ -236,7 +295,21 @@ public class ComprehendChatService {
                 groundedTokens = docResult.groundedTokens();
                 gapFillTokens = docResult.gapFillTokens();
                 generalGptTokens = docResult.generalGptTokens();
+
+                if (chatResponse != null) {
+                    String restored = businessPlaceholderRestorer.restoreIntoSession(
+                            chatResponse.getReply(),
+                            protectionSession
+                    );
+                    chatResponse.setReply(restored);
+                    chatResponse.setReplyBeforeRestore(protectionSession.replyBeforeRestore());
+                    applyProtectionSessionToResponse(chatResponse, protectionSession);
+                }
             }
+        }
+
+        if (sanitizedUserText == null) {
+            sanitizedUserText = originalUserText;
         }
 
         if (Boolean.TRUE.equals(chatResponse.getLimitExceeded())) {
@@ -278,7 +351,14 @@ public class ComprehendChatService {
                 sanitizedFlag,
                 retrievalReason,
                 retrievalTimeMs,
-                auditMetadata
+                auditMetadata,
+                protectionSession != null
+                        ? com.ai.openai_api_service.service.protection.ProtectionAuditSnapshot.fromSession(
+                        protectionSession,
+                        chatResponse.getReplyBeforeRestore(),
+                        replyForPersistence
+                )
+                        : null
         );
         long persistenceMs = System.currentTimeMillis() - persistenceStartMs;
 
@@ -742,7 +822,7 @@ public class ComprehendChatService {
     private DocRouteResult handleDocumentationRoute(
             ChatRequest request,
             String originalUserText,
-            String sanitizedUserText
+            ProtectionSession session
     ) {
         long queryRewriteMs = 0L;
         long retrievalStageMs = 0L;
@@ -752,22 +832,23 @@ public class ComprehendChatService {
         int groundedTokens = 0;
         int gapFillTokens = 0;
         int generalGptTokens = 0;
+        String llmText = session.textForLlm();
         PythonQueryRequest ragRequest = new PythonQueryRequest();
-        ragRequest.setMessage(sanitizedUserText);
+        ragRequest.setMessage(llmText);
         ragRequest.setHistory(request.getHistory());
 
         List<String> rewrittenQueries = List.of();
         OpenAIUsage rewriteUsage = null;
         if (queryRewriteEnabled) {
             long rewriteStartMs = System.currentTimeMillis();
-            QueryRewriteResult rewriteResult = openAIService.rewriteQueries(sanitizedUserText);
+            QueryRewriteResult rewriteResult = openAIService.rewriteQueries(llmText);
             queryRewriteMs = System.currentTimeMillis() - rewriteStartMs;
             rewrittenQueries = rewriteResult.queries();
             rewriteUsage = rewriteResult.usage();
         }
-        List<String> searchQueries = SearchQueryAssembler.assemble(sanitizedUserText, rewrittenQueries, 4);
+        List<String> searchQueries = SearchQueryAssembler.assemble(llmText, rewrittenQueries, 4);
 
-        List<String> boostProgramIds = ProgramIdDetector.detect(sanitizedUserText, originalUserText);
+        List<String> boostProgramIds = ProgramIdDetector.detect(llmText, originalUserText);
         log.info(
                 "Doc retrieval program boost: detectedProgramIds={}",
                 boostProgramIds.isEmpty() ? "none" : boostProgramIds
@@ -777,7 +858,7 @@ public class ComprehendChatService {
         try {
             long retrievalStartMs = System.currentTimeMillis();
             retrieval = pythonRagService.retrieve(
-                    sanitizedUserText,
+                    llmText,
                     searchQueries,
                     ragRequest,
                     boostProgramIds
@@ -790,7 +871,7 @@ public class ComprehendChatService {
                     e.getMessage()
             );
             long generalStartMs = System.currentTimeMillis();
-            ChatResponse chatResponse = openAIService.chatWithoutPersistence(request);
+            ChatResponse chatResponse = openAIService.chatWithoutPersistence(request, session);
             generalGptMs = System.currentTimeMillis() - generalStartMs;
             logUsage("General", chatResponse.getOpenAiUsage(), generalGptMs);
             generalGptTokens = nullSafeInt(chatResponse.getOpenAiUsage() != null ? chatResponse.getOpenAiUsage().getTotalTokens() : null);
@@ -817,9 +898,9 @@ public class ComprehendChatService {
 
         String reason = retrieval.getRetrievalReason();
         log.info(
-                "Doc retrieval: original=\"{}\" sanitized=\"{}\" rewrittenQueries={} reason={} maxScore={} promptChunkCount={} chunkCount={} queryRewriteEnabled={}",
-                originalUserText,
-                sanitizedUserText,
+                "Doc retrieval: originalLength={} llmTextLength={} rewrittenQueries={} reason={} maxScore={} promptChunkCount={} chunkCount={} queryRewriteEnabled={}",
+                originalUserText != null ? originalUserText.length() : 0,
+                llmText != null ? llmText.length() : 0,
                 searchQueries,
                 reason,
                 retrieval.getMaxScore(),
@@ -844,7 +925,7 @@ public class ComprehendChatService {
         if (RETRIEVAL_READY.equals(reason)) {
             try {
                 long groundedStartMs = System.currentTimeMillis();
-                GroundedRagCallResult groundedCall = openAIService.chatWithRagContext(request, promptChunks);
+                GroundedRagCallResult groundedCall = openAIService.chatWithRagContext(request, promptChunks, session);
                 groundedMs = System.currentTimeMillis() - groundedStartMs;
                 logUsage("Grounded", groundedCall.usage(), groundedMs);
                 groundedTokens = nullSafeInt(groundedCall.usage() != null ? groundedCall.usage().getTotalTokens() : null);
@@ -861,7 +942,7 @@ public class ComprehendChatService {
                 );
                 log.debug("Grounded Response (raw): {}", groundedCall.rawContent());
 
-                DocAnswerOutcome outcome = orchestrateGroundedStatus(request, grounded, groundedUsage);
+                DocAnswerOutcome outcome = orchestrateGroundedStatus(request, grounded, groundedUsage, session);
                 chatResponse = outcome.chatResponse();
                 reason = outcome.retrievalReason();
                 gapFillMs = outcome.gapFillTimeMs();
@@ -872,7 +953,7 @@ public class ComprehendChatService {
             } catch (OpenAIException e) {
                 log.warn("Grounded JSON parsing failed, falling back to General GPT: {}", e.getMessage());
                 long generalStartMs = System.currentTimeMillis();
-                chatResponse = openAIService.chatWithoutPersistence(request);
+                chatResponse = openAIService.chatWithoutPersistence(request, session);
                 generalGptMs = System.currentTimeMillis() - generalStartMs;
                 logUsage("General", chatResponse.getOpenAiUsage(), generalGptMs);
                 generalGptTokens = nullSafeInt(chatResponse.getOpenAiUsage() != null ? chatResponse.getOpenAiUsage().getTotalTokens() : null);
@@ -895,7 +976,7 @@ public class ComprehendChatService {
                 log.warn("Retrieval error from Python, falling back to OpenAI: {}", retrieval.getError());
             }
             long generalStartMs = System.currentTimeMillis();
-            chatResponse = openAIService.chatWithoutPersistence(request);
+            chatResponse = openAIService.chatWithoutPersistence(request, session);
             generalGptMs = System.currentTimeMillis() - generalStartMs;
             logUsage("General", chatResponse.getOpenAiUsage(), generalGptMs);
             generalGptTokens = nullSafeInt(chatResponse.getOpenAiUsage() != null ? chatResponse.getOpenAiUsage().getTotalTokens() : null);
@@ -925,7 +1006,8 @@ public class ComprehendChatService {
     private DocAnswerOutcome orchestrateGroundedStatus(
             ChatRequest request,
             GroundedRagResult grounded,
-            OpenAIUsage usageSoFar
+            OpenAIUsage usageSoFar,
+            ProtectionSession session
     ) {
         RagStatus status = grounded.getStatus() != null ? grounded.getStatus() : RagStatus.INSUFFICIENT;
         String docAnswer = grounded.getAnswer() != null ? grounded.getAnswer() : "";
@@ -950,7 +1032,7 @@ public class ComprehendChatService {
                     : List.of();
             if (ragPartialGapFillEnabled && !missingTopics.isEmpty()) {
                 long gapFillStartMs = System.currentTimeMillis();
-                ChatResponse gapFill = openAIService.chatGapFill(request, docAnswer, missingTopics);
+                ChatResponse gapFill = openAIService.chatGapFill(request, docAnswer, missingTopics, session);
                 int gapFillTimeMs = (int) (System.currentTimeMillis() - gapFillStartMs);
                 logUsage("GapFill", gapFill.getOpenAiUsage(), gapFillTimeMs);
                 int gapFillTokens = nullSafeInt(gapFill.getOpenAiUsage() != null ? gapFill.getOpenAiUsage().getTotalTokens() : null);
@@ -993,7 +1075,7 @@ public class ComprehendChatService {
         }
 
         long generalStartMs = System.currentTimeMillis();
-        ChatResponse general = openAIService.chatWithoutPersistence(request);
+        ChatResponse general = openAIService.chatWithoutPersistence(request, session);
         int generalTimeMs = (int) (System.currentTimeMillis() - generalStartMs);
         logUsage("General", general.getOpenAiUsage(), generalTimeMs);
         general.setOpenAiUsage(mergeUsage(usageSoFar, general.getOpenAiUsage()));
@@ -1094,18 +1176,57 @@ public class ComprehendChatService {
         return blocked;
     }
 
-    private String sanitizeTextWithComprehend(String text) {
+    private String anonymizeForPersistence(String text) {
         if (text == null || text.isBlank()) {
             return text;
         }
         try {
-            Map<String, Object> result = comprehendAnonymizationService.detectAndAnonymize(text);
-            Object sanitizedText = result.get("sanitizedText");
-            return sanitizedText != null ? sanitizedText.toString() : text;
+            return piiProtectionService.anonymize(text);
         } catch (Exception e) {
-            log.warn("Comprehend anonymization failed, using original text: {}", e.getMessage());
+            log.warn("PII anonymization failed, using original text: {}", e.getMessage());
             return text;
         }
+    }
+
+    private void protectPiiSafely(ProtectionSession session) {
+        if (session == null) {
+            return;
+        }
+        try {
+            piiProtectionService.protect(session);
+        } catch (Exception e) {
+            log.warn("PII protection failed, keeping pre-PII text: {}", e.getMessage());
+            String fallback = session.businessProtectedText() != null
+                    ? session.businessProtectedText()
+                    : session.originalText();
+            session.applyPiiSanitizedText(fallback);
+        }
+    }
+
+    private void applyProtectionSessionToResponse(ChatResponse chatResponse, ProtectionSession session) {
+        if (chatResponse == null || session == null) {
+            return;
+        }
+        chatResponse.setOriginalUserMessage(session.originalText());
+        chatResponse.setBusinessProtectedMessage(session.businessProtectedText());
+        chatResponse.setBusinessProtectionApplied(session.businessProtectionApplied());
+        List<BusinessProtectedEntityDto> entities = new ArrayList<>();
+        if (session.actions() != null) {
+            for (ProtectionAction action : session.actions()) {
+                if (action == null || action.placeholderToken() == null || action.placeholderToken().isBlank()) {
+                    continue;
+                }
+                String type = action.placeholderType() != null
+                        ? action.placeholderType()
+                        : action.placeholderToken();
+                entities.add(new BusinessProtectedEntityDto(type, action.placeholderToken()));
+            }
+        }
+        chatResponse.setBusinessProtectedEntities(entities);
+        String sanitized = session.piiSanitizedText() != null
+                ? session.piiSanitizedText()
+                : session.textForLlm();
+        chatResponse.setSanitizedUserMessage(sanitized);
     }
 
     private SuggestionContext buildSuggestionContext(ChatRequest request, String answer, List<SourceItem> sources) {
