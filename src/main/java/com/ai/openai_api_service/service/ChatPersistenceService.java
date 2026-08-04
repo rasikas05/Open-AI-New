@@ -126,6 +126,39 @@ public class ChatPersistenceService {
             Integer retrievalTimeMs,
             LiveHistoryAuditMetadata auditMetadata
     ) {
+        persistChat(
+                tenantId,
+                userId,
+                sessionId,
+                originalText,
+                sanitizedText,
+                openAiResponse,
+                openAiUsage,
+                actionTaken,
+                sanitizedFlag,
+                retrievalReason,
+                retrievalTimeMs,
+                auditMetadata,
+                null
+        );
+    }
+
+    @Transactional
+    public void persistChat(
+            String tenantId,
+            String userId,
+            String sessionId,
+            String originalText,
+            String sanitizedText,
+            String openAiResponse,
+            OpenAIUsage openAiUsage,
+            String actionTaken,
+            Boolean sanitizedFlag,
+            String retrievalReason,
+            Integer retrievalTimeMs,
+            LiveHistoryAuditMetadata auditMetadata,
+            com.ai.openai_api_service.service.protection.ProtectionAuditSnapshot protectionAudit
+    ) {
         try {
             int consumed = resolveConsumedTokens(openAiUsage, null);
 
@@ -246,6 +279,15 @@ public class ChatPersistenceService {
                 message.setLexIntent(auditMetadata.lexIntent());
                 message.setBusinessObject(auditMetadata.businessObject());
                 message.setBusinessIdentifier(auditMetadata.businessIdentifier());
+            }
+            if (protectionAudit != null) {
+                message.setBusinessProtectedText(protectionAudit.businessProtectedText());
+                message.setPiiSanitizedText(protectionAudit.piiSanitizedText());
+                message.setOpenaiResponseRaw(protectionAudit.openaiResponseRaw());
+                message.setFinalResponse(protectionAudit.finalResponse());
+                message.setBusinessProtectionFlag(protectionAudit.businessProtectionApplied());
+                message.setBusinessEntitiesCount(protectionAudit.businessEntitiesCount());
+                message.setBusinessEntitiesJson(protectionAudit.businessEntitiesJson());
             }
 
             RequestLog savedMessage = requestLogRepository.save(message);

@@ -12,11 +12,16 @@ import com.ai.openai_api_service.model.python_rag.ChunkItem;
 import com.ai.openai_api_service.model.rag.GroundedRagCallResult;
 import com.ai.openai_api_service.model.rag.GroundedRagResult;
 import com.ai.openai_api_service.model.rag.RagStatus;
+import com.ai.openai_api_service.service.protection.BusinessInformationProtectionService;
+import com.ai.openai_api_service.service.protection.ProtectionContext;
+import com.ai.openai_api_service.service.protection.ProtectionPurpose;
+import com.ai.openai_api_service.service.protection.ProtectionSession;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -56,6 +61,48 @@ public class OpenAIService {
             - Preserve identifiers exactly as they appear in the context.
             - Format and organize documentation into a clear markdown answer inside the JSON "answer" field.
             - Do not mix documentation with general knowledge.
+            - Answer priority: answer the user's question immediately before providing supporting details. \
+            Start with the direct answer; supporting explanation comes afterward (not background-first). \
+            Present information in priority order: (1) the direct answer, (2) what is required to complete it, \
+            (3) important caveats that change behavior, then (4) exclude information that is not required \
+            to answer the user's question (include optional detail only if it clearly improves clarity).
+            - Scope: before drafting, determine the user's actual question and answer only that. Do not \
+            explain sibling workflows or optional modules. If the question is ambiguous, choose the \
+            interpretation that best matches the user's wording and the strongest supporting evidence in \
+            the retrieved context. Mention other interpretations in one short sentence only. Never provide \
+            multiple complete procedures unless the user explicitly requested all of them.
+            - Knowledge pool: treat the retrieved chunks as a shared knowledge pool, not a checklist. \
+            Select and synthesize only the information needed to answer the user's question. Do not try \
+            to cover every retrieved document. Prefer the strongest supporting evidence for the user's \
+            wording. When chunks overlap, keep the clearest explanation and omit redundant variants. \
+            Do not feel obligated to use every chunk; skip lower-value or repetitive content. Never \
+            narrate sources as Document 1/2/3 or "this document says…". Never invent facts outside the context.
+            - Layers: structure the answer as (1) direct answer, (2) required supporting information \
+            including brief mandatory prerequisites, (3) important caveats only if they change behavior, \
+            then stop. Do not continue into optional configuration, advanced setup, downstream processes, \
+            or related modules unless they are required to answer the user's question or are explicitly \
+            requested.
+            - Style: prefer bullets over long paragraphs. No generic intros or outros \
+            ("Certainly…", "I'd be happy to…", "Let me know…").
+            - Quick Answer: begin with a concise, direct answer focused only on the user's question. Keep it \
+            as brief as possible while still being complete for that question; length should match complexity. \
+            Do not summarize the entire procedure, list all related information, or dump implementation \
+            details, optional topics, or related processes in the opening section unless necessary to \
+            understand the answer.
+            - Details: provide only the level of detail needed to answer the user's question. If a \
+            prerequisite is mandatory to complete the requested task, include it briefly before the steps. \
+            Do not explain optional or downstream activities unless they are required to answer the user's \
+            question or are explicitly requested. Do not expand into related workflows, optional \
+            configurations, or related modules unless required to answer or explicitly requested.
+            - Preferred structure inside JSON "answer" (omit sections that are empty or not useful; \
+            never output "None"):
+              ## Quick Answer (required; length proportional to question complexity)
+              ## Details (include when needed; detail level by need; brief mandatory prerequisites only)
+              ## Important Notes (only if a real caveat is needed; otherwise omit the heading)
+              ## Related Programs (only primary programs directly involved; avoid long supporting-program \
+            lists unless required to complete the task; omit if none)
+              Do not include ## References. Never put http:// or https:// URLs anywhere in "answer". \
+            Document links are provided separately by the application.
 
             E - Expectations
             Return ONLY a single valid JSON object (no markdown fences, no prose outside JSON) with this shape:
@@ -75,7 +122,8 @@ public class OpenAIService {
             Act as an experienced Infor M3 documentation formatter and coverage classifier.
 
             R - References
-            Cite program IDs, field names, document titles, and source URLs from the context when present.""";
+            Cite program IDs, field names, and document titles from the context when helpful. \
+            Never emit URLs in "answer"; the client already receives sources separately.""";
 
     private static final int MAX_REWRITTEN_QUERIES = 3;
     private static final Pattern MARKDOWN_JSON_FENCE = Pattern.compile("```(?:json)?\\s*([\\s\\S]*?)```");
@@ -181,14 +229,28 @@ public class OpenAIService {
     @Value("${openai.api.timeout-ms:120000}")
     private int openAiTimeoutMs;
 
+    private final BusinessInformationProtectionService businessInformationProtectionService;
+
+    /** Test-friendly constructor; protection remains inactive when null or flag=false. */
     public OpenAIService(
             PresidioService presidioService,
             ChatPersistenceService chatPersistenceService,
             TenantQuotaService tenantQuotaService
     ) {
+        this(presidioService, chatPersistenceService, tenantQuotaService, null);
+    }
+
+    @Autowired
+    public OpenAIService(
+            PresidioService presidioService,
+            ChatPersistenceService chatPersistenceService,
+            TenantQuotaService tenantQuotaService,
+            @Autowired(required = false) BusinessInformationProtectionService businessInformationProtectionService
+    ) {
         this.presidioService = presidioService;
         this.chatPersistenceService = chatPersistenceService;
         this.tenantQuotaService = tenantQuotaService;
+        this.businessInformationProtectionService = businessInformationProtectionService;
     }
 
     @PostConstruct
@@ -202,7 +264,7 @@ public class OpenAIService {
     public ChatResponse chat(ChatRequest request) {
         validateApiKey();
         String sanitizedUserText = presidioService.sanitizeText(request.getUserMessage());
-        String modelReadyUserText = prepareUserContentForOpenAi(sanitizedUserText);
+        String modelReadyUserText = protectForLlm(prepareUserContentForOpenAi(sanitizedUserText), ProtectionPurpose.ANSWER);
         List<Map<String, String>> messages = buildMessages(request, systemPromptForFallback(), modelReadyUserText);
         OpenAiCallResult result = callOpenAi(messages);
 
@@ -236,8 +298,17 @@ public class OpenAIService {
      * Fallback OpenAI chat without persistence (Comprehend orchestrates persist/quota).
      */
     public ChatResponse chatWithoutPersistence(ChatRequest request) {
+        return chatWithoutPersistence(request, null);
+    }
+
+    public ChatResponse chatWithoutPersistence(ChatRequest request, ProtectionSession session) {
         validateApiKey();
-        String modelReadyUserText = prepareUserContentForOpenAi(request.getUserMessage());
+        String modelReadyUserText;
+        if (session != null) {
+            modelReadyUserText = prepareUserContentForOpenAi(session.textForLlm());
+        } else {
+            modelReadyUserText = protectForLlm(prepareUserContentForOpenAi(request.getUserMessage()), ProtectionPurpose.ANSWER);
+        }
         List<Map<String, String>> messages = buildMessages(request, systemPromptForFallback(), modelReadyUserText, true);
         OpenAiCallResult result = callOpenAi(messages);
         return toChatResponse(request, result, "gpt_infor", request.getUserMessage(), modelReadyUserText);
@@ -247,14 +318,33 @@ public class OpenAIService {
      * Grounded OpenAI chat using pre-filtered RAG chunks. Returns structured status JSON result.
      */
     public GroundedRagCallResult chatWithRagContext(ChatRequest request, List<ChunkItem> promptChunks) {
+        return chatWithRagContext(request, promptChunks, null);
+    }
+
+    /**
+     * Grounded OpenAI chat. When {@code session} is non-null, uses {@link ProtectionSession#textForLlm()}
+     * only (Decision #27–#28) — does not re-apply business protection.
+     */
+    public GroundedRagCallResult chatWithRagContext(
+            ChatRequest request,
+            List<ChunkItem> promptChunks,
+            ProtectionSession session
+    ) {
         validateApiKey();
         if (promptChunks == null || promptChunks.isEmpty()) {
             throw new OpenAIException("promptChunks cannot be empty for grounded chat", 400);
         }
 
-        String modelReadyUserText = prepareUserContentForOpenAi(request.getUserMessage());
+        String userQuestion;
+        if (session != null) {
+            userQuestion = prepareUserContentForOpenAi(session.textForLlm());
+        } else {
+            userQuestion = isBusinessProtectionActive()
+                    ? protectForLlm(prepareUserContentForOpenAi(request.getUserMessage()), ProtectionPurpose.ANSWER)
+                    : request.getUserMessage();
+        }
         String context = formatRagContext(promptChunks);
-        String userPrompt = buildRagUserPrompt(context, request.getUserMessage());
+        String userPrompt = buildRagUserPrompt(context, userQuestion);
 
         List<Map<String, String>> messages = buildMessages(request, RAG_SYSTEM_PROMPT, userPrompt, true);
         OpenAiCallResult result = callOpenAi(messages);
@@ -270,8 +360,29 @@ public class OpenAIService {
             String documentationAnswer,
             List<String> missingTopics
     ) {
+        return chatGapFill(request, documentationAnswer, missingTopics, null);
+    }
+
+    public ChatResponse chatGapFill(
+            ChatRequest request,
+            String documentationAnswer,
+            List<String> missingTopics,
+            ProtectionSession session
+    ) {
         validateApiKey();
-        String modelReadyUserText = prepareUserContentForOpenAi(request.getUserMessage());
+        String modelReadyUserText;
+        String questionForPrompt;
+        if (session != null) {
+            modelReadyUserText = prepareUserContentForOpenAi(session.textForLlm());
+            questionForPrompt = modelReadyUserText != null ? modelReadyUserText : "";
+        } else {
+            modelReadyUserText = isBusinessProtectionActive()
+                    ? protectForLlm(prepareUserContentForOpenAi(request.getUserMessage()), ProtectionPurpose.ANSWER)
+                    : prepareUserContentForOpenAi(request.getUserMessage());
+            questionForPrompt = isBusinessProtectionActive()
+                    ? modelReadyUserText
+                    : (request.getUserMessage() != null ? request.getUserMessage() : "");
+        }
         String topics = missingTopics == null || missingTopics.isEmpty()
                 ? "(none)"
                 : missingTopics.stream().map(t -> "- " + t).reduce((a, b) -> a + "\n" + b).orElse("(none)");
@@ -288,7 +399,7 @@ public class OpenAIService {
                 Answer ONLY the missing topics listed above. Do not repeat the documentation answer. \
                 Do not answer topics that are already covered in the documentation answer.
                 """.formatted(
-                request.getUserMessage() != null ? request.getUserMessage() : "",
+                questionForPrompt,
                 documentationAnswer != null ? documentationAnswer : "",
                 topics
         );
@@ -356,9 +467,12 @@ public class OpenAIService {
             throw new OpenAIException("Sanitized query cannot be empty for rewrite", 400);
         }
 
+        // Read-only consumer (Decision #28): do not re-run BIP when caller already protected.
+        String queryForLlm = sanitizedQuery;
+
         List<Map<String, String>> messages = List.of(
                 Map.of("role", "system", "content", REWRITE_SYSTEM_PROMPT),
-                Map.of("role", "user", "content", REWRITE_USER_PROMPT_TEMPLATE.formatted(sanitizedQuery))
+                Map.of("role", "user", "content", REWRITE_USER_PROMPT_TEMPLATE.formatted(queryForLlm))
         );
 
         try {
@@ -459,8 +573,10 @@ public class OpenAIService {
                 Map<String, String> map = new HashMap<>();
                 map.put("role", role);
                 map.put("content", "user".equals(role)
-                        ? prepareUserContentForOpenAi(
-                                skipHistoryPresidio ? content : presidioService.sanitizeText(content))
+                        ? protectForLlm(
+                                prepareUserContentForOpenAi(
+                                        skipHistoryPresidio ? content : presidioService.sanitizeText(content)),
+                                ProtectionPurpose.ANSWER)
                         : content);
                 messages.add(map);
             }
@@ -650,7 +766,7 @@ public class OpenAIService {
             ChunkItem chunk = chunks.get(i);
             float score = chunk.getScore() != null ? chunk.getScore() : 0f;
             String scorePct = String.format(Locale.ROOT, "%.1f%%", score * 100);
-            builder.append("--- Document ").append(i + 1).append(" (Relevance: ").append(scorePct).append(") ---");
+            builder.append("### Context");
             if (chunk.getTitle() != null && !chunk.getTitle().isBlank()) {
                 builder.append("\nTitle: ").append(chunk.getTitle());
             }
@@ -663,19 +779,20 @@ public class OpenAIService {
             if (chunk.getSource() != null && !chunk.getSource().isBlank()) {
                 builder.append("\nSource: ").append(chunk.getSource());
             }
+            builder.append("\nRelevance: ").append(scorePct);
             builder.append("\n\n").append(chunk.getChunk() != null ? chunk.getChunk() : "").append("\n\n");
         }
         return builder.toString().trim();
     }
 
-    private String buildRagUserPrompt(String context, String question) {
+    String buildRagUserPrompt(String context, String question) {
         return "Context from M3 Documentation:\n" + context + "\n\n---\n\n"
-                + "Question: " + question + "\n\n"
-                + "Respond with ONLY a JSON object: "
-                + "{\"status\":\"FULL|PARTIAL|INSUFFICIENT\",\"answer\":\"...\",\"missingTopics\":[]}. "
-                + "Use ONLY the context above. Never invent documentation. "
-                + "For PARTIAL, put the full documentation-based answer in answer and list missing topics. "
-                + "For INSUFFICIENT, use empty answer and empty missingTopics.";
+                + "Question: " + question;
+    }
+
+    /** Package-visible for unit tests. */
+    String ragSystemPrompt() {
+        return RAG_SYSTEM_PROMPT;
     }
 
     private boolean isValidRole(String role) {
@@ -694,6 +811,28 @@ public class OpenAIService {
                 .replaceAll("\\s{2,}", " ")
                 .trim();
         return withoutTags.isBlank() ? sanitizedText : withoutTags;
+    }
+
+    /**
+     * LLM-egress protection. Flag false / null service → return text unchanged (identical path).
+     * Live/Lex never calls this helper.
+     * Phase 7A: temporary PII→Business order (Decision #20). Uses {@link ProtectionSession}.
+     */
+    private String protectForLlm(String text, ProtectionPurpose purpose) {
+        if (!isBusinessProtectionActive() || text == null) {
+            return text;
+        }
+        ProtectionSession session = ProtectionSession.fromPiiSanitized(text);
+        businessInformationProtectionService.protect(
+                session,
+                ProtectionContext.forPurpose(purpose, true)
+        );
+        return session.textForLlm();
+    }
+
+    private boolean isBusinessProtectionActive() {
+        return businessInformationProtectionService != null
+                && businessInformationProtectionService.isEnabled();
     }
 
     private record OpenAiCallResult(String content, boolean truncated, OpenAIUsage usage) {

@@ -577,7 +577,7 @@ class LexFulfillmentServiceTest {
 
         assertEquals("read", response.getActionTaken());
         assertEquals(
-                java.util.Set.of("TEPY", "CUCD"),
+                java.util.Set.of("PYCD", "CUCD"),
                 java.util.Set.of(response.getM3Request().getParams().get("returncols").toString().split(","))
         );
     }
@@ -603,7 +603,7 @@ class LexFulfillmentServiceTest {
         assertTrue(response.getReply().contains("payment terms"));
         String returncols = response.getM3Request().getParams().get("returncols").toString();
         assertTrue(returncols.contains("CRLM"));
-        assertTrue(returncols.contains("TEPY"));
+        assertTrue(returncols.contains("TECD"));
     }
 
     @Test

@@ -101,6 +101,29 @@ public class M3RequestBuilder {
                 params.put("returncols", returncols);
             }
         }
+
+        if (definition.requestType() == RequestType.SEARCH && hasDateCriteria(context.criteria())) {
+            params.put("dateformat", "YMD8");
+        }
+    }
+
+    private static final java.util.Set<String> DATE_CRITERIA_FIELDS = java.util.Set.of(
+            "ORDT", "PUDT", "RLDZ", "STDT", "FIDT", "RIDT"
+    );
+
+    private static boolean hasDateCriteria(List<SearchCriterion> criteria) {
+        if (criteria == null || criteria.isEmpty()) {
+            return false;
+        }
+        for (SearchCriterion criterion : criteria) {
+            if (criterion == null || criterion.field() == null) {
+                continue;
+            }
+            if (DATE_CRITERIA_FIELDS.contains(criterion.field().trim().toUpperCase())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static String actionTakenFor(RequestType requestType) {

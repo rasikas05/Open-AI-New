@@ -13,7 +13,9 @@ public class FieldDefinitionRegistry {
 
     private static final Pattern ALNUM = Pattern.compile("^[A-Z0-9]+$");
     private static final Pattern DIGITS = Pattern.compile("^[0-9]+$");
-    private static final Pattern DATE_LIKE = Pattern.compile("^\\d{4}-?\\d{2}-?\\d{2}$");
+    private static final Pattern DATE_LIKE = Pattern.compile(
+            "^(\\d{4}[-/]?\\d{2}[-/]?\\d{2}|\\d{6}|\\d{1,2}[-/]\\d{1,2}[-/]\\d{4})$"
+    );
 
     private static final Function<String, String> COLLAPSE_WHITESPACE = value -> value.replaceAll("\\s+", "");
 

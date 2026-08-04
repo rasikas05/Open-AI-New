@@ -35,6 +35,18 @@ class QueryUnderstanderTest {
     }
 
     @Test
+    void parseLimit_showNOrders_andFirstValidWins() {
+        assertEquals(10, QueryUnderstander.parseLimit("show 10 orders"));
+        assertEquals(5, QueryUnderstander.parseLimit("display 5 purchase orders"));
+        assertEquals(3, QueryUnderstander.parseLimit("list 3 manufacturing orders"));
+        assertEquals(7, QueryUnderstander.parseLimit("give me 7 distribution orders"));
+        assertEquals(4, QueryUnderstander.parseLimit("return 4 customers"));
+        assertEquals(2, QueryUnderstander.parseLimit("fetch 2 results"));
+        assertEquals(8, QueryUnderstander.parseLimit("only 8 records"));
+        assertEquals(10, QueryUnderstander.parseLimit("show 10 orders from the last 30 days"));
+    }
+
+    @Test
     void parseContinuation_detectsShowMore() {
         assertTrue(QueryUnderstander.parseContinuation("show more"));
         assertFalse(QueryUnderstander.parseContinuation("show customer Y11100"));
@@ -72,7 +84,7 @@ class QueryUnderstanderTest {
         );
 
         assertEquals(
-                java.util.Set.of("TEPY", "CUCD"),
+                java.util.Set.of("PYCD", "CUCD"),
                 java.util.Set.copyOf(enriched.returnColumns())
         );
         assertEquals(

@@ -41,6 +41,22 @@ class SqryBuilderTest {
     }
 
     @Test
+    void build_formatsAmbiguousDeliveryDateAsDdMm() {
+        assertEquals(
+                "RLDZ:20260201",
+                sqryBuilder.build(List.of(new SearchCriterion("RLDZ", "01/02/2026")))
+        );
+    }
+
+    @Test
+    void build_formatsStdtSlashIso() {
+        assertEquals(
+                "STDT:20260424",
+                sqryBuilder.build(List.of(new SearchCriterion("STDT", "2026/04/24")))
+        );
+    }
+
+    @Test
     void build_nullList_returnsEmpty() {
         assertEquals("", sqryBuilder.build(null));
     }

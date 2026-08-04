@@ -38,12 +38,12 @@ class M3RequestedFieldsReplyFormatterTest {
         String reply = formatter.format(
                 GET_FINANCIAL,
                 List.of(RequestedInformationResolver.PAYMENT, RequestedInformationResolver.CURRENCY),
-                List.of("TEPY", "CUCD"),
-                Map.of("TEPY", "30", "CUCD", "EUR")
+                List.of("PYCD", "CUCD"),
+                Map.of("PYCD", "30", "CUCD", "EUR")
         );
 
-        assertTrue(reply.contains("Payment terms : 30"));
+        assertTrue(reply.contains("Payment method AR : 30"));
         assertTrue(reply.contains("Currency : EUR"));
-        assertTrue(reply.indexOf("Payment terms") < reply.indexOf("Currency"));
+        assertTrue(reply.indexOf("Payment method AR") < reply.indexOf("Currency"));
     }
 }

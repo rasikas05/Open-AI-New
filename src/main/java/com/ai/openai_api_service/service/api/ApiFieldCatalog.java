@@ -146,8 +146,8 @@ public class ApiFieldCatalog {
         fields.put(RequestedInformationResolver.CURRENCY, List.of(
                 ApiField.of("CUCD", "Currency", ApiFieldMetadata.CODE)
         ));
-        fields.put("COUNTRY", List.of(ApiField.of("ECAR", "Country", ApiFieldMetadata.CODE)));
-        fields.put("CUSTOMER_TYPE", List.of(ApiField.of("CUTY", "Customer type", ApiFieldMetadata.CODE)));
+        fields.put("COUNTRY", List.of(ApiField.of("CSCD", "Country", ApiFieldMetadata.CODE)));
+        fields.put("CUSTOMER_TYPE", List.of(ApiField.of("CUTP", "Customer type", ApiFieldMetadata.CODE)));
         fields.put("FAX", List.of(ApiField.of("TFNO", "Fax")));
         seeded.put(
                 M3ApiKey.of("CRS610MI", "GetBasicData"),
@@ -156,43 +156,30 @@ public class ApiFieldCatalog {
     }
 
     /**
-     * CRS610MI/GetFinancial — field IDs may be adjusted after first live tenant response.
+     * CRS610MI/GetFinancial — live MI response is source of truth for column IDs.
+     * Obsolete columns (ACLS, TEPY, PYNO, CRIN, OBAM, ODAM, ADDRESS, PHONE, EMAIL) are
+     * omitted here only; OIS and other APIs may still use PYNO/TEPY.
      */
     private static void seedGetFinancial(Map<M3ApiKey, ApiEntry> seeded) {
         Map<String, List<ApiField>> fields = new LinkedHashMap<>();
-        fields.put(RequestedInformationResolver.PHONE, List.of(ApiField.of("PHNO", "Phone")));
-        fields.put(RequestedInformationResolver.EMAIL, List.of(ApiField.of("MAIL", "Email")));
-        fields.put(RequestedInformationResolver.ADDRESS, List.of(
-                ApiField.of("CUA1", "Address line 1"),
-                ApiField.of("CUA2", "Address line 2"),
-                ApiField.of("CUA3", "Address line 3"),
-                ApiField.of("CUA4", "Address line 4"),
-                ApiField.of("TOWN", "City"),
-                ApiField.of("PONO", "Postal code")
-        ));
         fields.put(RequestedInformationResolver.BASIC, List.of(
                 ApiField.of("CUNO", "Customer number"),
-                ApiField.of("ACLS", "Credit limit amount", ApiFieldMetadata.AMOUNT),
                 ApiField.of("CRLM", "Credit limit", ApiFieldMetadata.AMOUNT)
         ));
         fields.put(RequestedInformationResolver.CREDIT_LIMIT, List.of(
-                ApiField.of("CRLM", "Credit limit", ApiFieldMetadata.AMOUNT),
-                ApiField.of("ACLS", "Credit limit amount", ApiFieldMetadata.AMOUNT)
+                ApiField.of("CRLM", "Credit limit", ApiFieldMetadata.AMOUNT)
         ));
         fields.put(RequestedInformationResolver.PAYMENT, List.of(
-                ApiField.of("TEPY", "Payment terms", ApiFieldMetadata.CODE)
+                ApiField.of("PYCD", "Payment method AR", ApiFieldMetadata.CODE)
         ));
         fields.put("PAYMENT_TERMS", List.of(
-                ApiField.of("TEPY", "Payment terms", ApiFieldMetadata.CODE)
+                ApiField.of("TECD", "Cash discount term", ApiFieldMetadata.CODE)
         ));
         fields.put(RequestedInformationResolver.CURRENCY, List.of(
                 ApiField.of("CUCD", "Currency", ApiFieldMetadata.CODE)
         ));
         fields.put(RequestedInformationResolver.VAT, List.of(
                 ApiField.of("VTCD", "VAT code", ApiFieldMetadata.CODE)
-        ));
-        fields.put(RequestedInformationResolver.PAYER, List.of(
-                ApiField.of("PYNO", "Payer")
         ));
         fields.put(RequestedInformationResolver.GROUP_PAYER, List.of(
                 ApiField.of("PYGR", "Group payer")
@@ -201,13 +188,15 @@ public class ApiFieldCatalog {
                 ApiField.of("INRC", "Invoice recipient")
         ));
         fields.put(RequestedInformationResolver.INSURANCE, List.of(
-                ApiField.of("CRIN", "Credit insurance", ApiFieldMetadata.CODE)
+                ApiField.of("INCO", "Insurance company"),
+                ApiField.of("INSN", "Insurance number"),
+                ApiField.of("INLI", "Insurance limit", ApiFieldMetadata.AMOUNT)
         ));
         fields.put(RequestedInformationResolver.OUTSTANDING_INVOICES, List.of(
-                ApiField.of("OBAM", "Outstanding amount", ApiFieldMetadata.AMOUNT)
+                ApiField.of("TOIN", "Outstanding invoice amount", ApiFieldMetadata.AMOUNT)
         ));
         fields.put(RequestedInformationResolver.OVERDUE_INVOICES, List.of(
-                ApiField.of("ODAM", "Overdue amount", ApiFieldMetadata.AMOUNT)
+                ApiField.of("TDIN", "Overdue invoice amount", ApiFieldMetadata.AMOUNT)
         ));
         fields.put("CREDIT_LIMIT_2", List.of(ApiField.of("CRL2", "Credit limit 2", ApiFieldMetadata.AMOUNT)));
         fields.put("CREDIT_LIMIT_3", List.of(ApiField.of("CRL3", "Credit limit 3", ApiFieldMetadata.AMOUNT)));
@@ -306,6 +295,18 @@ public class ApiFieldCatalog {
                 ApiField.of("ORNO", "Order number"),
                 ApiField.of("PYNO", "Payer")
         ));
+        fields.put("ORDER_TYPE", List.of(
+                ApiField.of("ORNO", "Order number"),
+                ApiField.of("ORTP", "Order type", ApiFieldMetadata.CODE)
+        ));
+        fields.put("RESPONSIBLE", List.of(
+                ApiField.of("ORNO", "Order number"),
+                ApiField.of("RESP", "Responsible")
+        ));
+        fields.put("LOWEST_STATUS", List.of(
+                ApiField.of("ORNO", "Order number"),
+                ApiField.of("ORSL", "Lowest status", ApiFieldMetadata.STATUS)
+        ));
         seeded.put(
                 M3ApiKey.of("OIS100MI", "SearchHead"),
                 new ApiEntry("Customer Order Search", Map.copyOf(fields))
@@ -350,6 +351,14 @@ public class ApiFieldCatalog {
         fields.put("DIVISION", List.of(
                 ApiField.of("PUNO", "Purchase order number"),
                 ApiField.of("DIVI", "Division", ApiFieldMetadata.CODE)
+        ));
+        fields.put("LOWEST_STATUS", List.of(
+                ApiField.of("PUNO", "Purchase order number"),
+                ApiField.of("PUSL", "Lowest status", ApiFieldMetadata.STATUS)
+        ));
+        fields.put("REQUISITION_BY", List.of(
+                ApiField.of("PUNO", "Purchase order number"),
+                ApiField.of("PURC", "Requisition by")
         ));
         seeded.put(
                 M3ApiKey.of("PPS200MI", "SearchHead"),
@@ -411,6 +420,14 @@ public class ApiFieldCatalog {
         fields.put("FACILITY", List.of(
                 ApiField.of("MFNO", "Manufacturing order number"),
                 ApiField.of("FACI", "Facility", ApiFieldMetadata.CODE)
+        ));
+        fields.put("PLANNED_START_TIME", List.of(
+                ApiField.of("MFNO", "Manufacturing order number"),
+                ApiField.of("MSTI", "Planned start time")
+        ));
+        fields.put("PLANNED_FINISH_TIME", List.of(
+                ApiField.of("MFNO", "Manufacturing order number"),
+                ApiField.of("MFTI", "Planned finish time")
         ));
         seeded.put(
                 M3ApiKey.of("PMS100MI", "SearchMO"),
