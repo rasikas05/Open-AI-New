@@ -260,6 +260,21 @@ public class PythonRagService {
             PythonQueryRequest queryRequest,
             java.util.List<String> boostProgramIds
     ) {
+        return retrieve(query, searchQueries, queryRequest, boostProgramIds, null, null);
+    }
+
+    /**
+     * Same as {@link #retrieve(String, java.util.List, PythonQueryRequest, java.util.List)}
+     * with optional correlation ids for Python stage timing logs.
+     */
+    public PythonRetrievalResponse retrieve(
+            String query,
+            java.util.List<String> searchQueries,
+            PythonQueryRequest queryRequest,
+            java.util.List<String> boostProgramIds,
+            String requestId,
+            String conversationId
+    ) {
         ensureEnabled();
         if (query == null || query.isBlank()) {
             throw new OpenAIException("Message cannot be empty", 400);
@@ -282,18 +297,22 @@ public class PythonRagService {
         retrievalRequest.setProgramBoost(programBoost);
         retrievalRequest.setDocVersion(queryRequest.getDocVersion());
         retrievalRequest.setSkipRewrite(true);
+        retrievalRequest.setRequestId(requestId);
+        retrievalRequest.setConversationId(conversationId);
 
         String url = buildUrl(pythonRetrievalEndpoint);
         log.info(
                 "Calling Python RAG retrieval API. url={}, query='{}', queryCount={}, topK={}, finalLimit={}, "
-                        + "boostProgramIds={}, programBoost={}, skipRewrite=true",
+                        + "boostProgramIds={}, programBoost={}, skipRewrite=true, requestId={}, conversationId={}",
                 url,
                 retrievalRequest.getQuery(),
                 searchQueries.size(),
                 retrievalRequest.getTopK(),
                 retrievalRequest.getFinalLimit(),
                 boostProgramIds == null || boostProgramIds.isEmpty() ? "none" : boostProgramIds,
-                programBoost
+                programBoost,
+                requestId != null ? requestId : "none",
+                conversationId != null ? conversationId : "none"
         );
         return postForEntity(url, retrievalRequest, PythonRetrievalResponse.class, "retrieval");
     }
@@ -302,7 +321,7 @@ public class PythonRagService {
      * Legacy overload without soft boost (no detected program IDs).
      */
     public PythonRetrievalResponse retrieve(String query, java.util.List<String> searchQueries, PythonQueryRequest queryRequest) {
-        return retrieve(query, searchQueries, queryRequest, null);
+        return retrieve(query, searchQueries, queryRequest, null, null, null);
     }
 
     private void ensureEnabled() {

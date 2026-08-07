@@ -40,12 +40,17 @@ import com.ai.openai_api_service.service.protection.ProtectionSession;
 import com.ai.openai_api_service.service.query.SearchContextService;
 import com.ai.openai_api_service.service.rag.ProgramIdDetector;
 import com.ai.openai_api_service.service.rag.SearchQueryAssembler;
+import com.ai.openai_api_service.service.timing.ComprehendChatTimingSnapshot;
+import com.ai.openai_api_service.service.timing.RequestTimingLog;
 import com.ai.openai_api_service.service.validation.SearchCriteriaValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
@@ -135,20 +140,32 @@ public class ComprehendChatService {
         if (request == null || request.getUserMessage() == null || request.getUserMessage().isBlank()) {
             throw new OpenAIException("User message cannot be empty", 400);
         }
-        long requestStartMs = System.currentTimeMillis();
+        Instant serviceStart = Instant.now();
+        long requestStartMs = serviceStart.toEpochMilli();
         long piiDetectionMs = 0L;
         long routeDecisionMs = 0L;
         long queryRewriteMs = 0L;
         long retrievalMs = 0L;
+        long retrievalPythonMs = 0L;
         long groundedMs = 0L;
         long gapFillMs = 0L;
         long generalGptMs = 0L;
+        long restoreMs = 0L;
+        long liveHistoryMs = 0L;
+        long suggestionsMs = 0L;
+        long preRetrievalGlueMs = 0L;
         int groundedTokens = 0;
         int gapFillTokens = 0;
         int generalGptTokens = 0;
 
+        ComprehendChatTimingSnapshot timingSnapshot = currentTimingSnapshot();
+        if (timingSnapshot != null) {
+            timingSnapshot.setServiceStart(serviceStart);
+        }
+
         TenantQuotaService.QuotaCheckResult quotaCheck = tenantQuotaService.checkBeforeChat(request.getTenantCode());
         if (!quotaCheck.allowed()) {
+            markServiceEnd(timingSnapshot, Instant.now(), requestStartMs);
             return blockedQuotaResponse(quotaCheck);
         }
 
@@ -212,9 +229,11 @@ public class ComprehendChatService {
         }
 
         if (!guidedHandled && !pendingLexHandled) {
-            long routeStartMs = System.currentTimeMillis();
+            Instant routeStart = Instant.now();
             PythonRouteResponse routeResponse = pythonRagService.route(originalUserText);
-            routeDecisionMs = System.currentTimeMillis() - routeStartMs;
+            Instant routeEnd = Instant.now();
+            routeDecisionMs = RequestTimingLog.durationMs(routeStart, routeEnd);
+            RequestTimingLog.logStage("route", routeStart, routeEnd);
             route = routeResponse != null ? routeResponse.getRoute() : "rag";
             log.info(
                     "Comprehend route decision: route='{}', handler='{}', originalLength={}",
@@ -226,9 +245,11 @@ public class ComprehendChatService {
             );
 
             if (ROUTE_LIVE.equalsIgnoreCase(route)) {
-                long piiStartMs = System.currentTimeMillis();
+                Instant piiStart = Instant.now();
                 sanitizedUserText = anonymizeForPersistence(originalUserText);
-                piiDetectionMs = System.currentTimeMillis() - piiStartMs;
+                Instant piiEnd = Instant.now();
+                piiDetectionMs = RequestTimingLog.durationMs(piiStart, piiEnd);
+                RequestTimingLog.logStage("pii", piiStart, piiEnd);
                 if (lexService.isEnabled()) {
                     LexLiveRouteResult lexResult = handleLexLiveRoute(
                             request,
@@ -247,7 +268,7 @@ public class ComprehendChatService {
                     chatResponse = handleLiveRoute(request, originalUserText);
                 }
             } else {
-                long piiStartMs = System.currentTimeMillis();
+                Instant piiStart = Instant.now();
                 protectionSession = ProtectionSession.fromOriginal(
                         originalUserText,
                         businessInformationProtectionService.isEnabled()
@@ -257,7 +278,9 @@ public class ComprehendChatService {
                         ProtectionContext.forPurpose(ProtectionPurpose.ANSWER, true)
                 );
                 protectPiiSafely(protectionSession);
-                piiDetectionMs = System.currentTimeMillis() - piiStartMs;
+                Instant piiEnd = Instant.now();
+                piiDetectionMs = RequestTimingLog.durationMs(piiStart, piiEnd);
+                RequestTimingLog.logStage("pii", piiStart, piiEnd);
 
                 String beforePii = protectionSession.businessProtectedText() != null
                         ? protectionSession.businessProtectedText()
@@ -287,16 +310,19 @@ public class ComprehendChatService {
                 retrievalReason = docResult.retrievalReason();
                 retrievalTimeMs = docResult.retrievalTimeMs();
                 maxScore = docResult.maxScore();
-                queryRewriteMs = docResult.queryRewriteTimeMs();
-                retrievalMs = docResult.retrievalStageTimeMs();
-                groundedMs = docResult.groundedTimeMs();
-                gapFillMs = docResult.gapFillTimeMs();
-                generalGptMs = docResult.generalGptTimeMs();
+                queryRewriteMs = nullSafeInt(docResult.queryRewriteTimeMs());
+                retrievalMs = nullSafeInt(docResult.retrievalSpringMs());
+                retrievalPythonMs = nullSafeInt(docResult.retrievalPythonMs());
+                preRetrievalGlueMs = nullSafeInt(docResult.preRetrievalGlueMs());
+                groundedMs = nullSafeInt(docResult.groundedTimeMs());
+                gapFillMs = nullSafeInt(docResult.gapFillTimeMs());
+                generalGptMs = nullSafeInt(docResult.generalGptTimeMs());
                 groundedTokens = docResult.groundedTokens();
                 gapFillTokens = docResult.gapFillTokens();
                 generalGptTokens = docResult.generalGptTokens();
 
                 if (chatResponse != null) {
+                    Instant restoreStart = Instant.now();
                     String restored = businessPlaceholderRestorer.restoreIntoSession(
                             chatResponse.getReply(),
                             protectionSession
@@ -304,6 +330,9 @@ public class ComprehendChatService {
                     chatResponse.setReply(restored);
                     chatResponse.setReplyBeforeRestore(protectionSession.replyBeforeRestore());
                     applyProtectionSessionToResponse(chatResponse, protectionSession);
+                    Instant restoreEnd = Instant.now();
+                    restoreMs = RequestTimingLog.durationMs(restoreStart, restoreEnd);
+                    RequestTimingLog.logStage("restore", restoreStart, restoreEnd);
                 }
             }
         }
@@ -313,6 +342,7 @@ public class ComprehendChatService {
         }
 
         if (Boolean.TRUE.equals(chatResponse.getLimitExceeded())) {
+            markServiceEnd(timingSnapshot, Instant.now(), requestStartMs);
             return chatResponse;
         }
 
@@ -327,18 +357,23 @@ public class ComprehendChatService {
                 tenantQuotaService.recordUsage(request.getTenantCode(), consumedTokens, usageReferenceId);
             }
         } catch (TenantQuotaExceededException e) {
+            markServiceEnd(timingSnapshot, Instant.now(), requestStartMs);
             return blockedQuotaExceptionResponse(e);
         }
 
         boolean sanitizedFlag = !Objects.equals(originalUserText, sanitizedUserText);
+        Instant liveHistoryStart = Instant.now();
         LiveHistoryResult liveHistory = liveHistorySummaryBuilder.build(chatResponse).orElse(null);
+        Instant liveHistoryEnd = Instant.now();
+        liveHistoryMs = RequestTimingLog.durationMs(liveHistoryStart, liveHistoryEnd);
+        RequestTimingLog.logStage("liveHistory", liveHistoryStart, liveHistoryEnd);
         String replyForPersistence = liveHistory != null
                 ? liveHistory.summaryText()
                 : chatResponse.getReply();
         LiveHistoryAuditMetadata auditMetadata = liveHistory != null
                 ? liveHistory.auditMetadata()
                 : null;
-        long persistenceStartMs = System.currentTimeMillis();
+        Instant persistenceStart = Instant.now();
         chatPersistenceService.persistChat(
                 request.getTenantCode(),
                 request.getUserId(),
@@ -360,7 +395,9 @@ public class ComprehendChatService {
                 )
                         : null
         );
-        long persistenceMs = System.currentTimeMillis() - persistenceStartMs;
+        Instant persistenceEnd = Instant.now();
+        long persistenceMs = RequestTimingLog.durationMs(persistenceStart, persistenceEnd);
+        RequestTimingLog.logStage("persistence", persistenceStart, persistenceEnd);
 
         chatResponse.setRetrievalReason(retrievalReason);
         chatResponse.setRetrievalTimeMs(retrievalTimeMs);
@@ -373,10 +410,14 @@ public class ComprehendChatService {
             chatResponse.setSanitizedUserMessage(sanitizedUserText);
         }
 
+        Instant suggestionsStart = Instant.now();
         SuggestionContext context = buildSuggestionContext(workingRequest, chatResponse.getReply(), sourcesForSuggestions);
         SuggestionResult suggestionResult = suggestionEngineService.generateSuggestions(context);
         chatResponse.setSuggestions(suggestionResult.getSuggestions());
         chatResponse.setSuggestionDetails(suggestionResult.getDetails());
+        Instant suggestionsEnd = Instant.now();
+        suggestionsMs = RequestTimingLog.durationMs(suggestionsStart, suggestionsEnd);
+        RequestTimingLog.logStage("suggestions", suggestionsStart, suggestionsEnd);
 
         log.info(
                 "Spring chat complete | session={} | route={} | action={} | retrievalReason={} | collecting={} | tokens={}",
@@ -397,9 +438,19 @@ public class ComprehendChatService {
                 nullSafeInt(openAiUsage != null ? openAiUsage.getTotalTokens() : null)
         );
 
-        long totalRequestMs = System.currentTimeMillis() - requestStartMs;
+        Instant serviceEnd = Instant.now();
+        long totalRequestMs = RequestTimingLog.durationMs(serviceStart, serviceEnd);
+        long httpTaxMs = Math.max(0L, retrievalMs - retrievalPythonMs);
         log.info(
-                "Request Timing Summary | pii={}ms | route={}ms | rewrite={}ms | retrieval={}ms | grounded={}ms | gapFill={}ms | generalGPT={}ms | persistence={}ms | total={}ms",
+                "Retrieval Clocks | springHttpMs={} | pythonInternalMs={} | httpTaxMs={}",
+                retrievalMs,
+                retrievalPythonMs,
+                httpTaxMs
+        );
+        log.info(
+                "Request Timing Summary | pii={}ms | route={}ms | rewrite={}ms | retrieval={}ms | grounded={}ms | "
+                        + "gapFill={}ms | generalGPT={}ms | persistence={}ms | suggestions={}ms | liveHistory={}ms | "
+                        + "restore={}ms | preRetrievalGlue={}ms | total={}ms | totalScope=serviceWall",
                 piiDetectionMs,
                 routeDecisionMs,
                 queryRewriteMs,
@@ -408,8 +459,47 @@ public class ComprehendChatService {
                 gapFillMs,
                 generalGptMs,
                 persistenceMs,
+                suggestionsMs,
+                liveHistoryMs,
+                restoreMs,
+                preRetrievalGlueMs,
                 totalRequestMs
         );
+
+        long measuredSumService = piiDetectionMs
+                + routeDecisionMs
+                + queryRewriteMs
+                + retrievalMs
+                + groundedMs
+                + gapFillMs
+                + generalGptMs
+                + persistenceMs
+                + suggestionsMs
+                + liveHistoryMs
+                + restoreMs
+                + preRetrievalGlueMs;
+        RequestTimingLog.logResidual(
+                RequestTimingLog.computeResidual(measuredSumService, totalRequestMs),
+                "serviceWall"
+        );
+
+        if (timingSnapshot != null) {
+            timingSnapshot.setPiiMs(piiDetectionMs);
+            timingSnapshot.setRouteMs(routeDecisionMs);
+            timingSnapshot.setRewriteMs(queryRewriteMs);
+            timingSnapshot.setRetrievalSpringMs(retrievalMs);
+            timingSnapshot.setRetrievalPythonMs(retrievalPythonMs);
+            timingSnapshot.setGroundedMs(groundedMs);
+            timingSnapshot.setGapFillMs(gapFillMs);
+            timingSnapshot.setGeneralGptMs(generalGptMs);
+            timingSnapshot.setPersistenceMs(persistenceMs);
+            timingSnapshot.setSuggestionsMs(suggestionsMs);
+            timingSnapshot.setLiveHistoryMs(liveHistoryMs);
+            timingSnapshot.setRestoreMs(restoreMs);
+            timingSnapshot.setPreRetrievalGlueMs(preRetrievalGlueMs);
+            timingSnapshot.setServiceTotalMs(totalRequestMs);
+            timingSnapshot.setServiceEnd(serviceEnd);
+        }
 
         return chatResponse;
     }
@@ -826,6 +916,8 @@ public class ComprehendChatService {
     ) {
         long queryRewriteMs = 0L;
         long retrievalStageMs = 0L;
+        long retrievalPythonMs = 0L;
+        long preRetrievalGlueMs = 0L;
         long groundedMs = 0L;
         long gapFillMs = 0L;
         long generalGptMs = 0L;
@@ -840,15 +932,21 @@ public class ComprehendChatService {
         List<String> rewrittenQueries = List.of();
         OpenAIUsage rewriteUsage = null;
         if (queryRewriteEnabled) {
-            long rewriteStartMs = System.currentTimeMillis();
+            Instant rewriteStart = Instant.now();
             QueryRewriteResult rewriteResult = openAIService.rewriteQueries(llmText);
-            queryRewriteMs = System.currentTimeMillis() - rewriteStartMs;
+            Instant rewriteEnd = Instant.now();
+            queryRewriteMs = RequestTimingLog.durationMs(rewriteStart, rewriteEnd);
+            RequestTimingLog.logStage("rewrite", rewriteStart, rewriteEnd);
             rewrittenQueries = rewriteResult.queries();
             rewriteUsage = rewriteResult.usage();
         }
-        List<String> searchQueries = SearchQueryAssembler.assemble(llmText, rewrittenQueries, 4);
 
+        Instant glueStart = Instant.now();
+        List<String> searchQueries = SearchQueryAssembler.assemble(llmText, rewrittenQueries, 4);
         List<String> boostProgramIds = ProgramIdDetector.detect(llmText, originalUserText);
+        Instant glueEnd = Instant.now();
+        preRetrievalGlueMs = RequestTimingLog.durationMs(glueStart, glueEnd);
+        RequestTimingLog.logStage("preRetrievalGlue", glueStart, glueEnd);
         log.info(
                 "Doc retrieval program boost: detectedProgramIds={}",
                 boostProgramIds.isEmpty() ? "none" : boostProgramIds
@@ -856,23 +954,45 @@ public class ComprehendChatService {
 
         PythonRetrievalResponse retrieval;
         try {
-            long retrievalStartMs = System.currentTimeMillis();
+            Instant retrievalStart = Instant.now();
+            String retrievalRequestId = java.util.UUID.randomUUID().toString();
+            String conversationId = request.getSessionId();
             retrieval = pythonRagService.retrieve(
                     llmText,
                     searchQueries,
                     ragRequest,
-                    boostProgramIds
+                    boostProgramIds,
+                    retrievalRequestId,
+                    conversationId
             );
-            retrievalStageMs = System.currentTimeMillis() - retrievalStartMs;
+            Instant retrievalEnd = Instant.now();
+            retrievalStageMs = RequestTimingLog.durationMs(retrievalStart, retrievalEnd);
+            RequestTimingLog.logStage("retrieval", retrievalStart, retrievalEnd);
+            Integer pythonMs = retrieval.getRetrievalTimeMs();
+            retrievalPythonMs = pythonMs != null ? pythonMs.longValue() : 0L;
+            log.info(
+                    "Python retrieval correlation | requestId={} | conversationId={} | stageMs={}",
+                    retrievalRequestId,
+                    conversationId,
+                    retrievalStageMs
+            );
+            log.info(
+                    "Retrieval Clocks | springHttpMs={} | pythonInternalMs={} | httpTaxMs={}",
+                    retrievalStageMs,
+                    retrievalPythonMs,
+                    Math.max(0L, retrievalStageMs - retrievalPythonMs)
+            );
         } catch (OpenAIException e) {
             log.warn(
                     "Python retrieval call failed (status={}), falling back to OpenAI: {}",
                     e.getStatusCode(),
                     e.getMessage()
             );
-            long generalStartMs = System.currentTimeMillis();
+            Instant generalStart = Instant.now();
             ChatResponse chatResponse = openAIService.chatWithoutPersistence(request, session);
-            generalGptMs = System.currentTimeMillis() - generalStartMs;
+            Instant generalEnd = Instant.now();
+            generalGptMs = RequestTimingLog.durationMs(generalStart, generalEnd);
+            RequestTimingLog.logStage("generalGPT", generalStart, generalEnd);
             logUsage("General", chatResponse.getOpenAiUsage(), generalGptMs);
             generalGptTokens = nullSafeInt(chatResponse.getOpenAiUsage() != null ? chatResponse.getOpenAiUsage().getTotalTokens() : null);
             if (rewriteUsage != null) {
@@ -887,6 +1007,8 @@ public class ComprehendChatService {
                     null,
                     (int) queryRewriteMs,
                     (int) retrievalStageMs,
+                    (int) retrievalPythonMs,
+                    (int) preRetrievalGlueMs,
                     0,
                     0,
                     (int) generalGptMs,
@@ -924,10 +1046,24 @@ public class ComprehendChatService {
         ChatResponse chatResponse;
         if (RETRIEVAL_READY.equals(reason)) {
             try {
-                long groundedStartMs = System.currentTimeMillis();
+                Instant groundedStart = Instant.now();
                 GroundedRagCallResult groundedCall = openAIService.chatWithRagContext(request, promptChunks, session);
-                groundedMs = System.currentTimeMillis() - groundedStartMs;
+                Instant groundedEnd = Instant.now();
+                groundedMs = RequestTimingLog.durationMs(groundedStart, groundedEnd);
+                RequestTimingLog.logStage("grounded", groundedStart, groundedEnd);
                 logUsage("Grounded", groundedCall.usage(), groundedMs);
+                log.info(
+                        "Grounded Stage Timing | promptBuildMs={} | openAiWaitMs={} | responseParseMs={} | "
+                                + "chunkCount={} | promptContextChars={} | promptTokens={} | completionTokens={} | totalGroundedMs={}",
+                        groundedCall.promptBuildMs(),
+                        groundedCall.openAiWaitMs(),
+                        groundedCall.responseParseMs(),
+                        groundedCall.chunkCount(),
+                        groundedCall.promptContextChars(),
+                        nullSafeInt(groundedCall.usage() != null ? groundedCall.usage().getPromptTokens() : null),
+                        nullSafeInt(groundedCall.usage() != null ? groundedCall.usage().getCompletionTokens() : null),
+                        groundedMs
+                );
                 groundedTokens = nullSafeInt(groundedCall.usage() != null ? groundedCall.usage().getTotalTokens() : null);
                 OpenAIUsage groundedUsage = groundedCall.usage();
                 if (rewriteUsage != null) {
@@ -949,12 +1085,30 @@ public class ComprehendChatService {
                 generalGptMs = outcome.generalGptTimeMs();
                 gapFillTokens = outcome.gapFillTokens();
                 generalGptTokens = outcome.generalGptTokens();
+                if (gapFillMs > 0) {
+                    log.info(
+                            "Stage Timing | stage=gapFill | start={} | end={} | durationMs={}",
+                            groundedEnd,
+                            Instant.ofEpochMilli(groundedEnd.toEpochMilli() + gapFillMs),
+                            gapFillMs
+                    );
+                }
+                if (generalGptMs > 0) {
+                    log.info(
+                            "Stage Timing | stage=generalGPT | start={} | end={} | durationMs={}",
+                            groundedEnd,
+                            Instant.ofEpochMilli(groundedEnd.toEpochMilli() + generalGptMs),
+                            generalGptMs
+                    );
+                }
                 logUsage("Merged", chatResponse.getOpenAiUsage(), 0);
             } catch (OpenAIException e) {
                 log.warn("Grounded JSON parsing failed, falling back to General GPT: {}", e.getMessage());
-                long generalStartMs = System.currentTimeMillis();
+                Instant generalStart = Instant.now();
                 chatResponse = openAIService.chatWithoutPersistence(request, session);
-                generalGptMs = System.currentTimeMillis() - generalStartMs;
+                Instant generalEnd = Instant.now();
+                generalGptMs = RequestTimingLog.durationMs(generalStart, generalEnd);
+                RequestTimingLog.logStage("generalGPT", generalStart, generalEnd);
                 logUsage("General", chatResponse.getOpenAiUsage(), generalGptMs);
                 generalGptTokens = nullSafeInt(chatResponse.getOpenAiUsage() != null ? chatResponse.getOpenAiUsage().getTotalTokens() : null);
                 if (rewriteUsage != null) {
@@ -975,9 +1129,11 @@ public class ComprehendChatService {
             if (retrieval.getError() != null) {
                 log.warn("Retrieval error from Python, falling back to OpenAI: {}", retrieval.getError());
             }
-            long generalStartMs = System.currentTimeMillis();
+            Instant generalStart = Instant.now();
             chatResponse = openAIService.chatWithoutPersistence(request, session);
-            generalGptMs = System.currentTimeMillis() - generalStartMs;
+            Instant generalEnd = Instant.now();
+            generalGptMs = RequestTimingLog.durationMs(generalStart, generalEnd);
+            RequestTimingLog.logStage("generalGPT", generalStart, generalEnd);
             logUsage("General", chatResponse.getOpenAiUsage(), generalGptMs);
             generalGptTokens = nullSafeInt(chatResponse.getOpenAiUsage() != null ? chatResponse.getOpenAiUsage().getTotalTokens() : null);
             if (rewriteUsage != null) {
@@ -993,7 +1149,9 @@ public class ComprehendChatService {
                 retrieval.getRetrievalTimeMs(),
                 retrieval.getMaxScore(),
                 (int) queryRewriteMs,
-                retrieval.getRetrievalTimeMs() != null ? retrieval.getRetrievalTimeMs() : (int) retrievalStageMs,
+                (int) retrievalStageMs,
+                (int) retrievalPythonMs,
+                (int) preRetrievalGlueMs,
                 (int) groundedMs,
                 (int) gapFillMs,
                 (int) generalGptMs,
@@ -1261,7 +1419,9 @@ public class ComprehendChatService {
             Integer retrievalTimeMs,
             Float maxScore,
             Integer queryRewriteTimeMs,
-            Integer retrievalStageTimeMs,
+            Integer retrievalSpringMs,
+            Integer retrievalPythonMs,
+            Integer preRetrievalGlueMs,
             Integer groundedTimeMs,
             Integer gapFillTimeMs,
             Integer generalGptTimeMs,
@@ -1339,5 +1499,29 @@ public class ComprehendChatService {
 
     private int nullSafeInt(Integer value) {
         return value != null ? value : 0;
+    }
+
+    private ComprehendChatTimingSnapshot currentTimingSnapshot() {
+        try {
+            var attrs = RequestContextHolder.getRequestAttributes();
+            if (!(attrs instanceof ServletRequestAttributes servletAttrs)) {
+                return null;
+            }
+            Object raw = servletAttrs.getRequest().getAttribute(RequestTimingLog.REQUEST_ATTR);
+            if (raw instanceof ComprehendChatTimingSnapshot snapshot) {
+                return snapshot;
+            }
+        } catch (Exception ignored) {
+            // No request context (unit tests)
+        }
+        return null;
+    }
+
+    private void markServiceEnd(ComprehendChatTimingSnapshot snapshot, Instant end, long requestStartMs) {
+        if (snapshot == null) {
+            return;
+        }
+        snapshot.setServiceEnd(end);
+        snapshot.setServiceTotalMs(Math.max(0L, end.toEpochMilli() - requestStartMs));
     }
 }

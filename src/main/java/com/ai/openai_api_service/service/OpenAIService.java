@@ -344,6 +344,7 @@ public class OpenAIService {
             throw new OpenAIException("promptChunks cannot be empty for grounded chat", 400);
         }
 
+        long buildStartMs = System.currentTimeMillis();
         String userQuestion;
         if (session != null) {
             userQuestion = prepareUserContentForOpenAi(session.textForLlm());
@@ -356,9 +357,45 @@ public class OpenAIService {
         String userPrompt = buildRagUserPrompt(context, userQuestion);
 
         List<Map<String, String>> messages = buildMessages(request, RAG_SYSTEM_PROMPT, userPrompt, true);
+        long promptBuildMs = System.currentTimeMillis() - buildStartMs;
+        int promptContextChars = context != null ? context.length() : 0;
+
         OpenAiCallResult result = callOpenAi(messages);
+        long openAiWaitMs = result.elapsedMs();
+
+        long parseStartMs = System.currentTimeMillis();
         GroundedRagResult grounded = parseGroundedRagResult(result.content());
-        return new GroundedRagCallResult(grounded, result.usage(), result.content());
+        long responseParseMs = System.currentTimeMillis() - parseStartMs;
+
+        int promptTokens = result.usage() != null && result.usage().getPromptTokens() != null
+                ? result.usage().getPromptTokens()
+                : 0;
+        int completionTokens = result.usage() != null && result.usage().getCompletionTokens() != null
+                ? result.usage().getCompletionTokens()
+                : 0;
+        log.info(
+                "Grounded Stage Timing | promptBuildMs={} | openAiWaitMs={} | responseParseMs={} | "
+                        + "totalMs={} | chunkCount={} | promptContextChars={} | promptTokens={} | completionTokens={}",
+                promptBuildMs,
+                openAiWaitMs,
+                responseParseMs,
+                promptBuildMs + openAiWaitMs + responseParseMs,
+                promptChunks.size(),
+                promptContextChars,
+                promptTokens,
+                completionTokens
+        );
+
+        return new GroundedRagCallResult(
+                grounded,
+                result.usage(),
+                result.content(),
+                promptBuildMs,
+                openAiWaitMs,
+                responseParseMs,
+                promptContextChars,
+                promptChunks.size()
+        );
     }
 
     /**
@@ -677,7 +714,7 @@ public class OpenAIService {
         String content = extractContent(response);
         boolean truncated = isTruncated(response);
         OpenAIUsage usage = extractUsage(response, model);
-        return new OpenAiCallResult(content, truncated, usage);
+        return new OpenAiCallResult(content, truncated, usage, elapsed);
     }
 
     private void validateApiKey() {
@@ -844,6 +881,9 @@ public class OpenAIService {
                 && businessInformationProtectionService.isEnabled();
     }
 
-    private record OpenAiCallResult(String content, boolean truncated, OpenAIUsage usage) {
+    private record OpenAiCallResult(String content, boolean truncated, OpenAIUsage usage, long elapsedMs) {
+        OpenAiCallResult(String content, boolean truncated, OpenAIUsage usage) {
+            this(content, truncated, usage, 0L);
+        }
     }
 }
