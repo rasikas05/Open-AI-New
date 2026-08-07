@@ -41,4 +41,12 @@ public class PythonRetrievalRequest {
 
     @JsonProperty("queries")
     private List<String> queries;
+
+    /** Correlation id for Python stage timing logs (optional). */
+    @JsonProperty("request_id")
+    private String requestId;
+
+    /** Chat/session id for correlating Spring and Python logs (optional). */
+    @JsonProperty("conversation_id")
+    private String conversationId;
 }
