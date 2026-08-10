@@ -1194,10 +1194,10 @@ public class ComprehendChatService {
                 int gapFillTimeMs = (int) (System.currentTimeMillis() - gapFillStartMs);
                 logUsage("GapFill", gapFill.getOpenAiUsage(), gapFillTimeMs);
                 int gapFillTokens = nullSafeInt(gapFill.getOpenAiUsage() != null ? gapFill.getOpenAiUsage().getTotalTokens() : null);
-                String combined = "## Documentation\n\n"
-                        + docAnswer.strip()
-                        + "\n\n## Additional AI Information\n\n"
-                        + (gapFill.getReply() != null ? gapFill.getReply().strip() : "");
+                String gapReply = gapFill.getReply() != null ? gapFill.getReply().strip() : "";
+                String combined = gapReply.isEmpty()
+                        ? docAnswer.strip()
+                        : docAnswer.strip() + "\n\n" + gapReply;
                 ChatResponse response = buildRagChatResponse(request, combined, mergeUsage(usageSoFar, gapFill.getOpenAiUsage()));
                 log.info(
                         "RAG Decision | status={} | retrievalReason={} | grounded={} | gapFill={} | generalGPT={} | finalAction={} | missingTopics={}",

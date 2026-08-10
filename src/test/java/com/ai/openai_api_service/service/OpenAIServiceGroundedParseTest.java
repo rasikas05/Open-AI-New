@@ -46,6 +46,43 @@ class OpenAIServiceGroundedParseTest {
     }
 
     @Test
+    void parseGroundedRagResult_coercesFalsePartialCoverageRefusalToInsufficient() {
+        GroundedRagResult result = openAIService.parseGroundedRagResult(
+                "{\"status\":\"PARTIAL\",\"answer\":\"The supplied documentation does not describe how to cancel a customer order.\",\"missingTopics\":[\"cancel customer order\"]}"
+        );
+        assertEquals(RagStatus.INSUFFICIENT, result.getStatus());
+        assertEquals("", result.getAnswer());
+        assertTrue(result.getMissingTopics().isEmpty());
+    }
+
+    @Test
+    void parseGroundedRagResult_keepsPartialWhenCoverageRefusalHasSubstantiveBody() {
+        String answer = """
+                The documentation does not describe cancellation of confirmed orders in full.
+
+                1. Open OIS100 and enter the customer order number.
+                2. Review the current order status before taking further action.
+                3. Use the available order change options to complete the documented steps.
+                """;
+        GroundedRagResult result = openAIService.parseGroundedRagResult(
+                "{\"status\":\"PARTIAL\",\"answer\":"
+                        + objectMapperQuote(answer)
+                        + ",\"missingTopics\":[\"invoicing\"]}"
+        );
+        assertEquals(RagStatus.PARTIAL, result.getStatus());
+        assertTrue(result.getAnswer().contains("Open OIS100"));
+        assertEquals(List.of("invoicing"), result.getMissingTopics());
+    }
+
+    private static String objectMapperQuote(String value) {
+        try {
+            return new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(value);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
+    @Test
     void parseGroundedRagResult_rejectsInvalidStatus() {
         assertThrows(
                 OpenAIException.class,
