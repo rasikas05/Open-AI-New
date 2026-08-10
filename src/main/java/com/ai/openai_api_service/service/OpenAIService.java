@@ -2,6 +2,7 @@ package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.config.RestTemplateFactory;
 import com.ai.openai_api_service.exception.TenantQuotaExceededException;
+import com.ai.openai_api_service.exception.AiServiceErrors;
 import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
@@ -589,7 +590,17 @@ public class OpenAIService {
             }
             log.info("Query rewrite produced {} search queries: {}", queries.size(), queries);
             return new QueryRewriteResult(queries, result.usage());
+        } catch (OpenAIException e) {
+            if (e.isAiServiceUnavailable()) {
+                throw e;
+            }
+            log.warn("Query rewriting failed: {}. Falling back to original sanitized query.", e.getMessage());
+            OpenAIUsage fallbackUsage = new OpenAIUsage(0, 0, 0, model);
+            return new QueryRewriteResult(List.of(sanitizedQuery), fallbackUsage);
         } catch (Exception e) {
+            if (AiServiceErrors.isQuotaOrCreditExhaustion(e.getMessage())) {
+                throw AiServiceErrors.unavailable(e.getMessage());
+            }
             log.warn("Query rewriting failed: {}. Falling back to original sanitized query.", e.getMessage());
             OpenAIUsage fallbackUsage = new OpenAIUsage(0, 0, 0, model);
             return new QueryRewriteResult(List.of(sanitizedQuery), fallbackUsage);
@@ -797,7 +808,11 @@ public class OpenAIService {
             log.warn("OpenAI x-ratelimit-remaining-tokens={}", h.getFirst("x-ratelimit-remaining-tokens"));
             log.warn("OpenAI x-ratelimit-reset-tokens={}", h.getFirst("x-ratelimit-reset-tokens"));
         }
-        log.warn("OpenAI error status={} body={}", e.getStatusCode(), e.getResponseBodyAsString());
+        String body = e.getResponseBodyAsString();
+        log.warn("OpenAI error status={} body={}", e.getStatusCode(), body);
+        if (AiServiceErrors.isQuotaOrCreditExhaustion(body) || AiServiceErrors.isQuotaOrCreditExhaustion(e.getMessage())) {
+            throw AiServiceErrors.unavailable("OpenAI status=" + code + " body=" + body);
+        }
         String msg = code == 401
                 ? "OpenAI API key is invalid or missing. Check openai.api.key in application.properties (no quotes)."
                 : "OpenAI API error: " + code + " " + e.getStatusText();

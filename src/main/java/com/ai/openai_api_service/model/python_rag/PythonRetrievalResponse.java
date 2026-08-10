@@ -44,4 +44,7 @@ public class PythonRetrievalResponse {
     private Integer retrievalTimeMs;
 
     private String error;
+
+    @JsonProperty("errorCode")
+    private String errorCode;
 }
