@@ -427,10 +427,14 @@ class ComprehendChatServiceTest {
 
         ChatResponse response = comprehendChatService.chat(baseRequest("What is MNS204 used for?"));
 
-        assertTrue(response.getReply().contains("## Documentation"));
         assertTrue(response.getReply().contains("MNS204 appears in user settings documentation."));
-        assertTrue(response.getReply().contains("## Additional AI Information"));
         assertTrue(response.getReply().contains("Functional purpose: ..."));
+        assertFalse(response.getReply().contains("## Documentation"));
+        assertFalse(response.getReply().contains("## Additional AI Information"));
+        assertEquals(
+                "MNS204 appears in user settings documentation.\n\nFunctional purpose: ...",
+                response.getReply()
+        );
         assertEquals("rag", response.getActionTaken());
         assertEquals("ready_for_grounding", response.getRetrievalReason());
         assertEquals(200, response.getOpenAiUsage().getTotalTokens());

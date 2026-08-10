@@ -1,6 +1,7 @@
 package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.exception.TenantQuotaExceededException;
+import com.ai.openai_api_service.exception.AiServiceErrors;
 import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.BusinessProtectedEntityDto;
 import com.ai.openai_api_service.model.ChatRequest;
@@ -983,6 +984,9 @@ public class ComprehendChatService {
                     Math.max(0L, retrievalStageMs - retrievalPythonMs)
             );
         } catch (OpenAIException e) {
+            if (e.isAiServiceUnavailable()) {
+                throw e;
+            }
             log.warn(
                     "Python retrieval call failed (status={}), falling back to OpenAI: {}",
                     e.getStatusCode(),
@@ -1017,6 +1021,8 @@ public class ComprehendChatService {
                     generalGptTokens
             );
         }
+
+        abortIfPythonAiUnavailable(retrieval);
 
         String reason = retrieval.getRetrievalReason();
         log.info(
@@ -1103,6 +1109,9 @@ public class ComprehendChatService {
                 }
                 logUsage("Merged", chatResponse.getOpenAiUsage(), 0);
             } catch (OpenAIException e) {
+                if (e.isAiServiceUnavailable()) {
+                    throw e;
+                }
                 log.warn("Grounded JSON parsing failed, falling back to General GPT: {}", e.getMessage());
                 Instant generalStart = Instant.now();
                 chatResponse = openAIService.chatWithoutPersistence(request, session);
@@ -1194,10 +1203,10 @@ public class ComprehendChatService {
                 int gapFillTimeMs = (int) (System.currentTimeMillis() - gapFillStartMs);
                 logUsage("GapFill", gapFill.getOpenAiUsage(), gapFillTimeMs);
                 int gapFillTokens = nullSafeInt(gapFill.getOpenAiUsage() != null ? gapFill.getOpenAiUsage().getTotalTokens() : null);
-                String combined = "## Documentation\n\n"
-                        + docAnswer.strip()
-                        + "\n\n## Additional AI Information\n\n"
-                        + (gapFill.getReply() != null ? gapFill.getReply().strip() : "");
+                String gapReply = gapFill.getReply() != null ? gapFill.getReply().strip() : "";
+                String combined = gapReply.isEmpty()
+                        ? docAnswer.strip()
+                        : docAnswer.strip() + "\n\n" + gapReply;
                 ChatResponse response = buildRagChatResponse(request, combined, mergeUsage(usageSoFar, gapFill.getOpenAiUsage()));
                 log.info(
                         "RAG Decision | status={} | retrievalReason={} | grounded={} | gapFill={} | generalGPT={} | finalAction={} | missingTopics={}",
@@ -1256,6 +1265,26 @@ public class ComprehendChatService {
         chatResponse.setActionTaken("rag");
         chatResponse.setOpenAiUsage(usage);
         return chatResponse;
+    }
+
+    private void abortIfPythonAiUnavailable(PythonRetrievalResponse retrieval) {
+        if (retrieval == null) {
+            return;
+        }
+        String errorCode = retrieval.getErrorCode();
+        String reason = retrieval.getRetrievalReason();
+        String error = retrieval.getError();
+        boolean flagged = AiServiceErrors.ERROR_CODE.equals(errorCode)
+                || "ai_service_unavailable".equalsIgnoreCase(reason)
+                || AiServiceErrors.isQuotaOrCreditExhaustion(error)
+                || AiServiceErrors.isQuotaOrCreditExhaustion(errorCode);
+        if (flagged) {
+            String detail = "python retrieval errorCode=" + errorCode
+                    + " reason=" + reason
+                    + " error=" + error;
+            log.error("Aborting chat: upstream AI service unavailable | {}", detail);
+            throw AiServiceErrors.unavailable(detail);
+        }
     }
 
     private void logUsage(String stage, OpenAIUsage usage, long latencyMs) {

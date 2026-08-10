@@ -9,6 +9,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -45,6 +47,9 @@ public class SuggestionEngineService {
     @Value("${suggestion.llm.enabled:true}")
     private boolean llmEnabled;
 
+    @Value("${openai.api.model:unknown}")
+    private String openaiModel;
+
     public SuggestionEngineService(
             SuggestionRuleService suggestionRuleService,
             SuggestionLLMService suggestionLLMService,
@@ -72,9 +77,13 @@ public class SuggestionEngineService {
         }
 
         int targetCount = Math.max(1, Math.min(maxCount, Math.max(minCount, maxCount)));
+        Instant totalStart = Instant.now();
         List<SuggestionItem> topicItems = buildTopicBasedItems(context, targetCount);
         List<SuggestionItem> ruleItems = buildRuleItems(userMessage, targetCount);
-        List<SuggestionItem> llmItems = llmEnabled ? getLlmSuggestions(context, targetCount) : List.of();
+        Instant llmStart = Instant.now();
+        LlmSuggestionBatch llmBatch = llmEnabled ? getLlmSuggestionsTimed(context, targetCount) : LlmSuggestionBatch.empty();
+        long llmWallMs = Duration.between(llmStart, Instant.now()).toMillis();
+        List<SuggestionItem> llmItems = llmBatch.items();
 
         List<SuggestionItem> merged = new ArrayList<>();
         if (!topicItems.isEmpty()) {
@@ -85,11 +94,30 @@ public class SuggestionEngineService {
             merged.addAll(llmItems);
         }
 
+        List<SuggestionItem> genericItems = List.of();
         if (merged.isEmpty()) {
-            merged.addAll(buildGenericItems(targetCount));
+            genericItems = buildGenericItems(targetCount);
+            merged.addAll(genericItems);
         }
 
         List<SuggestionItem> ranked = normalizeAndRankSuggestions(merged, targetCount);
+        long totalMs = Duration.between(totalStart, Instant.now()).toMillis();
+        int deterministicCount = topicItems.size() + ruleItems.size() + genericItems.size();
+        log.info(
+                "Suggestion Summary | totalMs={} | llmWallMs={} | deterministicCount={} | topicCount={} | ruleCount={} | genericCount={} | llmCount={} | llmCacheHit={} | llmCalled={} | generatedCount={} | returnedCount={} | model={}",
+                totalMs,
+                llmWallMs,
+                deterministicCount,
+                topicItems.size(),
+                ruleItems.size(),
+                genericItems.size(),
+                llmItems.size(),
+                llmBatch.cacheHit(),
+                llmBatch.called(),
+                merged.size(),
+                ranked.size(),
+                llmBatch.model()
+        );
         return mapToResult(ranked);
     }
 
@@ -235,13 +263,14 @@ public class SuggestionEngineService {
                 .collect(Collectors.toList());
     }
 
-    private List<SuggestionItem> getLlmSuggestions(SuggestionContext context, int maxCount) {
+    private LlmSuggestionBatch getLlmSuggestionsTimed(SuggestionContext context, int maxCount) {
         String cacheKey = buildCacheKey(context);
         List<String> cached = suggestionCacheService.get(cacheKey);
         if (!cached.isEmpty()) {
-            return cached.stream()
+            List<SuggestionItem> items = cached.stream()
                     .map(text -> new SuggestionItem(text, SuggestionCategory.RELATED_TOPIC, 0.55d, "LLM"))
                     .collect(Collectors.toList());
+            return new LlmSuggestionBatch(items, true, false, "cache");
         }
 
         List<SuggestionItem> suggestions = suggestionLLMService.suggest(context, 1, maxCount);
@@ -250,7 +279,22 @@ public class SuggestionEngineService {
                     .map(SuggestionItem::getText)
                     .collect(Collectors.toList()));
         }
-        return suggestions;
+        return new LlmSuggestionBatch(suggestions, false, true, openaiModel);
+    }
+
+    private List<SuggestionItem> getLlmSuggestions(SuggestionContext context, int maxCount) {
+        return getLlmSuggestionsTimed(context, maxCount).items();
+    }
+
+    private record LlmSuggestionBatch(
+            List<SuggestionItem> items,
+            boolean cacheHit,
+            boolean called,
+            String model
+    ) {
+        static LlmSuggestionBatch empty() {
+            return new LlmSuggestionBatch(List.of(), false, false, null);
+        }
     }
 
     private List<SuggestionItem> normalizeAndRankSuggestions(List<SuggestionItem> items, int maxCount) {

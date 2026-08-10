@@ -16,6 +16,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -46,7 +48,9 @@ public class SuggestionLLMService {
             return List.of();
         }
 
+        Instant promptStart = Instant.now();
         String prompt = buildPrompt(context, minCount, maxCount);
+        long promptBuildMs = Duration.between(promptStart, Instant.now()).toMillis();
         if (prompt.isBlank()) {
             return List.of();
         }
@@ -70,18 +74,50 @@ public class SuggestionLLMService {
         headers.setBearerAuth(apiKey);
 
         try {
+            Instant openAiStart = Instant.now();
             ResponseEntity<Map> responseEntity = restTemplate.exchange(
                     openaiUrl,
                     HttpMethod.POST,
                     new HttpEntity<>(body, headers),
                     Map.class
             );
+            long openAiWaitMs = Duration.between(openAiStart, Instant.now()).toMillis();
             Map<String, Object> response = responseEntity.getBody();
-            return extractSuggestions(response, maxCount);
+            Instant parseStart = Instant.now();
+            List<SuggestionItem> items = extractSuggestions(response, maxCount);
+            long parseMs = Duration.between(parseStart, Instant.now()).toMillis();
+            int promptTokens = extractUsageField(response, "prompt_tokens");
+            int completionTokens = extractUsageField(response, "completion_tokens");
+            log.info(
+                    "Suggestion LLM Timing | model={} | promptBuildMs={} | openAiWaitMs={} | parseMs={} | llmCount={} | promptTokens={} | completionTokens={}",
+                    model,
+                    promptBuildMs,
+                    openAiWaitMs,
+                    parseMs,
+                    items.size(),
+                    promptTokens,
+                    completionTokens
+            );
+            return items;
         } catch (Exception e) {
             log.warn("LLM suggestion generation failed: {}", e.getMessage());
             return List.of();
         }
+    }
+
+    private int extractUsageField(Map<String, Object> response, String field) {
+        if (response == null) {
+            return 0;
+        }
+        Object usageObj = response.get("usage");
+        if (!(usageObj instanceof Map<?, ?> usage)) {
+            return 0;
+        }
+        Object value = usage.get(field);
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        return 0;
     }
 
     private String buildPrompt(SuggestionContext context, int minCount, int maxCount) {

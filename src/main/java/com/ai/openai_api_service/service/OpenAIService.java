@@ -2,6 +2,7 @@ package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.config.RestTemplateFactory;
 import com.ai.openai_api_service.exception.TenantQuotaExceededException;
+import com.ai.openai_api_service.exception.AiServiceErrors;
 import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
@@ -118,14 +119,33 @@ public class OpenAIService {
             {"status":"FULL"|"PARTIAL"|"INSUFFICIENT","answer":"...","missingTopics":[]}
 
             Status rules:
-            - FULL: documentation completely answers the question. Put the full formatted answer in "answer". \
-            "missingTopics" must be [].
-            - PARTIAL: documentation answers part of the question. Put the COMPLETE documentation-based answer \
-            in "answer". List only substantive missing topics in "missingTopics" (not screenshots or formatting).
-            - INSUFFICIENT: documentation cannot support a useful answer. Set "answer" to "" and "missingTopics" to [].
+            Decide: does the documentation answer the user's question completely, partially, or not at all?
+            - FULL: Use FULL only when the retrieved documentation provides enough information to answer the \
+            user's request completely. Put the full formatted answer in "answer". "missingTopics" must be [].
+            - PARTIAL: Use PARTIAL only when the retrieved documentation directly answers a meaningful part of \
+            the user's request, but another meaningful part of the same request is not covered. Put only the \
+            useful documentation-supported content in "answer". List only the specific uncovered parts of the \
+            user's request in "missingTopics" (not screenshots or formatting).
+            - INSUFFICIENT: Use INSUFFICIENT when the documentation does not provide enough information to \
+            answer the user's actual request. Set "answer" to "" and "missingTopics" to [].
 
-            Never append a separate "not available" refusal after a useful documentation answer. Use INSUFFICIENT \
-            only when the answer would not be useful.
+            IMPORTANT — related topic is not PARTIAL:
+            - Do NOT use PARTIAL just because the retrieved documentation is related to the user's topic.
+            - For a single-task question, if the documentation does not explain how to perform that task, \
+            use INSUFFICIENT even if related information was retrieved.
+            - Example: user asks how to cancel a customer order, but docs only cover deleting preliminary \
+            orders → INSUFFICIENT (not PARTIAL).
+
+            Answer content rules:
+            - Do not expose documentation-coverage commentary in "answer". Never write phrases like \
+            "The supplied documentation does not describe…", "docs do not cover…", or otherwise narrate \
+            retrieval limits.
+            - "answer" may contain only useful information that directly contributes to answering the user.
+            - If the documentation cannot answer the requested task, classify INSUFFICIENT rather than \
+            producing a PARTIAL answer from related or tangential information.
+            - Never invent procedures and present them as documentation-backed.
+
+            Never append a separate "not available" refusal after a useful documentation answer.
 
             A - Actor
             Act as an experienced Infor M3 documentation formatter and coverage classifier.
@@ -136,6 +156,15 @@ public class OpenAIService {
 
     private static final int MAX_REWRITTEN_QUERIES = 3;
     private static final Pattern MARKDOWN_JSON_FENCE = Pattern.compile("```(?:json)?\\s*([\\s\\S]*?)```");
+    /** Narrow false-PARTIAL detector: coverage/refusal commentary in the grounded answer. */
+    private static final Pattern GROUNDED_COVERAGE_REFUSAL = Pattern.compile(
+            "(?i)(?:the\\s+)?(?:supplied\\s+)?documentation\\s+does\\s+not\\s+(?:describe|cover|contain|include|provide|support|answer)"
+                    + "|(?:the\\s+)?docs?\\s+do\\s+not\\s+(?:describe|cover|contain|include|provide)"
+                    + "|not\\s+(?:described|covered|found|available)\\s+in\\s+the\\s+(?:supplied\\s+)?documentation"
+                    + "|documentation\\s+cannot\\s+(?:support|answer|provide)"
+    );
+    private static final Pattern NUMBERED_STEP = Pattern.compile("(?m)^\\s*\\d+[.)]\\s+\\S");
+    private static final int MIN_SUBSTANTIVE_ANSWER_CHARS = 80;
 
     private static final String REWRITE_SYSTEM_PROMPT = """
             You are an Infor M3 documentation search specialist covering Finance, Manufacturing, and localization. \
@@ -442,8 +471,10 @@ public class OpenAIService {
                 Missing Topics:
                 %s
 
-                Answer ONLY the missing topics listed above. Do not repeat the documentation answer. \
-                Do not answer topics that are already covered in the documentation answer.
+                Answer ONLY the missing topics listed above. Generate only the missing information as a \
+                natural continuation of the Documentation Answer so it can be appended directly. \
+                Do not repeat the documentation answer. Do not answer topics that are already covered. \
+                Do not mention documentation, missing topics, AI information, or the retrieval process.
                 """.formatted(
                 questionForPrompt,
                 documentationAnswer != null ? documentationAnswer : "",
@@ -494,6 +525,16 @@ public class OpenAIService {
             }
             if (status == RagStatus.INSUFFICIENT) {
                 missingTopics = List.of();
+                answer = "";
+            }
+            if (status == RagStatus.PARTIAL && isFalsePartialCoverageRefusal(answer)) {
+                log.warn(
+                        "False PARTIAL coerced to INSUFFICIENT | reason=coverage_refusal_without_substantive_answer | answerChars={}",
+                        answer != null ? answer.length() : 0
+                );
+                status = RagStatus.INSUFFICIENT;
+                answer = "";
+                missingTopics = List.of();
             }
             return new GroundedRagResult(status, answer, missingTopics);
         } catch (OpenAIException e) {
@@ -501,6 +542,26 @@ public class OpenAIService {
         } catch (Exception e) {
             throw new OpenAIException("Failed to parse grounded RAG JSON: " + e.getMessage(), 502);
         }
+    }
+
+    /**
+     * Narrow guard for the known false-PARTIAL failure: model returns PARTIAL with
+     * documentation-coverage/refusal commentary and no substantive answer body.
+     * Does not attempt to semantically judge whether docs match the user question.
+     */
+    static boolean isFalsePartialCoverageRefusal(String answer) {
+        if (answer == null || answer.isBlank()) {
+            return true;
+        }
+        if (!GROUNDED_COVERAGE_REFUSAL.matcher(answer).find()) {
+            return false;
+        }
+        String withoutRefusal = GROUNDED_COVERAGE_REFUSAL.matcher(answer).replaceAll(" ");
+        String remaining = withoutRefusal.replaceAll("\\s+", " ").strip();
+        if (remaining.length() >= MIN_SUBSTANTIVE_ANSWER_CHARS) {
+            return false;
+        }
+        return !NUMBERED_STEP.matcher(answer).find();
     }
 
     /**
@@ -529,7 +590,17 @@ public class OpenAIService {
             }
             log.info("Query rewrite produced {} search queries: {}", queries.size(), queries);
             return new QueryRewriteResult(queries, result.usage());
+        } catch (OpenAIException e) {
+            if (e.isAiServiceUnavailable()) {
+                throw e;
+            }
+            log.warn("Query rewriting failed: {}. Falling back to original sanitized query.", e.getMessage());
+            OpenAIUsage fallbackUsage = new OpenAIUsage(0, 0, 0, model);
+            return new QueryRewriteResult(List.of(sanitizedQuery), fallbackUsage);
         } catch (Exception e) {
+            if (AiServiceErrors.isQuotaOrCreditExhaustion(e.getMessage())) {
+                throw AiServiceErrors.unavailable(e.getMessage());
+            }
             log.warn("Query rewriting failed: {}. Falling back to original sanitized query.", e.getMessage());
             OpenAIUsage fallbackUsage = new OpenAIUsage(0, 0, 0, model);
             return new QueryRewriteResult(List.of(sanitizedQuery), fallbackUsage);
@@ -737,7 +808,11 @@ public class OpenAIService {
             log.warn("OpenAI x-ratelimit-remaining-tokens={}", h.getFirst("x-ratelimit-remaining-tokens"));
             log.warn("OpenAI x-ratelimit-reset-tokens={}", h.getFirst("x-ratelimit-reset-tokens"));
         }
-        log.warn("OpenAI error status={} body={}", e.getStatusCode(), e.getResponseBodyAsString());
+        String body = e.getResponseBodyAsString();
+        log.warn("OpenAI error status={} body={}", e.getStatusCode(), body);
+        if (AiServiceErrors.isQuotaOrCreditExhaustion(body) || AiServiceErrors.isQuotaOrCreditExhaustion(e.getMessage())) {
+            throw AiServiceErrors.unavailable("OpenAI status=" + code + " body=" + body);
+        }
         String msg = code == 401
                 ? "OpenAI API key is invalid or missing. Check openai.api.key in application.properties (no quotes)."
                 : "OpenAI API error: " + code + " " + e.getStatusText();
