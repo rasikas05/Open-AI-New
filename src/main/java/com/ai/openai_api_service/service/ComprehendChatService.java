@@ -615,9 +615,13 @@ public class ComprehendChatService {
         if (result == null || lexSessionId == null || lexSessionId.isBlank()) {
             return;
         }
-        if (result.isElicitSlot()) {
+        if (result.isElicitSlot() || result.isElicitIntent()) {
             pendingLexSessionService.markPending(lexSessionId);
-            log.debug("Pending Lex marked. Reason=ElicitSlot lexSessionId='{}'", lexSessionId);
+            log.debug(
+                    "Pending Lex marked. Reason={} lexSessionId='{}'",
+                    result.getDialogActionType(),
+                    lexSessionId
+            );
             return;
         }
         if (result.isReadyForFulfillment()) {
@@ -684,6 +688,18 @@ public class ComprehendChatService {
             chatResponse.setLexIntent(lexResult.getIntentName());
             chatResponse.setLexDialogAction(lexResult.getDialogActionType());
             chatResponse.setLexSlotToElicit(lexResult.getSlotToElicit());
+            return LexLiveRouteResult.lex(chatResponse);
+        }
+
+        if (lexResult.isElicitIntent()) {
+            String reply = String.join("\n", lexResult.getMessages()).trim();
+            if (reply.isBlank()) {
+                reply = "Which option did you mean?";
+            }
+            ChatResponse chatResponse = new ChatResponse(reply, false);
+            chatResponse.setActionTaken("lex_elicit_intent");
+            chatResponse.setLexIntent(lexResult.getIntentName());
+            chatResponse.setLexDialogAction(lexResult.getDialogActionType());
             return LexLiveRouteResult.lex(chatResponse);
         }
 

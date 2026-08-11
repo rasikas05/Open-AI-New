@@ -13,6 +13,7 @@ public class LexRecognizeResult {
 
     public static final String FALLBACK_INTENT = "FallbackIntent";
     public static final String DIALOG_ELICIT_SLOT = "ElicitSlot";
+    public static final String DIALOG_ELICIT_INTENT = "ElicitIntent";
     public static final String INTENT_STATE_READY = "ReadyForFulfillment";
     public static final String ATTR_REQUESTED_INFORMATION = "requestedInformation";
 
@@ -152,6 +153,10 @@ public class LexRecognizeResult {
 
     public boolean isElicitSlot() {
         return DIALOG_ELICIT_SLOT.equalsIgnoreCase(dialogActionType);
+    }
+
+    public boolean isElicitIntent() {
+        return DIALOG_ELICIT_INTENT.equalsIgnoreCase(dialogActionType);
     }
 
     public boolean isReadyForFulfillment() {
