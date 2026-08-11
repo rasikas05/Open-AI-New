@@ -44,6 +44,33 @@ class LexRecognizeResultTest {
     }
 
     @Test
+    void fromResponse_elicitIntent() {
+        RecognizeTextResponse response = RecognizeTextResponse.builder()
+                .sessionState(SessionState.builder()
+                        .dialogAction(DialogAction.builder()
+                                .type("ElicitIntent")
+                                .build())
+                        .build())
+                .messages(List.of(Message.builder()
+                        .content("Which of the following options did you mean? Search Purchase Order or Search Distribution Order")
+                        .build()))
+                .build();
+
+        LexRecognizeResult result = LexRecognizeResult.fromResponse(response);
+
+        assertEquals(null, result.getIntentName());
+        assertTrue(result.isElicitIntent());
+        assertFalse(result.isElicitSlot());
+        assertFalse(result.isReadyForFulfillment());
+        assertFalse(result.isFallbackIntent());
+        assertEquals("ElicitIntent", result.getDialogActionType());
+        assertEquals(
+                "Which of the following options did you mean? Search Purchase Order or Search Distribution Order",
+                result.firstMessage()
+        );
+    }
+
+    @Test
     void readyForFulfillment_detectedByConstructor() {
         LexRecognizeResult result = new LexRecognizeResult(
                 "GetCustomer",

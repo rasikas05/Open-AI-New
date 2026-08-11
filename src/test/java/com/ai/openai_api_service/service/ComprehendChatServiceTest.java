@@ -914,6 +914,73 @@ class ComprehendChatServiceTest {
     }
 
     @Test
+    void liveRoute_lexElicitIntent_returnsLexClarificationAndMarksPending() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("give me orders having order type F10"))
+                .thenReturn(new PythonRouteResponse("live"));
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+
+        String clarification =
+                "Which of the following options did you mean? Search Purchase Order or Search Distribution Order";
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                null,
+                null,
+                "ElicitIntent",
+                null,
+                Map.of(),
+                List.of(clarification)
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "give me orders having order type F10"))
+                .thenReturn(lexResult);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("give me orders having order type F10"));
+
+        assertEquals(clarification, response.getReply());
+        assertEquals("lex_elicit_intent", response.getActionTaken());
+        assertEquals("ElicitIntent", response.getLexDialogAction());
+        assertNull(response.getLexIntent());
+        assertNull(response.getM3Request());
+        assertTrue(pendingLexSessionService.get("tenant1:user1:session1").isPresent());
+        verify(pythonRagService, never()).query(any());
+        verify(lexFulfillmentService, never()).fulfillOutcome(any(), any(), any());
+        verify(guidedSearchService, never()).start(anyString(), any());
+    }
+
+    @Test
+    void pendingLex_elicitIntentReply_skipsPythonRouteAndCallsSameLexSession() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        pendingLexSessionService.markPending("tenant1:user1:session1");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "SearchPurchaseOrder",
+                "InProgress",
+                "ElicitSlot",
+                "SupplierNumber",
+                Map.of(),
+                List.of("What supplier do you want to search for?")
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "Search Purchase Order"))
+                .thenReturn(lexResult);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("Search Purchase Order"));
+
+        assertEquals("What supplier do you want to search for?", response.getReply());
+        assertEquals("lex_elicit_slot", response.getActionTaken());
+        assertEquals("SearchPurchaseOrder", response.getLexIntent());
+        verify(pythonRagService, never()).route(anyString());
+        verify(lexService).recognizeText("tenant1:user1:session1", "Search Purchase Order");
+        assertTrue(pendingLexSessionService.get("tenant1:user1:session1").isPresent());
+        verify(lexFulfillmentService, never()).fulfillOutcome(any(), any(), any());
+    }
+
+    @Test
     void liveRoute_lexReadyForFulfillment_callsFulfillment() {
         stubQuotaAllowed();
         stubSanitize();
