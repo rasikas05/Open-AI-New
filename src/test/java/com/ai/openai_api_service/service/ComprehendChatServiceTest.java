@@ -1667,6 +1667,10 @@ class ComprehendChatServiceTest {
         when(lexService.isEnabled()).thenReturn(true);
         when(pythonRagService.route("how to create customer")).thenReturn(new PythonRouteResponse("rag"));
         stubDocsGroundedPath("how to create customer", "grounded answer");
+        when(chatPersistenceService.persistChat(
+                anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
+                any(), any(), any(), any(), any(), any(), any()
+        )).thenReturn(99L);
 
         ChatRequest request = baseRequest("how to create customer");
         assertNull(request.getMode());
@@ -1675,6 +1679,7 @@ class ComprehendChatServiceTest {
 
         assertEquals("grounded answer", response.getReply());
         assertEquals("rag", response.getActionTaken());
+        assertEquals(99L, response.getRequestLogId());
         verify(pythonRagService).route("how to create customer");
         verify(lexService, never()).recognizeText(anyString(), anyString());
     }

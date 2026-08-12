@@ -3,12 +3,15 @@ package com.ai.openai_api_service.controller;
 import com.ai.openai_api_service.entity.Session;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
-import com.ai.openai_api_service.model.MessageDto;
+import com.ai.openai_api_service.model.HistoryMessageDto;
 import com.ai.openai_api_service.model.LexFulfillmentSession;
+import com.ai.openai_api_service.model.ResponseFeedbackRequest;
+import com.ai.openai_api_service.model.ResponseFeedbackResponse;
 import com.ai.openai_api_service.model.SessionSummaryDto;
 import com.ai.openai_api_service.service.ComprehendChatService;
 import com.ai.openai_api_service.service.ChatPersistenceService;
 import com.ai.openai_api_service.service.LexService;
+import com.ai.openai_api_service.service.ResponseFeedbackService;
 import com.ai.openai_api_service.service.TenantService;
 import com.ai.openai_api_service.service.guided.InMemoryGuidedSearchSessionService;
 import com.ai.openai_api_service.service.lex.InMemoryPendingLexSessionService;
@@ -48,6 +51,7 @@ public class ComprehendChatController {
     private final InMemoryGuidedSearchSessionService guidedSearchSessionService;
     private final InMemoryPendingLexSessionService pendingLexSessionService;
     private final LexService lexService;
+    private final ResponseFeedbackService responseFeedbackService;
 
     public ComprehendChatController(
             ComprehendChatService comprehendChatService,
@@ -56,7 +60,8 @@ public class ComprehendChatController {
             SearchContextService searchContextService,
             InMemoryGuidedSearchSessionService guidedSearchSessionService,
             InMemoryPendingLexSessionService pendingLexSessionService,
-            LexService lexService
+            LexService lexService,
+            ResponseFeedbackService responseFeedbackService
     ) {
         this.comprehendChatService = comprehendChatService;
         this.chatPersistenceService = chatPersistenceService;
@@ -65,6 +70,7 @@ public class ComprehendChatController {
         this.guidedSearchSessionService = guidedSearchSessionService;
         this.pendingLexSessionService = pendingLexSessionService;
         this.lexService = lexService;
+        this.responseFeedbackService = responseFeedbackService;
     }
 
     @PostMapping
@@ -88,13 +94,34 @@ public class ComprehendChatController {
         return ResponseEntity.ok(response);
     }
 
+    @PostMapping("/feedback")
+    @Operation(
+            summary = "Submit response feedback",
+            description = "Upserts GOOD/BAD feedback (optional comment) for a persisted assistant turn identified by requestLogId."
+    )
+    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    public ResponseEntity<ResponseFeedbackResponse> feedback(
+            @AuthenticationPrincipal Jwt jwt,
+            @Valid @RequestBody ResponseFeedbackRequest request) {
+
+        String clientId = jwt.getClaimAsString("client_id");
+        logger.info(
+                "Comprehend Feedback request from client_id: {} requestLogId={} feedback={}",
+                clientId,
+                request.getRequestLogId(),
+                request.getFeedback()
+        );
+        ResponseFeedbackResponse response = responseFeedbackService.upsert(request);
+        return ResponseEntity.ok(response);
+    }
+
     @GetMapping("/history")
     @Operation(
             summary = "Get chat history",
             description = "Returns prior session messages for widget display (Comprehend-based)."
     )
     @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
-    public ResponseEntity<List<MessageDto>> history(
+    public ResponseEntity<List<HistoryMessageDto>> history(
             @AuthenticationPrincipal Jwt jwt,
             @RequestParam String tenantId,
             @RequestParam String userId,
@@ -104,7 +131,7 @@ public class ComprehendChatController {
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("Comprehend History request from client_id: {}", clientId);
 
-        List<MessageDto> response = chatPersistenceService.loadHistoryForPrompt(
+        List<HistoryMessageDto> response = chatPersistenceService.loadHistoryForDisplay(
                 tenantId, userId, sessionId, maxExchanges
         );
         return ResponseEntity.ok(response);

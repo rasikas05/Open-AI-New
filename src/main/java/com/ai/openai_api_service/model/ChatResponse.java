@@ -44,6 +44,7 @@ public class ChatResponse {
     private List<String> requestedInformation;
     private String searchContextId;
     private PaginationMetadataDto pagination;
+    private Long requestLogId;
 
     public ChatResponse() {
     }
@@ -339,6 +340,14 @@ public class ChatResponse {
 
     public void setPagination(PaginationMetadataDto pagination) {
         this.pagination = pagination;
+    }
+
+    public Long getRequestLogId() {
+        return requestLogId;
+    }
+
+    public void setRequestLogId(Long requestLogId) {
+        this.requestLogId = requestLogId;
     }
 }
 
