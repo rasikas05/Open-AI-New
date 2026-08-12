@@ -24,6 +24,14 @@ public class ChatRequest {
     @Schema(example = "String")
     private String userMessage;
 
+    @Schema(
+            description = "Optional routing mode. Omit or auto = existing Python route. "
+                    + "m3 forces live pipeline; docs forces documentation/RAG. Lowercase only.",
+            allowableValues = {"auto", "m3", "docs"},
+            example = "auto"
+    )
+    private ChatMode mode;
+
     @Valid
     @Schema(example = "[]")
     private List<MessageDto> history;
@@ -70,6 +78,14 @@ public class ChatRequest {
 
     public void setUserMessage(String userMessage) {
         this.userMessage = userMessage;
+    }
+
+    public ChatMode getMode() {
+        return mode;
+    }
+
+    public void setMode(ChatMode mode) {
+        this.mode = mode;
     }
 
     public List<MessageDto> getHistory() {

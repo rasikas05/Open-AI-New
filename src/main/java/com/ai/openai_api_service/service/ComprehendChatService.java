@@ -4,6 +4,7 @@ import com.ai.openai_api_service.exception.TenantQuotaExceededException;
 import com.ai.openai_api_service.exception.AiServiceErrors;
 import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.BusinessProtectedEntityDto;
+import com.ai.openai_api_service.model.ChatMode;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.GuidedSearchState;
@@ -230,14 +231,22 @@ public class ComprehendChatService {
         }
 
         if (!guidedHandled && !pendingLexHandled) {
+            ChatMode mode = resolveMode(request);
             Instant routeStart = Instant.now();
-            PythonRouteResponse routeResponse = pythonRagService.route(originalUserText);
+            if (mode == ChatMode.M3) {
+                route = ROUTE_LIVE;
+            } else if (mode == ChatMode.DOCS) {
+                route = "rag";
+            } else {
+                PythonRouteResponse routeResponse = pythonRagService.route(originalUserText);
+                route = routeResponse != null ? routeResponse.getRoute() : "rag";
+            }
             Instant routeEnd = Instant.now();
             routeDecisionMs = RequestTimingLog.durationMs(routeStart, routeEnd);
             RequestTimingLog.logStage("route", routeStart, routeEnd);
-            route = routeResponse != null ? routeResponse.getRoute() : "rag";
             log.info(
-                    "Comprehend route decision: route='{}', handler='{}', originalLength={}",
+                    "Comprehend route decision: mode='{}', route='{}', handler='{}', originalLength={}",
+                    mode,
                     route,
                     ROUTE_LIVE.equalsIgnoreCase(route)
                             ? (lexService.isEnabled() ? "live/lex" : "live/python-chat")
@@ -1444,6 +1453,10 @@ public class ComprehendChatService {
             context.setSources(sources.stream().map(SourceItem::getUrl).toList());
         }
         return context;
+    }
+
+    private static ChatMode resolveMode(ChatRequest request) {
+        return request.getMode() == null ? ChatMode.AUTO : request.getMode();
     }
 
     private ChatRequest copyRequestWithUserMessage(ChatRequest originalRequest, String newUserMessage) {
