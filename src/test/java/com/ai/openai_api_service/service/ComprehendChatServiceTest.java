@@ -1,6 +1,7 @@
 package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.exception.OpenAIException;
+import com.ai.openai_api_service.model.ChatMode;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.LiveHistoryAuditMetadata;
 import com.ai.openai_api_service.model.GuidedSearchState;
@@ -1657,6 +1658,193 @@ class ComprehendChatServiceTest {
         assertTrue(pendingLexSessionService.get("tenant1:user1:session1").isEmpty());
         verify(pythonRagService).route("Show customer Y11100 credit limit");
         verify(lexService).recognizeText("tenant1:user1:session1", "Show customer Y11100 credit limit");
+    }
+
+    @Test
+    void modeAbsent_usesPythonRoute_autoBehavior() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("how to create customer")).thenReturn(new PythonRouteResponse("rag"));
+        stubDocsGroundedPath("how to create customer", "grounded answer");
+
+        ChatRequest request = baseRequest("how to create customer");
+        assertNull(request.getMode());
+
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("grounded answer", response.getReply());
+        assertEquals("rag", response.getActionTaken());
+        verify(pythonRagService).route("how to create customer");
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void modeAuto_pythonRouteLive_entersExistingLiveBranch() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("show customer details")).thenReturn(new PythonRouteResponse("live"));
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "InProgress",
+                "ElicitSlot",
+                "CustomerNumber",
+                Map.of(),
+                List.of("What is the customer number?")
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "show customer details")).thenReturn(lexResult);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = baseRequest("show customer details");
+        request.setMode(ChatMode.AUTO);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("lex_elicit_slot", response.getActionTaken());
+        verify(pythonRagService).route("show customer details");
+        verify(lexService).recognizeText("tenant1:user1:session1", "show customer details");
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+    }
+
+    @Test
+    void modeAuto_pythonRouteRag_entersExistingDocsBranch() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("how to create customer")).thenReturn(new PythonRouteResponse("rag"));
+        stubDocsGroundedPath("how to create customer", "docs answer");
+
+        ChatRequest request = baseRequest("how to create customer");
+        request.setMode(ChatMode.AUTO);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("docs answer", response.getReply());
+        assertEquals("rag", response.getActionTaken());
+        verify(pythonRagService).route("how to create customer");
+        verify(pythonRagService).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void modeAuto_pythonRouteNull_defaultsToRagDocsBranch() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("unknown topic")).thenReturn(null);
+        stubDocsGroundedPath("unknown topic", "fallback docs");
+
+        ChatRequest request = baseRequest("unknown topic");
+        request.setMode(ChatMode.AUTO);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("fallback docs", response.getReply());
+        assertEquals("rag", response.getActionTaken());
+        verify(pythonRagService).route("unknown topic");
+        verify(pythonRagService).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void modeM3_skipsPythonRoute_entersExistingLiveBranch() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "InProgress",
+                "ElicitSlot",
+                "CustomerNumber",
+                Map.of(),
+                List.of("What is the customer number?")
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "how to create customer")).thenReturn(lexResult);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = baseRequest("how to create customer");
+        request.setMode(ChatMode.M3);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("lex_elicit_slot", response.getActionTaken());
+        verify(pythonRagService, never()).route(anyString());
+        verify(lexService).recognizeText("tenant1:user1:session1", "how to create customer");
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+    }
+
+    @Test
+    void modeDocs_skipsPythonRoute_entersExistingDocsBranch() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        stubDocsGroundedPath("show customer C001", "forced docs answer");
+
+        ChatRequest request = baseRequest("show customer C001");
+        request.setMode(ChatMode.DOCS);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("forced docs answer", response.getReply());
+        assertEquals("rag", response.getActionTaken());
+        verify(pythonRagService, never()).route(anyString());
+        verify(pythonRagService).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void pendingLex_modeDocs_pendingLexStillOwnsTurn() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        pendingLexSessionService.markPending("tenant1:user1:session1");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomerFinancial",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "Y11100"),
+                List.of(),
+                Map.of(LexRecognizeResult.ATTR_REQUESTED_INFORMATION, "CREDIT_LIMIT")
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "Y11100")).thenReturn(lexResult);
+
+        M3RequestDto m3Request = new M3RequestDto(true, "CRS610MI", "GetFinancial", Map.of("CUNO", "Y11100"));
+        ChatResponse fulfillResponse = new ChatResponse("Credit limit for Y11100...", false);
+        fulfillResponse.setActionTaken("read");
+        fulfillResponse.setM3Request(m3Request);
+        when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq("Y11100"), any()))
+                .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = baseRequest("Y11100");
+        request.setMode(ChatMode.DOCS);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("read", response.getActionTaken());
+        assertNotNull(response.getM3Request());
+        verify(pythonRagService, never()).route(anyString());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(lexService).recognizeText("tenant1:user1:session1", "Y11100");
+    }
+
+    private void stubDocsGroundedPath(String unusedMessage, String groundedReply) {
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        retrieval.setRetrievalTimeMs(10);
+        retrieval.setMaxScore(0.7f);
+        ChunkItem chunk = new ChunkItem(
+                "chunk text", 0.7f, "Title", "http://example.com", List.of(), null, null, null, null
+        );
+        retrieval.setPromptChunks(List.of(chunk));
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any()))
+                .thenReturn(new GroundedRagCallResult(
+                        new GroundedRagResult(RagStatus.FULL, groundedReply, List.of()),
+                        new OpenAIUsage(1, 1, 2, "gpt"),
+                        "{}"
+                ));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
     }
 
     private void stubQuotaAllowed() {
