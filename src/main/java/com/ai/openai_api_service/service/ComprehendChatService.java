@@ -384,7 +384,7 @@ public class ComprehendChatService {
                 ? liveHistory.auditMetadata()
                 : null;
         Instant persistenceStart = Instant.now();
-        chatPersistenceService.persistChat(
+        Long requestLogId = chatPersistenceService.persistChat(
                 request.getTenantCode(),
                 request.getUserId(),
                 request.getSessionId(),
@@ -405,6 +405,7 @@ public class ComprehendChatService {
                 )
                         : null
         );
+        chatResponse.setRequestLogId(requestLogId);
         Instant persistenceEnd = Instant.now();
         long persistenceMs = RequestTimingLog.durationMs(persistenceStart, persistenceEnd);
         RequestTimingLog.logStage("persistence", persistenceStart, persistenceEnd);

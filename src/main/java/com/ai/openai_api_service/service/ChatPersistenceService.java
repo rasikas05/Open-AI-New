@@ -4,6 +4,7 @@ import com.ai.openai_api_service.entity.RequestLog;
 import com.ai.openai_api_service.entity.Session;
 import com.ai.openai_api_service.entity.Tenant;
 import com.ai.openai_api_service.entity.User;
+import com.ai.openai_api_service.model.HistoryMessageDto;
 import com.ai.openai_api_service.model.LiveHistoryAuditMetadata;
 import com.ai.openai_api_service.model.MessageDto;
 import com.ai.openai_api_service.model.OpenAIUsage;
@@ -52,7 +53,7 @@ public class ChatPersistenceService {
     }
 
     @Transactional
-    public void persistChat(
+    public Long persistChat(
             String tenantId,
             String userId,
             String sessionId,
@@ -65,7 +66,7 @@ public class ChatPersistenceService {
     ) {
         OpenAIUsage usage = new OpenAIUsage();
         usage.setTotalTokens(requestTokensUsed != null ? requestTokensUsed : 0);
-        persistChat(
+        return persistChat(
                 tenantId,
                 userId,
                 sessionId,
@@ -82,7 +83,7 @@ public class ChatPersistenceService {
     }
 
     @Transactional
-    public void persistChat(
+    public Long persistChat(
             String tenantId,
             String userId,
             String sessionId,
@@ -95,7 +96,7 @@ public class ChatPersistenceService {
             String retrievalReason,
             Integer retrievalTimeMs
     ) {
-        persistChat(
+        return persistChat(
                 tenantId,
                 userId,
                 sessionId,
@@ -112,7 +113,7 @@ public class ChatPersistenceService {
     }
 
     @Transactional
-    public void persistChat(
+    public Long persistChat(
             String tenantId,
             String userId,
             String sessionId,
@@ -126,7 +127,7 @@ public class ChatPersistenceService {
             Integer retrievalTimeMs,
             LiveHistoryAuditMetadata auditMetadata
     ) {
-        persistChat(
+        return persistChat(
                 tenantId,
                 userId,
                 sessionId,
@@ -144,7 +145,7 @@ public class ChatPersistenceService {
     }
 
     @Transactional
-    public void persistChat(
+    public Long persistChat(
             String tenantId,
             String userId,
             String sessionId,
@@ -174,7 +175,7 @@ public class ChatPersistenceService {
 
             if (tenant == null) {
                 log.warn("Tenant not found for tenantId={}", tenantId);
-                return;
+                return null;
             }
 
             User user = userRepository.findByTenantAndUsername(tenant, userId)
@@ -182,7 +183,7 @@ public class ChatPersistenceService {
 
             if (user == null) {
                 log.warn("User not found for tenantId={}, userId={}", tenantId, userId);
-                return;
+                return null;
             }
 
             Session session = sessionRepository.findByTenantAndUserAndSessionId(
@@ -199,7 +200,7 @@ public class ChatPersistenceService {
                         userId,
                         sessionId
                 );
-                return;
+                return null;
             }
 
             log.info(
@@ -298,6 +299,7 @@ public class ChatPersistenceService {
                     sessionId,
                     savedSession.getTitle()
             );
+            return savedMessage.getId();
 
         } catch (Exception e) {
 
@@ -307,6 +309,7 @@ public class ChatPersistenceService {
                     e.getMessage(),
                     e
             );
+            return null;
         }
     }
 
@@ -499,6 +502,73 @@ public class ChatPersistenceService {
             }
         }
 
+        return messages;
+    }
+
+    /**
+     * Widget display history with {@code requestLogId} on assistant turns.
+     * Does not replace {@link #loadHistoryForPrompt} which remains prompt-safe {@link MessageDto}.
+     */
+    @Transactional(readOnly = true)
+    public List<HistoryMessageDto> loadHistoryForDisplay(
+            String tenantId,
+            String userId,
+            String sessionId,
+            int maxExchanges
+    ) {
+        if (maxExchanges <= 0) {
+            return List.of();
+        }
+
+        Tenant tenant = tenantRepository.findByTenantCode(tenantId)
+                .orElse(null);
+        if (tenant == null) {
+            return List.of();
+        }
+
+        User user = userRepository.findByTenantAndUsername(tenant, userId)
+                .orElse(null);
+        if (user == null) {
+            return List.of();
+        }
+
+        List<RequestLog> rows =
+                requestLogRepository
+                        .findBySession_TenantAndSession_UserAndSession_SessionIdOrderByCreatedAtDesc(
+                                tenant,
+                                user,
+                                sessionId,
+                                PageRequest.of(0, maxExchanges)
+                        );
+
+        Collections.reverse(rows);
+
+        List<HistoryMessageDto> messages = new ArrayList<>();
+        for (RequestLog row : rows) {
+            String userMessageContent = row.getOriginalText() != null && !row.getOriginalText().isBlank()
+                    ? row.getOriginalText()
+                    : row.getSanitizedText();
+
+            if (userMessageContent != null && !userMessageContent.isBlank()) {
+                messages.add(new HistoryMessageDto(
+                        "user",
+                        userMessageContent,
+                        row.getSanitizedFlag(),
+                        null,
+                        null
+                ));
+            }
+
+            if (row.getOpenaiResponse() != null && !row.getOpenaiResponse().isBlank()) {
+                messages.add(new HistoryMessageDto(
+                        "assistant",
+                        row.getOpenaiResponse(),
+                        null,
+                        row.getActionTaken(),
+                        row.getId()
+                ));
+            }
+        }
         return messages;
     }
 
