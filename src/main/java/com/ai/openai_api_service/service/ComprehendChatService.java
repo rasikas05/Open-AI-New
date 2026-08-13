@@ -48,9 +48,11 @@ import com.ai.openai_api_service.service.validation.SearchCriteriaValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -171,16 +173,37 @@ public class ComprehendChatService {
             return blockedQuotaResponse(quotaCheck);
         }
 
+        chatPersistenceService.enforceSessionRequestLimit(
+                request.getTenantCode(),
+                request.getUserId(),
+                request.getSessionId()
+        );
+
+        Long editOfRequestLogId = request.getEditOfRequestLogId();
+        Long editSessionPk = null;
+        if (editOfRequestLogId != null) {
+            editSessionPk = chatPersistenceService.validateLatestActiveEdit(
+                    request.getTenantCode(),
+                    request.getUserId(),
+                    request.getSessionId(),
+                    editOfRequestLogId
+            );
+        }
+
+        ChatMode resolvedMode = resolveMode(request);
+
         String originalUserText = request.getUserMessage();
         String sanitizedUserText = null;
         ChatRequest workingRequest = request;
         ProtectionSession protectionSession = null;
 
         log.info(
-                "ComprehendChatService.chat tenantCode={}, userId={}, sessionId={}, originalLength={}",
+                "ComprehendChatService.chat tenantCode={}, userId={}, sessionId={}, mode={}, editOfRequestLogId={}, originalLength={}",
                 request.getTenantCode(),
                 request.getUserId(),
                 request.getSessionId(),
+                resolvedMode,
+                editOfRequestLogId,
                 originalUserText != null ? originalUserText.length() : 0
         );
 
@@ -231,7 +254,7 @@ public class ComprehendChatService {
         }
 
         if (!guidedHandled && !pendingLexHandled) {
-            ChatMode mode = resolveMode(request);
+            ChatMode mode = resolvedMode;
             Instant routeStart = Instant.now();
             if (mode == ChatMode.M3) {
                 route = ROUTE_LIVE;
@@ -403,8 +426,22 @@ public class ComprehendChatService {
                         chatResponse.getReplyBeforeRestore(),
                         replyForPersistence
                 )
-                        : null
+                        : null,
+                resolvedMode
         );
+        if (editOfRequestLogId != null && requestLogId != null && editSessionPk != null) {
+            boolean superseded = chatPersistenceService.supersedeEditedRequest(
+                    editOfRequestLogId,
+                    requestLogId,
+                    editSessionPk
+            );
+            if (!superseded) {
+                throw new ResponseStatusException(
+                        HttpStatus.CONFLICT,
+                        "Request was already edited by a concurrent request"
+                );
+            }
+        }
         chatResponse.setRequestLogId(requestLogId);
         Instant persistenceEnd = Instant.now();
         long persistenceMs = RequestTimingLog.durationMs(persistenceStart, persistenceEnd);

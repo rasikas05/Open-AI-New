@@ -12,7 +12,6 @@ import com.ai.openai_api_service.repository.TenantRepository;
 import com.ai.openai_api_service.repository.UserRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.data.domain.Pageable;
@@ -21,7 +20,6 @@ import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.when;
@@ -38,11 +36,18 @@ class ChatPersistenceHistoryDisplayTest {
     @Mock
     private UserRepository userRepository;
 
-    @InjectMocks
     private ChatPersistenceService chatPersistenceService;
 
     @Test
-    void loadHistoryForDisplay_setsRequestLogIdOnAssistantOnly() {
+    void loadHistoryForDisplay_setsRequestLogIdAndModeOnUserAndAssistant() {
+        chatPersistenceService = new ChatPersistenceService(
+                sessionRepository,
+                requestLogRepository,
+                tenantRepository,
+                userRepository,
+                50
+        );
+
         Tenant tenant = new Tenant();
         tenant.setTenantCode("tenant1");
         User user = new User();
@@ -56,8 +61,9 @@ class ChatPersistenceHistoryDisplayTest {
         row.setOpenaiResponse("Use CRS610");
         row.setActionTaken("rag");
         row.setSanitizedFlag(false);
+        row.setMode("M3");
 
-        when(requestLogRepository.findBySession_TenantAndSession_UserAndSession_SessionIdOrderByCreatedAtDesc(
+        when(requestLogRepository.findActiveBySessionOrderByCreatedAtDesc(
                 eq(tenant), eq(user), eq("session1"), any(Pageable.class)
         )).thenReturn(List.of(row));
 
@@ -66,15 +72,16 @@ class ChatPersistenceHistoryDisplayTest {
         );
         assertEquals(2, display.size());
         assertEquals("user", display.get(0).getRole());
-        assertNull(display.get(0).getRequestLogId());
+        assertEquals(55L, display.get(0).getRequestLogId());
+        assertEquals("m3", display.get(0).getMode());
         assertEquals("assistant", display.get(1).getRole());
         assertEquals(55L, display.get(1).getRequestLogId());
+        assertEquals("m3", display.get(1).getMode());
 
         List<MessageDto> promptHistory = chatPersistenceService.loadHistoryForPrompt(
                 "tenant1", "user1", "session1", 10
         );
         assertEquals(2, promptHistory.size());
-        // MessageDto has no requestLogId field — prompt path remains unchanged shape
         assertEquals("user", promptHistory.get(0).getRole());
         assertEquals("assistant", promptHistory.get(1).getRole());
     }

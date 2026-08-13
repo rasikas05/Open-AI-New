@@ -32,6 +32,14 @@ public class ChatRequest {
     )
     private ChatMode mode;
 
+    @Schema(
+            description = "When set, this turn edits the given request_logs.id. "
+                    + "Must be the latest active turn in the session. Creates a new request row "
+                    + "and supersedes the old one.",
+            example = "123"
+    )
+    private Long editOfRequestLogId;
+
     @Valid
     @Schema(example = "[]")
     private List<MessageDto> history;
@@ -86,6 +94,14 @@ public class ChatRequest {
 
     public void setMode(ChatMode mode) {
         this.mode = mode;
+    }
+
+    public Long getEditOfRequestLogId() {
+        return editOfRequestLogId;
+    }
+
+    public void setEditOfRequestLogId(Long editOfRequestLogId) {
+        this.editOfRequestLogId = editOfRequestLogId;
     }
 
     public List<MessageDto> getHistory() {

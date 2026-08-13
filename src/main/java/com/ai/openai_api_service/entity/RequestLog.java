@@ -75,6 +75,21 @@ public class RequestLog {
     private String businessObject;
     @Column(name = "business_identifier", length = 128)
     private String businessIdentifier;
+
+    /**
+     * When set, this turn was superseded by a later edit revision ({@code request_logs.id}).
+     * Active turns have null.
+     */
+    @Column(name = "superseded_by_request_log_id")
+    private Long supersededByRequestLogId;
+
+    /**
+     * Effective routing mode used for this execution: AUTO, M3, or DOCS.
+     * Legacy rows may be null (treat as AUTO when reading).
+     */
+    @Column(name = "mode", length = 10)
+    private String mode;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt = LocalDateTime.now();
     // getters/setters
@@ -268,6 +283,22 @@ public class RequestLog {
 
     public void setBusinessIdentifier(String businessIdentifier) {
         this.businessIdentifier = businessIdentifier;
+    }
+
+    public Long getSupersededByRequestLogId() {
+        return supersededByRequestLogId;
+    }
+
+    public void setSupersededByRequestLogId(Long supersededByRequestLogId) {
+        this.supersededByRequestLogId = supersededByRequestLogId;
+    }
+
+    public String getMode() {
+        return mode;
+    }
+
+    public void setMode(String mode) {
+        this.mode = mode;
     }
 
     public LocalDateTime getCreatedAt() {
