@@ -38,7 +38,9 @@ import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.http.HttpStatus;
 import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.util.HashMap;
 import java.util.List;
@@ -49,11 +51,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
@@ -630,7 +634,7 @@ class ComprehendChatServiceTest {
         verify(tenantQuotaService, never()).recordUsage(anyString(), anyInt(), anyString());
         verify(chatPersistenceService, never()).persistChat(
                 anyString(), anyString(), anyString(), anyString(), anyString(),
-                anyString(), any(), anyString(), anyBoolean(), anyString(), any(), any(), any()
+                anyString(), any(), anyString(), anyBoolean(), anyString(), any(), any(), any(), any()
         );
     }
 
@@ -727,7 +731,8 @@ class ComprehendChatServiceTest {
                 eq("ready_for_grounding"),
                 eq(88),
                 isNull(),
-                any()
+                any(),
+                eq(ChatMode.AUTO)
         );
         assertEquals(100, usageCaptor.getValue().getPromptTokens());
         assertEquals(50, usageCaptor.getValue().getCompletionTokens());
@@ -1036,7 +1041,8 @@ class ComprehendChatServiceTest {
                 isNull(),
                 isNull(),
                 eq(new LiveHistoryAuditMetadata("GetCustomer", "Customer", "CSU001")),
-                isNull()
+                isNull(),
+                eq(ChatMode.AUTO)
         );
     }
 
@@ -1669,7 +1675,7 @@ class ComprehendChatServiceTest {
         stubDocsGroundedPath("how to create customer", "grounded answer");
         when(chatPersistenceService.persistChat(
                 anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
-                any(), any(), any(), any(), any(), any(), any()
+                any(), any(), any(), any(), any(), any(), any(), any()
         )).thenReturn(99L);
 
         ChatRequest request = baseRequest("how to create customer");
@@ -1831,6 +1837,129 @@ class ComprehendChatServiceTest {
         verify(pythonRagService, never()).route(anyString());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
         verify(lexService).recognizeText("tenant1:user1:session1", "Y11100");
+    }
+
+    @Test
+    void editLatest_persistsResolvedMode_returnsNewRequestLogId_andSupersedes() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(chatPersistenceService.validateLatestActiveEdit(
+                eq("tenant1"), eq("user1"), eq("session1"), eq(123L)
+        )).thenReturn(10L);
+        stubDocsGroundedPath("edited question", "edited answer");
+        when(chatPersistenceService.persistChat(
+                anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
+                any(), any(), any(), any(), any(), any(), any(), eq(ChatMode.DOCS)
+        )).thenReturn(456L);
+        when(chatPersistenceService.supersedeEditedRequest(123L, 456L, 10L)).thenReturn(true);
+
+        ChatRequest request = baseRequest("edited question");
+        request.setMode(ChatMode.DOCS);
+        request.setEditOfRequestLogId(123L);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals(456L, response.getRequestLogId());
+        assertEquals("edited answer", response.getReply());
+        verify(pythonRagService, never()).route(anyString());
+        verify(chatPersistenceService).supersedeEditedRequest(123L, 456L, 10L);
+        verify(chatPersistenceService).persistChat(
+                eq("tenant1"),
+                eq("user1"),
+                eq("session1"),
+                eq("edited question"),
+                anyString(),
+                eq("edited answer"),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                any(),
+                eq(ChatMode.DOCS)
+        );
+    }
+
+    @Test
+    void editLatest_doubleSubmitConflict_afterLoserHidden() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(chatPersistenceService.validateLatestActiveEdit(
+                eq("tenant1"), eq("user1"), eq("session1"), eq(123L)
+        )).thenReturn(10L);
+
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        retrieval.setRetrievalTimeMs(10);
+        retrieval.setMaxScore(0.7f);
+        ChunkItem chunk = new ChunkItem(
+                "chunk text", 0.7f, "Title", "http://example.com", List.of(), null, null, null, null
+        );
+        retrieval.setPromptChunks(List.of(chunk));
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any()))
+                .thenReturn(new GroundedRagCallResult(
+                        new GroundedRagResult(RagStatus.FULL, "edited answer", List.of()),
+                        new OpenAIUsage(1, 1, 2, "gpt"),
+                        "{}"
+                ));
+
+        when(chatPersistenceService.persistChat(
+                anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
+                any(), any(), any(), any(), any(), any(), any(), any()
+        )).thenReturn(457L);
+        when(chatPersistenceService.supersedeEditedRequest(123L, 457L, 10L)).thenReturn(false);
+
+        ChatRequest request = baseRequest("edited question");
+        request.setEditOfRequestLogId(123L);
+
+        ResponseStatusException ex = assertThrows(
+                ResponseStatusException.class,
+                () -> comprehendChatService.chat(request)
+        );
+        assertEquals(HttpStatus.CONFLICT, ex.getStatusCode());
+        verify(chatPersistenceService).supersedeEditedRequest(123L, 457L, 10L);
+        verify(suggestionEngineService, never()).generateSuggestions(any());
+    }
+
+    @Test
+    void editNonLatest_rejectedBeforeAi() {
+        stubQuotaAllowed();
+        when(chatPersistenceService.validateLatestActiveEdit(
+                eq("tenant1"), eq("user1"), eq("session1"), eq(100L)
+        )).thenThrow(new ResponseStatusException(HttpStatus.CONFLICT, "Only the latest active request can be edited"));
+
+        ChatRequest request = baseRequest("should not run");
+        request.setEditOfRequestLogId(100L);
+
+        ResponseStatusException ex = assertThrows(
+                ResponseStatusException.class,
+                () -> comprehendChatService.chat(request)
+        );
+        assertEquals(HttpStatus.CONFLICT, ex.getStatusCode());
+        verify(pythonRagService, never()).route(anyString());
+        verify(chatPersistenceService, never()).persistChat(
+                anyString(), anyString(), anyString(), anyString(), anyString(),
+                anyString(), any(), any(), any(), any(), any(), any(), any(), any()
+        );
+    }
+
+    @Test
+    void sessionRequestLimit_blocksBeforeAi() {
+        stubQuotaAllowed();
+        org.mockito.Mockito.doThrow(new ResponseStatusException(
+                HttpStatus.BAD_REQUEST, "Session request limit reached (50)"
+        )).when(chatPersistenceService).enforceSessionRequestLimit("tenant1", "user1", "session1");
+
+        ResponseStatusException ex = assertThrows(
+                ResponseStatusException.class,
+                () -> comprehendChatService.chat(baseRequest("blocked"))
+        );
+        assertEquals(HttpStatus.BAD_REQUEST, ex.getStatusCode());
+        verify(pythonRagService, never()).route(anyString());
+        verify(chatPersistenceService, never()).validateLatestActiveEdit(
+                anyString(), anyString(), anyString(), anyLong()
+        );
     }
 
     private void stubDocsGroundedPath(String unusedMessage, String groundedReply) {

@@ -15,8 +15,15 @@ public class HistoryMessageDto {
     private Boolean sanitizedFlag;
     private String actionTaken;
 
-    @Schema(description = "request_logs.id for assistant turns; null for user turns")
+    @Schema(description = "request_logs.id for this turn (user and assistant rows share the same id)")
     private Long requestLogId;
+
+    @Schema(
+            description = "Effective mode used for this turn. Lowercase wire values.",
+            allowableValues = {"auto", "m3", "docs"},
+            example = "auto"
+    )
+    private String mode;
 
     public HistoryMessageDto() {
     }
@@ -28,11 +35,23 @@ public class HistoryMessageDto {
             String actionTaken,
             Long requestLogId
     ) {
+        this(role, content, sanitizedFlag, actionTaken, requestLogId, null);
+    }
+
+    public HistoryMessageDto(
+            String role,
+            String content,
+            Boolean sanitizedFlag,
+            String actionTaken,
+            Long requestLogId,
+            String mode
+    ) {
         this.role = role;
         this.content = content;
         this.sanitizedFlag = sanitizedFlag;
         this.actionTaken = actionTaken;
         this.requestLogId = requestLogId;
+        this.mode = mode;
     }
 
     public String getRole() {
@@ -73,5 +92,13 @@ public class HistoryMessageDto {
 
     public void setRequestLogId(Long requestLogId) {
         this.requestLogId = requestLogId;
+    }
+
+    public String getMode() {
+        return mode;
+    }
+
+    public void setMode(String mode) {
+        this.mode = mode;
     }
 }

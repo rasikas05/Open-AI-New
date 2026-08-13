@@ -4,6 +4,7 @@ import com.ai.openai_api_service.entity.RequestLog;
 import com.ai.openai_api_service.entity.Session;
 import com.ai.openai_api_service.entity.Tenant;
 import com.ai.openai_api_service.entity.User;
+import com.ai.openai_api_service.model.ChatMode;
 import com.ai.openai_api_service.model.HistoryMessageDto;
 import com.ai.openai_api_service.model.LiveHistoryAuditMetadata;
 import com.ai.openai_api_service.model.MessageDto;
@@ -17,6 +18,7 @@ import com.ai.openai_api_service.repository.UserRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -38,17 +40,20 @@ public class ChatPersistenceService {
     private final RequestLogRepository requestLogRepository;
     private final TenantRepository tenantRepository;
     private final UserRepository userRepository;
+    private final int maxRequestsPerSession;
 
     public ChatPersistenceService(
             SessionRepository sessionRepository,
             RequestLogRepository requestLogRepository,
             TenantRepository tenantRepository,
-            UserRepository userRepository
+            UserRepository userRepository,
+            @Value("${chat.session.max-requests:50}") int maxRequestsPerSession
     ) {
         this.sessionRepository = sessionRepository;
         this.requestLogRepository = requestLogRepository;
         this.tenantRepository = tenantRepository;
         this.userRepository = userRepository;
+        this.maxRequestsPerSession = maxRequestsPerSession;
         log.info("ChatPersistenceService bean initialized: {}", this.getClass().getName());
     }
 
@@ -76,6 +81,7 @@ public class ChatPersistenceService {
                 usage,
                 actionTaken,
                 sanitizedFlag,
+                null,
                 null,
                 null,
                 null
@@ -108,6 +114,8 @@ public class ChatPersistenceService {
                 sanitizedFlag,
                 retrievalReason,
                 retrievalTimeMs,
+                null,
+                null,
                 null
         );
     }
@@ -140,6 +148,7 @@ public class ChatPersistenceService {
                 retrievalReason,
                 retrievalTimeMs,
                 auditMetadata,
+                null,
                 null
         );
     }
@@ -159,6 +168,41 @@ public class ChatPersistenceService {
             Integer retrievalTimeMs,
             LiveHistoryAuditMetadata auditMetadata,
             com.ai.openai_api_service.service.protection.ProtectionAuditSnapshot protectionAudit
+    ) {
+        return persistChat(
+                tenantId,
+                userId,
+                sessionId,
+                originalText,
+                sanitizedText,
+                openAiResponse,
+                openAiUsage,
+                actionTaken,
+                sanitizedFlag,
+                retrievalReason,
+                retrievalTimeMs,
+                auditMetadata,
+                protectionAudit,
+                null
+        );
+    }
+
+    @Transactional
+    public Long persistChat(
+            String tenantId,
+            String userId,
+            String sessionId,
+            String originalText,
+            String sanitizedText,
+            String openAiResponse,
+            OpenAIUsage openAiUsage,
+            String actionTaken,
+            Boolean sanitizedFlag,
+            String retrievalReason,
+            Integer retrievalTimeMs,
+            LiveHistoryAuditMetadata auditMetadata,
+            com.ai.openai_api_service.service.protection.ProtectionAuditSnapshot protectionAudit,
+            ChatMode resolvedMode
     ) {
         try {
             int consumed = resolveConsumedTokens(openAiUsage, null);
@@ -269,6 +313,7 @@ public class ChatPersistenceService {
             message.setSanitizedFlag(sanitizedFlag);
             message.setOpenaiResponse(openAiResponse);
             message.setTokensUsed(consumed);
+            message.setMode(resolvedMode != null ? resolvedMode.name() : ChatMode.AUTO.name());
             if (openAiUsage != null) {
                 message.setPromptTokens(openAiUsage.getPromptTokens());
                 message.setCompletionTokens(openAiUsage.getCompletionTokens());
@@ -458,7 +503,7 @@ public class ChatPersistenceService {
 
         List<RequestLog> rows =
                 requestLogRepository
-                        .findBySession_TenantAndSession_UserAndSession_SessionIdOrderByCreatedAtDesc(
+                        .findActiveBySessionOrderByCreatedAtDesc(
                                 tenant,
                                 user,
                                 sessionId,
@@ -506,8 +551,8 @@ public class ChatPersistenceService {
     }
 
     /**
-     * Widget display history with {@code requestLogId} on assistant turns.
-     * Does not replace {@link #loadHistoryForPrompt} which remains prompt-safe {@link MessageDto}.
+     * Widget display history with {@code requestLogId} and {@code mode} on user and assistant turns.
+     * Active revisions only. Does not replace {@link #loadHistoryForPrompt}.
      */
     @Transactional(readOnly = true)
     public List<HistoryMessageDto> loadHistoryForDisplay(
@@ -534,7 +579,7 @@ public class ChatPersistenceService {
 
         List<RequestLog> rows =
                 requestLogRepository
-                        .findBySession_TenantAndSession_UserAndSession_SessionIdOrderByCreatedAtDesc(
+                        .findActiveBySessionOrderByCreatedAtDesc(
                                 tenant,
                                 user,
                                 sessionId,
@@ -548,6 +593,7 @@ public class ChatPersistenceService {
             String userMessageContent = row.getOriginalText() != null && !row.getOriginalText().isBlank()
                     ? row.getOriginalText()
                     : row.getSanitizedText();
+            String modeWire = toModeWireValue(row.getMode());
 
             if (userMessageContent != null && !userMessageContent.isBlank()) {
                 messages.add(new HistoryMessageDto(
@@ -555,7 +601,8 @@ public class ChatPersistenceService {
                         userMessageContent,
                         row.getSanitizedFlag(),
                         null,
-                        null
+                        row.getId(),
+                        modeWire
                 ));
             }
 
@@ -565,7 +612,8 @@ public class ChatPersistenceService {
                         row.getOpenaiResponse(),
                         null,
                         row.getActionTaken(),
-                        row.getId()
+                        row.getId(),
+                        modeWire
                 ));
             }
         }
@@ -730,5 +778,154 @@ public class ChatPersistenceService {
 
                 })
                 .orElse(null);
+    }
+
+    /**
+     * Blocks when the session already has {@code chat.session.max-requests} AI executions
+     * (including superseded revisions).
+     */
+    @Transactional(readOnly = true)
+    public void enforceSessionRequestLimit(String tenantId, String userId, String sessionId) {
+        TenantUserSession resolved = resolveTenantUser(tenantId, userId);
+        if (resolved == null) {
+            return;
+        }
+        long count = requestLogRepository.countBySession_TenantAndSession_UserAndSession_SessionId(
+                resolved.tenant(),
+                resolved.user(),
+                sessionId
+        );
+        if (count >= maxRequestsPerSession) {
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Session request limit reached (" + maxRequestsPerSession + ")"
+            );
+        }
+    }
+
+    /**
+     * Validates that {@code editOfRequestLogId} is the latest active turn for this session.
+     *
+     * @return session PK for the atomic supersede UPDATE
+     */
+    @Transactional(readOnly = true)
+    public Long validateLatestActiveEdit(
+            String tenantId,
+            String userId,
+            String sessionId,
+            Long editOfRequestLogId
+    ) {
+        if (editOfRequestLogId == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "editOfRequestLogId is required");
+        }
+
+        RequestLog target = requestLogRepository.findById(editOfRequestLogId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Request not found"));
+
+        Session session = target.getSession();
+        if (session == null
+                || session.getTenant() == null
+                || session.getUser() == null
+                || !Objects.equals(session.getTenant().getTenantCode(), tenantId)
+                || !Objects.equals(session.getUser().getUsername(), userId)
+                || !Objects.equals(session.getSessionId(), sessionId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Request not found");
+        }
+
+        if (target.getSupersededByRequestLogId() != null) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Request has already been superseded"
+            );
+        }
+
+        List<Long> latestActive = requestLogRepository.findActiveIdsBySessionOrderByIdDesc(
+                session.getTenant(),
+                session.getUser(),
+                sessionId,
+                PageRequest.of(0, 1)
+        );
+        if (latestActive.isEmpty() || !Objects.equals(latestActive.get(0), editOfRequestLogId)) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Only the latest active request can be edited"
+            );
+        }
+
+        return session.getId();
+    }
+
+    /**
+     * Atomically supersedes {@code oldId} with {@code newId}.
+     * On conflict (0 rows), hides the losing new revision under the winner, then returns false.
+     * Caller must return 409 only after this method has persisted the hide.
+     */
+    @Transactional
+    public boolean supersedeEditedRequest(Long oldId, Long newId, Long sessionPk) {
+        int updated = requestLogRepository.supersedeIfActive(oldId, newId, sessionPk);
+        if (updated == 1) {
+            return true;
+        }
+
+        RequestLog oldRow = requestLogRepository.findById(oldId).orElse(null);
+        Long winnerId = oldRow != null ? oldRow.getSupersededByRequestLogId() : null;
+        if (winnerId == null) {
+            RequestLog newRow = requestLogRepository.findById(newId).orElse(null);
+            if (newRow != null && newRow.getSession() != null) {
+                List<Long> active = requestLogRepository.findActiveIdsBySessionOrderByIdDesc(
+                        newRow.getSession().getTenant(),
+                        newRow.getSession().getUser(),
+                        newRow.getSession().getSessionId(),
+                        PageRequest.of(0, 1)
+                );
+                if (!active.isEmpty() && !Objects.equals(active.get(0), newId)) {
+                    winnerId = active.get(0);
+                }
+            }
+        }
+        if (winnerId == null) {
+            winnerId = oldId;
+        }
+
+        RequestLog loser = requestLogRepository.findById(newId)
+                .orElseThrow(() -> new ResponseStatusException(
+                        HttpStatus.CONFLICT,
+                        "Edit conflict and losing revision not found"
+                ));
+        loser.setSupersededByRequestLogId(winnerId);
+        requestLogRepository.saveAndFlush(loser);
+        log.warn(
+                "Edit supersede conflict: oldId={}, losingNewId={}, winnerId={}",
+                oldId,
+                newId,
+                winnerId
+        );
+        return false;
+    }
+
+    static String toModeWireValue(String storedMode) {
+        if (storedMode == null || storedMode.isBlank()) {
+            return ChatMode.AUTO.getWireValue();
+        }
+        try {
+            return ChatMode.valueOf(storedMode.trim().toUpperCase()).getWireValue();
+        } catch (IllegalArgumentException ex) {
+            return ChatMode.AUTO.getWireValue();
+        }
+    }
+
+    private TenantUserSession resolveTenantUser(String tenantId, String userId) {
+        Tenant tenant = tenantRepository.findByTenantCode(tenantId).orElse(null);
+        if (tenant == null) {
+            return null;
+        }
+        User user = userRepository.findByTenantAndUsername(tenant, userId).orElse(null);
+        if (user == null) {
+            return null;
+        }
+        return new TenantUserSession(tenant, user);
+    }
+
+    private record TenantUserSession(Tenant tenant, User user) {
     }
 }
