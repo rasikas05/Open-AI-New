@@ -989,6 +989,12 @@ public class ComprehendChatService {
         boolean allowExternal = request.getMode() != ChatMode.DOCS
                 || request.getExternalSourceEnabled() == null
                 || Boolean.TRUE.equals(request.getExternalSourceEnabled());
+        log.info(
+                "Docs configuration | mode={} | externalSourceEnabled={} | allowExternal={}",
+                request.getMode(),
+                request.getExternalSourceEnabled(),
+                allowExternal
+        );
 
         long queryRewriteMs = 0L;
         long retrievalStageMs = 0L;

@@ -33,6 +33,9 @@ import com.ai.openai_api_service.service.TenantQuotaService.QuotaCheckResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
@@ -46,6 +49,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -1959,6 +1963,44 @@ class ComprehendChatServiceTest {
         verify(pythonRagService, never()).route(anyString());
         verify(chatPersistenceService, never()).validateLatestActiveEdit(
                 anyString(), anyString(), anyString(), anyLong()
+        );
+    }
+
+    @ParameterizedTest(name = "docs insufficient externalSourceEnabled={0} allowExternal={1}")
+    @MethodSource("docsExternalSourceFlagStates")
+    void docsInsufficient_externalSourceFlagStates(
+            Boolean externalSourceEnabled,
+            boolean allowExternal
+    ) {
+        stubQuotaAllowed();
+        stubSanitize();
+        stubDocsRetrievalGrounded(RagStatus.INSUFFICIENT, "", List.of());
+        ChatResponse fallbackResponse = new ChatResponse("General GPT answer", false);
+        fallbackResponse.setActionTaken("gpt_infor");
+        if (allowExternal) {
+            when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallbackResponse);
+        }
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(docsRequest("how to add KIT", externalSourceEnabled));
+
+        if (allowExternal) {
+            assertEquals("General GPT answer", response.getReply());
+            assertEquals("gpt_infor", response.getActionTaken());
+            verify(openAIService).chatWithoutPersistence(any(), any());
+        } else {
+            assertEquals(ComprehendChatService.DOCS_INSUFFICIENT_MESSAGE, response.getReply());
+            assertEquals("rag", response.getActionTaken());
+            verify(openAIService, never()).chatWithoutPersistence(any(), any());
+        }
+        verify(openAIService, never()).chatGapFill(any(), any(), any(), any());
+    }
+
+    static Stream<Arguments> docsExternalSourceFlagStates() {
+        return Stream.of(
+                Arguments.of(null, true),
+                Arguments.of(true, true),
+                Arguments.of(false, false)
         );
     }
 
