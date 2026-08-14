@@ -75,6 +75,14 @@ public class ComprehendChatService {
                     + "• Show customer Y00111\n"
                     + "• Get customer details for Y00111";
 
+    static final String DOCS_PARTIAL_CONTINUATION =
+            "For the remaining details, please try another combination or clarify your request, "
+                    + "and I'll help you with the available information.";
+
+    static final String DOCS_INSUFFICIENT_MESSAGE =
+            "I couldn't find enough information to answer your request. Please try another combination "
+                    + "or clarify your request, and I'll help you with the available information.";
+
     private final ChatPersistenceService chatPersistenceService;
     private final TenantQuotaService tenantQuotaService;
     private final SuggestionEngineService suggestionEngineService;
@@ -978,6 +986,10 @@ public class ComprehendChatService {
             String originalUserText,
             ProtectionSession session
     ) {
+        boolean allowExternal = request.getMode() != ChatMode.DOCS
+                || request.getExternalSourceEnabled() == null
+                || Boolean.TRUE.equals(request.getExternalSourceEnabled());
+
         long queryRewriteMs = 0L;
         long retrievalStageMs = 0L;
         long retrievalPythonMs = 0L;
@@ -1055,6 +1067,27 @@ public class ComprehendChatService {
                     e.getStatusCode(),
                     e.getMessage()
             );
+            if (!allowExternal) {
+                ChatResponse chatResponse = buildDocsOnlyInsufficientResponse(request, rewriteUsage);
+                return new DocRouteResult(
+                        chatResponse,
+                        List.of(),
+                        List.of(),
+                        "retrieval_error",
+                        null,
+                        null,
+                        (int) queryRewriteMs,
+                        (int) retrievalStageMs,
+                        (int) retrievalPythonMs,
+                        (int) preRetrievalGlueMs,
+                        0,
+                        0,
+                        0,
+                        groundedTokens,
+                        gapFillTokens,
+                        generalGptTokens
+                );
+            }
             Instant generalStart = Instant.now();
             ChatResponse chatResponse = openAIService.chatWithoutPersistence(request, session);
             Instant generalEnd = Instant.now();
@@ -1147,7 +1180,9 @@ public class ComprehendChatService {
                 );
                 log.debug("Grounded Response (raw): {}", groundedCall.rawContent());
 
-                DocAnswerOutcome outcome = orchestrateGroundedStatus(request, grounded, groundedUsage, session);
+                DocAnswerOutcome outcome = orchestrateGroundedStatus(
+                        request, grounded, groundedUsage, session, allowExternal
+                );
                 chatResponse = outcome.chatResponse();
                 reason = outcome.retrievalReason();
                 gapFillMs = outcome.gapFillTimeMs();
@@ -1176,6 +1211,19 @@ public class ComprehendChatService {
                     throw e;
                 }
                 log.warn("Grounded JSON parsing failed, falling back to General GPT: {}", e.getMessage());
+                if (!allowExternal) {
+                    chatResponse = buildDocsOnlyInsufficientResponse(request, rewriteUsage);
+                    reason = RETRIEVAL_RAG_NO_ANSWER;
+                    log.info(
+                            "RAG Decision | status={} | retrievalReason={} | grounded={} | gapFill={} | generalGPT={} | finalAction={}",
+                            "PARSE_FAILED",
+                            reason,
+                            true,
+                            false,
+                            false,
+                            chatResponse.getActionTaken()
+                    );
+                } else {
                 Instant generalStart = Instant.now();
                 chatResponse = openAIService.chatWithoutPersistence(request, session);
                 Instant generalEnd = Instant.now();
@@ -1196,11 +1244,15 @@ public class ComprehendChatService {
                         true,
                         chatResponse.getActionTaken()
                 );
+                }
             }
         } else {
             if (retrieval.getError() != null) {
                 log.warn("Retrieval error from Python, falling back to OpenAI: {}", retrieval.getError());
             }
+            if (!allowExternal) {
+                chatResponse = buildDocsOnlyInsufficientResponse(request, rewriteUsage);
+            } else {
             Instant generalStart = Instant.now();
             chatResponse = openAIService.chatWithoutPersistence(request, session);
             Instant generalEnd = Instant.now();
@@ -1210,6 +1262,7 @@ public class ComprehendChatService {
             generalGptTokens = nullSafeInt(chatResponse.getOpenAiUsage() != null ? chatResponse.getOpenAiUsage().getTotalTokens() : null);
             if (rewriteUsage != null) {
                 chatResponse.setOpenAiUsage(mergeUsage(rewriteUsage, chatResponse.getOpenAiUsage()));
+            }
             }
         }
 
@@ -1237,7 +1290,8 @@ public class ComprehendChatService {
             ChatRequest request,
             GroundedRagResult grounded,
             OpenAIUsage usageSoFar,
-            ProtectionSession session
+            ProtectionSession session,
+            boolean allowExternal
     ) {
         RagStatus status = grounded.getStatus() != null ? grounded.getStatus() : RagStatus.INSUFFICIENT;
         String docAnswer = grounded.getAnswer() != null ? grounded.getAnswer() : "";
@@ -1260,6 +1314,20 @@ public class ComprehendChatService {
             List<String> missingTopics = grounded.getMissingTopics() != null
                     ? grounded.getMissingTopics()
                     : List.of();
+            if (!allowExternal) {
+                ChatResponse response = buildDocsOnlyPartialResponse(request, docAnswer, usageSoFar);
+                log.info(
+                        "RAG Decision | status={} | retrievalReason={} | grounded={} | gapFill={} | generalGPT={} | finalAction={} | missingTopics={}",
+                        "PARTIAL",
+                        RETRIEVAL_READY,
+                        true,
+                        false,
+                        false,
+                        response.getActionTaken(),
+                        missingTopics.size()
+                );
+                return new DocAnswerOutcome(response, RETRIEVAL_READY, 0, 0, 0, 0);
+            }
             if (ragPartialGapFillEnabled && !missingTopics.isEmpty()) {
                 long gapFillStartMs = System.currentTimeMillis();
                 ChatResponse gapFill = openAIService.chatGapFill(request, docAnswer, missingTopics, session);
@@ -1304,6 +1372,20 @@ public class ComprehendChatService {
             return new DocAnswerOutcome(response, RETRIEVAL_READY, 0, 0, 0, 0);
         }
 
+        if (!allowExternal) {
+            ChatResponse response = buildDocsOnlyInsufficientResponse(request, usageSoFar);
+            log.info(
+                    "RAG Decision | status={} | retrievalReason={} | grounded={} | gapFill={} | generalGPT={} | finalAction={}",
+                    "INSUFFICIENT",
+                    RETRIEVAL_RAG_NO_ANSWER,
+                    true,
+                    false,
+                    false,
+                    response.getActionTaken()
+            );
+            return new DocAnswerOutcome(response, RETRIEVAL_RAG_NO_ANSWER, 0, 0, 0, 0);
+        }
+
         long generalStartMs = System.currentTimeMillis();
         ChatResponse general = openAIService.chatWithoutPersistence(request, session);
         int generalTimeMs = (int) (System.currentTimeMillis() - generalStartMs);
@@ -1328,6 +1410,22 @@ public class ComprehendChatService {
         chatResponse.setActionTaken("rag");
         chatResponse.setOpenAiUsage(usage);
         return chatResponse;
+    }
+
+    private ChatResponse buildDocsOnlyInsufficientResponse(ChatRequest request, OpenAIUsage usage) {
+        return buildRagChatResponse(request, DOCS_INSUFFICIENT_MESSAGE, usage);
+    }
+
+    private ChatResponse buildDocsOnlyPartialResponse(
+            ChatRequest request,
+            String docAnswer,
+            OpenAIUsage usage
+    ) {
+        String trimmed = docAnswer != null ? docAnswer.strip() : "";
+        if (trimmed.isEmpty()) {
+            return buildDocsOnlyInsufficientResponse(request, usage);
+        }
+        return buildRagChatResponse(request, trimmed + "\n\n" + DOCS_PARTIAL_CONTINUATION, usage);
     }
 
     private void abortIfPythonAiUnavailable(PythonRetrievalResponse retrieval) {
@@ -1503,7 +1601,11 @@ public class ComprehendChatService {
         copy.setUserId(originalRequest.getUserId());
         copy.setSessionId(originalRequest.getSessionId());
         copy.setUserMessage(newUserMessage);
+        copy.setMode(originalRequest.getMode());
+        copy.setExternalSourceEnabled(originalRequest.getExternalSourceEnabled());
+        copy.setEditOfRequestLogId(originalRequest.getEditOfRequestLogId());
         copy.setHistory(originalRequest.getHistory());
+        copy.setM3ClientReport(originalRequest.getM3ClientReport());
         return copy;
     }
 

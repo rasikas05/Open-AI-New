@@ -40,6 +40,14 @@ public class ChatRequest {
     )
     private Long editOfRequestLogId;
 
+    @Schema(
+            description = "Docs mode only. When true (default), insufficient RAG may use general GPT "
+                    + "and PARTIAL may use gap-fill. When false, answers come only from retrieved documents. "
+                    + "Ignored for Auto and Live M3.",
+            example = "true"
+    )
+    private Boolean externalSourceEnabled;
+
     @Valid
     @Schema(example = "[]")
     private List<MessageDto> history;
@@ -102,6 +110,14 @@ public class ChatRequest {
 
     public void setEditOfRequestLogId(Long editOfRequestLogId) {
         this.editOfRequestLogId = editOfRequestLogId;
+    }
+
+    public Boolean getExternalSourceEnabled() {
+        return externalSourceEnabled;
+    }
+
+    public void setExternalSourceEnabled(Boolean externalSourceEnabled) {
+        this.externalSourceEnabled = externalSourceEnabled;
     }
 
     public List<MessageDto> getHistory() {

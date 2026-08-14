@@ -1962,6 +1962,228 @@ class ComprehendChatServiceTest {
         );
     }
 
+    @Test
+    void docsExternalOn_insufficient_usesGeneralGpt() {
+        stubQuotaAllowed();
+        stubSanitize();
+        stubDocsRetrievalGrounded(RagStatus.INSUFFICIENT, "", List.of());
+
+        OpenAIUsage fallbackUsage = new OpenAIUsage(50, 100, 150, "gpt-4.1");
+        ChatResponse fallbackResponse = new ChatResponse("General GPT answer", false);
+        fallbackResponse.setActionTaken("gpt_infor");
+        fallbackResponse.setOpenAiUsage(fallbackUsage);
+        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallbackResponse);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(docsRequest("how to add KIT", true));
+
+        assertEquals("General GPT answer", response.getReply());
+        assertEquals("gpt_infor", response.getActionTaken());
+        verify(openAIService).chatWithoutPersistence(any(), any());
+        verify(openAIService, never()).chatGapFill(any(), any(), any(), any());
+    }
+
+    @Test
+    void docsExternalOn_nullField_treatedAsOn_insufficientUsesGeneralGpt() {
+        stubQuotaAllowed();
+        stubSanitize();
+        stubDocsRetrievalGrounded(RagStatus.INSUFFICIENT, "", List.of());
+
+        ChatResponse fallbackResponse = new ChatResponse("General GPT answer", false);
+        fallbackResponse.setActionTaken("gpt_infor");
+        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallbackResponse);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = docsRequest("how to add KIT", null);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("General GPT answer", response.getReply());
+        verify(openAIService).chatWithoutPersistence(any(), any());
+    }
+
+    @Test
+    void docsExternalOff_full_returnsGroundedAnswerOnly() {
+        stubQuotaAllowed();
+        stubSanitize();
+        stubDocsRetrievalGrounded(RagStatus.FULL, "Document answer from CRS780", List.of());
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(docsRequest("purchase settings", false));
+
+        assertEquals("Document answer from CRS780", response.getReply());
+        assertEquals("rag", response.getActionTaken());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+        verify(openAIService, never()).chatGapFill(any(), any(), any(), any());
+    }
+
+    @Test
+    void docsExternalOff_partial_noGapFill_usesContinuationMessage() {
+        stubQuotaAllowed();
+        stubSanitize();
+        stubDocsRetrievalGrounded(
+                RagStatus.PARTIAL,
+                "MNS204 appears in user settings documentation.",
+                List.of("Functional purpose", "Business usage")
+        );
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(docsRequest("What is MNS204 used for?", false));
+
+        assertTrue(response.getReply().contains("MNS204 appears in user settings documentation."));
+        assertTrue(response.getReply().contains(ComprehendChatService.DOCS_PARTIAL_CONTINUATION));
+        assertEquals("rag", response.getActionTaken());
+        verify(openAIService, never()).chatGapFill(any(), any(), any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+    }
+
+    @Test
+    void docsExternalOff_insufficient_noGeneralGpt() {
+        stubQuotaAllowed();
+        stubSanitize();
+        stubDocsRetrievalGrounded(RagStatus.INSUFFICIENT, "", List.of());
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(docsRequest("how to add KIT", false));
+
+        assertEquals(ComprehendChatService.DOCS_INSUFFICIENT_MESSAGE, response.getReply());
+        assertEquals("rag", response.getActionTaken());
+        assertEquals("rag_no_answer_fallback", response.getRetrievalReason());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+        verify(openAIService, never()).chatGapFill(any(), any(), any(), any());
+    }
+
+    @Test
+    void docsExternalOff_retrievalNotReady_noGeneralGpt() {
+        stubQuotaAllowed();
+        stubSanitize();
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("below_prompt_threshold");
+        retrieval.setMaxScore(0.2f);
+        retrieval.setPromptChunks(List.of());
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(docsRequest("unknown topic", false));
+
+        assertEquals(ComprehendChatService.DOCS_INSUFFICIENT_MESSAGE, response.getReply());
+        assertEquals("rag", response.getActionTaken());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+        verify(openAIService, never()).chatWithRagContext(any(), any(), any());
+    }
+
+    @Test
+    void docsExternalOff_retrievalException_noGeneralGpt() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any()))
+                .thenThrow(new OpenAIException("retrieval failed", 500));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(docsRequest("purchase settings", false));
+
+        assertEquals(ComprehendChatService.DOCS_INSUFFICIENT_MESSAGE, response.getReply());
+        assertEquals("rag", response.getActionTaken());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+    }
+
+    @Test
+    void docsExternalOff_groundedParseFail_noGeneralGpt() {
+        stubQuotaAllowed();
+        stubSanitize();
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        ChunkItem chunk = new ChunkItem("chunk", 0.7f, "Title", "http://example.com", List.of(), null, null, null, null);
+        retrieval.setPromptChunks(List.of(chunk));
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any()))
+                .thenThrow(new OpenAIException("parse failed", 500));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(docsRequest("purchase settings", false));
+
+        assertEquals(ComprehendChatService.DOCS_INSUFFICIENT_MESSAGE, response.getReply());
+        assertEquals("rag", response.getActionTaken());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+    }
+
+    @Test
+    void auto_insufficient_ignoresExternalSourceDisabled_usesGeneralGpt() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(pythonRagService.route("how to add KIT")).thenReturn(new PythonRouteResponse("rag"));
+
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        ChunkItem chunk = new ChunkItem("chunk", 0.64f, "Title", "http://example.com", List.of("OIS100"), null, null, null, null);
+        retrieval.setPromptChunks(List.of(chunk));
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any())).thenReturn(
+                new GroundedRagCallResult(
+                        new GroundedRagResult(RagStatus.INSUFFICIENT, "", List.of()),
+                        new OpenAIUsage(1, 1, 2, "gpt"),
+                        "{}"
+                )
+        );
+
+        ChatResponse fallbackResponse = new ChatResponse("Auto general GPT", false);
+        fallbackResponse.setActionTaken("gpt_infor");
+        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallbackResponse);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = baseRequest("how to add KIT");
+        request.setExternalSourceEnabled(false);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("Auto general GPT", response.getReply());
+        verify(openAIService).chatWithoutPersistence(any(), any());
+    }
+
+    @Test
+    void docsExternalOn_partial_usesGapFillWhenEnabled() {
+        stubQuotaAllowed();
+        stubSanitize();
+        stubDocsRetrievalGrounded(
+                RagStatus.PARTIAL,
+                "MNS204 appears in user settings documentation.",
+                List.of("Functional purpose")
+        );
+        ChatResponse gapResponse = new ChatResponse("Functional purpose: ...", false);
+        gapResponse.setOpenAiUsage(new OpenAIUsage(1, 1, 2, "gpt"));
+        when(openAIService.chatGapFill(any(), anyString(), anyList(), any())).thenReturn(gapResponse);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(docsRequest("What is MNS204 used for?", true));
+
+        assertTrue(response.getReply().contains("Functional purpose: ..."));
+        verify(openAIService).chatGapFill(any(), anyString(), anyList(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+    }
+
+    private ChatRequest docsRequest(String message, Boolean externalSourceEnabled) {
+        ChatRequest request = baseRequest(message);
+        request.setMode(ChatMode.DOCS);
+        request.setExternalSourceEnabled(externalSourceEnabled);
+        return request;
+    }
+
+    private void stubDocsRetrievalGrounded(RagStatus status, String answer, List<String> missingTopics) {
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        retrieval.setRetrievalTimeMs(10);
+        retrieval.setMaxScore(0.7f);
+        ChunkItem chunk = new ChunkItem(
+                "chunk text", 0.7f, "Title", "http://example.com", List.of(), null, null, null, null
+        );
+        retrieval.setPromptChunks(List.of(chunk));
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any()))
+                .thenReturn(new GroundedRagCallResult(
+                        new GroundedRagResult(status, answer, missingTopics),
+                        new OpenAIUsage(1, 1, 2, "gpt"),
+                        "{}"
+                ));
+    }
+
     private void stubDocsGroundedPath(String unusedMessage, String groundedReply) {
         PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
         retrieval.setRetrievalReason("ready_for_grounding");
