@@ -898,6 +898,11 @@ public class OpenAIService {
         return REWRITE_USER_PROMPT_TEMPLATE;
     }
 
+    /** Package-visible for unit tests. External/fallback CLEAR prompt from configuration. */
+    String assistantSystemPrompt() {
+        return systemPromptForFallback();
+    }
+
     private boolean isValidRole(String role) {
         return "system".equals(role) || "user".equals(role) || "assistant".equals(role);
     }
