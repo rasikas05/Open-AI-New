@@ -267,6 +267,12 @@ public class OpenAIService {
     @Value("${openai.api.timeout-ms:120000}")
     private int openAiTimeoutMs;
 
+    @Value("${openai.api.reasoning-effort:none}")
+    private String reasoningEffort;
+
+    @Value("${openai.api.max-completion-tokens:4096}")
+    private int defaultMaxCompletionTokens;
+
     private final BusinessInformationProtectionService businessInformationProtectionService;
 
     /** Test-friendly constructor; protection remains inactive when null or flag=false. */
@@ -736,22 +742,26 @@ public class OpenAIService {
     }
 
     private OpenAiCallResult callOpenAi(List<Map<String, String>> messages, Double temperature, Integer maxTokens) {
-        Map<String, Object> body = new HashMap<>();
-        body.put("model", model);
-        body.put("messages", messages);
-        if (temperature != null) {
-            body.put("temperature", temperature);
-        }
-        if (maxTokens != null) {
-            body.put("max_tokens", maxTokens);
-        }
+        Map<String, Object> body = OpenAiChatRequestBuilder.buildChatCompletionBody(
+                model,
+                reasoningEffort,
+                defaultMaxCompletionTokens,
+                messages,
+                temperature,
+                maxTokens
+        );
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.setBearerAuth(apiKey);
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
 
-        log.info("Calling OpenAI chat completions. model={}, messageCount={}", model, messages.size());
+        log.info(
+                "Calling OpenAI chat completions. model={}, reasoningEffort={}, messageCount={}",
+                model,
+                OpenAiChatRequestBuilder.effectiveReasoningEffort(model, reasoningEffort),
+                messages.size()
+        );
         long start = System.currentTimeMillis();
 
         Map<String, Object> response;

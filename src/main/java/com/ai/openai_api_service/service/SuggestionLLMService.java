@@ -43,6 +43,12 @@ public class SuggestionLLMService {
     @Value("${suggestion.llm.enabled:true}")
     private boolean llmEnabled;
 
+    @Value("${openai.api.reasoning-effort:none}")
+    private String reasoningEffort;
+
+    @Value("${openai.api.max-completion-tokens:4096}")
+    private int defaultMaxCompletionTokens;
+
     public List<SuggestionItem> suggest(SuggestionContext context, int minCount, int maxCount) {
         if (!llmEnabled || context == null || apiKey == null || apiKey.isBlank()) {
             return List.of();
@@ -55,18 +61,23 @@ public class SuggestionLLMService {
             return List.of();
         }
 
-        Map<String, Object> body = Map.of(
-                "model", model,
-                "messages", List.of(
-                        Map.of(
-                                "role", "system",
-                                "content", "You are an expert Infor M3 assistant. Generate concise, user-centric follow-up suggestions based on the user query, answer, and retrieval context."
-                        ),
-                        Map.of(
-                                "role", "user",
-                                "content", prompt
-                        )
+        List<Map<String, String>> messages = List.of(
+                Map.of(
+                        "role", "system",
+                        "content", "You are an expert Infor M3 assistant. Generate concise, user-centric follow-up suggestions based on the user query, answer, and retrieval context."
+                ),
+                Map.of(
+                        "role", "user",
+                        "content", prompt
                 )
+        );
+        Map<String, Object> body = OpenAiChatRequestBuilder.buildChatCompletionBody(
+                model,
+                reasoningEffort,
+                defaultMaxCompletionTokens,
+                messages,
+                null,
+                null
         );
 
         HttpHeaders headers = new HttpHeaders();
@@ -75,6 +86,11 @@ public class SuggestionLLMService {
 
         try {
             Instant openAiStart = Instant.now();
+            log.info(
+                    "Calling OpenAI chat completions for suggestions. model={}, reasoningEffort={}",
+                    model,
+                    OpenAiChatRequestBuilder.effectiveReasoningEffort(model, reasoningEffort)
+            );
             ResponseEntity<Map> responseEntity = restTemplate.exchange(
                     openaiUrl,
                     HttpMethod.POST,
