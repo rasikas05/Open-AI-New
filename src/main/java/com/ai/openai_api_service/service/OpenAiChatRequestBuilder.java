@@ -41,6 +41,26 @@ final class OpenAiChatRequestBuilder {
             Double temperature,
             Integer maxTokens
     ) {
+        return buildChatCompletionBody(
+                model,
+                configuredReasoningEffort,
+                defaultMaxCompletionTokens,
+                messages,
+                temperature,
+                maxTokens,
+                false
+        );
+    }
+
+    static Map<String, Object> buildChatCompletionBody(
+            String model,
+            String configuredReasoningEffort,
+            int defaultMaxCompletionTokens,
+            List<Map<String, String>> messages,
+            Double temperature,
+            Integer maxTokens,
+            boolean jsonObjectResponse
+    ) {
         Map<String, Object> body = new HashMap<>();
         body.put("model", model);
         body.put("messages", messages);
@@ -60,6 +80,9 @@ final class OpenAiChatRequestBuilder {
             if (maxTokens != null) {
                 body.put("max_tokens", maxTokens);
             }
+        }
+        if (jsonObjectResponse) {
+            body.put("response_format", Map.of("type", "json_object"));
         }
         return body;
     }

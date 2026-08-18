@@ -16,6 +16,8 @@ import com.ai.openai_api_service.model.LiveHistoryResult;
 import com.ai.openai_api_service.model.OpenAIUsage;
 import com.ai.openai_api_service.model.QueryRewriteResult;
 import com.ai.openai_api_service.model.RequestType;
+import com.ai.openai_api_service.model.RequestUnderstandResult;
+import com.ai.openai_api_service.model.RequestUnderstandType;
 import com.ai.openai_api_service.model.SearchCriterion;
 import com.ai.openai_api_service.model.SuggestionContext;
 import com.ai.openai_api_service.model.SuggestionResult;
@@ -106,6 +108,9 @@ public class ComprehendChatService {
 
     @Value("${rag.query-rewrite.enabled:false}")
     private boolean queryRewriteEnabled;
+
+    @Value("${chat.request-router.enabled:false}")
+    private boolean requestRouterEnabled;
 
     @Value("${rag.partial.gap-fill.enabled:true}")
     private boolean ragPartialGapFillEnabled;
@@ -264,8 +269,106 @@ public class ComprehendChatService {
         if (!guidedHandled && !pendingLexHandled) {
             ChatMode mode = resolvedMode;
             Instant routeStart = Instant.now();
+            RequestUnderstandResult understood = null;
+            boolean routerHandled = false;
+
             if (mode == ChatMode.M3) {
                 route = ROUTE_LIVE;
+            } else if (requestRouterEnabled) {
+                Instant understandStart = Instant.now();
+                protectionSession = ProtectionSession.fromOriginal(
+                        originalUserText,
+                        businessInformationProtectionService.isEnabled()
+                );
+                businessInformationProtectionService.protect(
+                        protectionSession,
+                        ProtectionContext.forPurpose(ProtectionPurpose.ANSWER, true)
+                );
+                protectPiiSafely(protectionSession);
+                Instant piiEnd = Instant.now();
+                piiDetectionMs = RequestTimingLog.durationMs(understandStart, piiEnd);
+                RequestTimingLog.logStage("pii", understandStart, piiEnd);
+
+                String llmText = protectionSession.textForLlm();
+                sanitizedUserText = llmText;
+                workingRequest = copyRequestWithUserMessage(request, llmText);
+                try {
+                    understood = openAIService.understandRequest(workingRequest, llmText);
+                } catch (OpenAIException e) {
+                    if (e.isAiServiceUnavailable()) {
+                        throw e;
+                    }
+                    log.warn("Request router failed: {}. Falling back to Python /route.", e.getMessage());
+                } catch (Exception e) {
+                    if (AiServiceErrors.isQuotaOrCreditExhaustion(e.getMessage())) {
+                        throw AiServiceErrors.unavailable(e.getMessage());
+                    }
+                    log.warn("Request router failed: {}. Falling back to Python /route.", e.getMessage());
+                }
+                Instant understandEnd = Instant.now();
+                routeDecisionMs = RequestTimingLog.durationMs(understandStart, understandEnd);
+                RequestTimingLog.logStage("understand", understandStart, understandEnd);
+
+                if (understood != null) {
+                    RequestUnderstandType type = understood.type();
+                    if (mode == ChatMode.DOCS && type == RequestUnderstandType.LIVE_M3) {
+                        log.info("routerType=LIVE_M3 overriddenByMode=docs");
+                        type = RequestUnderstandType.RAG;
+                    }
+                    switch (type) {
+                        case CONVERSATIONAL -> {
+                            chatResponse = buildRouterUserResponse(
+                                    workingRequest, understood, "conversational");
+                            route = "conversational";
+                            routerHandled = true;
+                        }
+                        case NON_M3 -> {
+                            if (allowExternalFallback(request)) {
+                                chatResponse = buildRouterUserResponse(
+                                        workingRequest, understood, "general_redirect");
+                                route = "general_redirect";
+                            } else {
+                                chatResponse = buildDocsOnlyInsufficientResponse(
+                                        workingRequest, understood.usage());
+                                route = "rag";
+                            }
+                            routerHandled = true;
+                        }
+                        case LIVE_M3 -> route = ROUTE_LIVE;
+                        case RAG -> {
+                            route = "rag";
+                            DocRouteResult docResult = handleDocumentationRoute(
+                                    workingRequest,
+                                    originalUserText,
+                                    protectionSession,
+                                    understood.queries() != null ? understood.queries() : List.of(),
+                                    understood.usage()
+                            );
+                            chatResponse = docResult.chatResponse();
+                            sourcesForSuggestions = docResult.sourcesForSuggestions();
+                            responseSources = docResult.responseSources();
+                            retrievalReason = docResult.retrievalReason();
+                            retrievalTimeMs = docResult.retrievalTimeMs();
+                            maxScore = docResult.maxScore();
+                            queryRewriteMs = nullSafeInt(docResult.queryRewriteTimeMs());
+                            retrievalMs = nullSafeInt(docResult.retrievalSpringMs());
+                            retrievalPythonMs = nullSafeInt(docResult.retrievalPythonMs());
+                            preRetrievalGlueMs = nullSafeInt(docResult.preRetrievalGlueMs());
+                            groundedMs = nullSafeInt(docResult.groundedTimeMs());
+                            gapFillMs = nullSafeInt(docResult.gapFillTimeMs());
+                            generalGptMs = nullSafeInt(docResult.generalGptTimeMs());
+                            groundedTokens = docResult.groundedTokens();
+                            gapFillTokens = docResult.gapFillTokens();
+                            generalGptTokens = docResult.generalGptTokens();
+                            routerHandled = true;
+                        }
+                    }
+                } else if (mode == ChatMode.DOCS) {
+                    route = "rag";
+                } else {
+                    PythonRouteResponse routeResponse = pythonRagService.route(originalUserText);
+                    route = routeResponse != null ? routeResponse.getRoute() : "rag";
+                }
             } else if (mode == ChatMode.DOCS) {
                 route = "rag";
             } else {
@@ -273,7 +376,9 @@ public class ComprehendChatService {
                 route = routeResponse != null ? routeResponse.getRoute() : "rag";
             }
             Instant routeEnd = Instant.now();
-            routeDecisionMs = RequestTimingLog.durationMs(routeStart, routeEnd);
+            if (routeDecisionMs == 0L) {
+                routeDecisionMs = RequestTimingLog.durationMs(routeStart, routeEnd);
+            }
             RequestTimingLog.logStage("route", routeStart, routeEnd);
             log.info(
                     "Comprehend route decision: mode='{}', route='{}', handler='{}', originalLength={}",
@@ -281,11 +386,25 @@ public class ComprehendChatService {
                     route,
                     ROUTE_LIVE.equalsIgnoreCase(route)
                             ? (lexService.isEnabled() ? "live/lex" : "live/python-chat")
-                            : "documentation/retrieval",
+                            : (routerHandled ? "request-router" : "documentation/retrieval"),
                     originalUserText != null ? originalUserText.length() : 0
             );
 
-            if (ROUTE_LIVE.equalsIgnoreCase(route)) {
+            if (routerHandled) {
+                if (chatResponse != null && protectionSession != null) {
+                    Instant restoreStart = Instant.now();
+                    String restored = businessPlaceholderRestorer.restoreIntoSession(
+                            chatResponse.getReply(),
+                            protectionSession
+                    );
+                    chatResponse.setReply(restored);
+                    chatResponse.setReplyBeforeRestore(protectionSession.replyBeforeRestore());
+                    applyProtectionSessionToResponse(chatResponse, protectionSession);
+                    Instant restoreEnd = Instant.now();
+                    restoreMs = RequestTimingLog.durationMs(restoreStart, restoreEnd);
+                    RequestTimingLog.logStage("restore", restoreStart, restoreEnd);
+                }
+            } else if (ROUTE_LIVE.equalsIgnoreCase(route)) {
                 Instant piiStart = Instant.now();
                 sanitizedUserText = anonymizeForPersistence(originalUserText);
                 Instant piiEnd = Instant.now();
@@ -986,6 +1105,16 @@ public class ComprehendChatService {
             String originalUserText,
             ProtectionSession session
     ) {
+        return handleDocumentationRoute(request, originalUserText, session, null, null);
+    }
+
+    private DocRouteResult handleDocumentationRoute(
+            ChatRequest request,
+            String originalUserText,
+            ProtectionSession session,
+            List<String> routerQueries,
+            OpenAIUsage routerUsage
+    ) {
         boolean allowExternal = request.getMode() != ChatMode.DOCS
                 || request.getExternalSourceEnabled() == null
                 || Boolean.TRUE.equals(request.getExternalSourceEnabled());
@@ -1013,7 +1142,10 @@ public class ComprehendChatService {
 
         List<String> rewrittenQueries = List.of();
         OpenAIUsage rewriteUsage = null;
-        if (queryRewriteEnabled) {
+        if (routerQueries != null) {
+            rewrittenQueries = routerQueries;
+            rewriteUsage = routerUsage;
+        } else if (queryRewriteEnabled) {
             Instant rewriteStart = Instant.now();
             QueryRewriteResult rewriteResult = openAIService.rewriteQueries(request, llmText);
             Instant rewriteEnd = Instant.now();
@@ -1408,6 +1540,27 @@ public class ComprehendChatService {
                 general.getActionTaken()
         );
         return new DocAnswerOutcome(general, RETRIEVAL_RAG_NO_ANSWER, 0, generalTimeMs, 0, generalTokens);
+    }
+
+    private ChatResponse buildRouterUserResponse(
+            ChatRequest request,
+            RequestUnderstandResult understood,
+            String actionTaken
+    ) {
+        String reply = understood != null && understood.response() != null ? understood.response() : "";
+        ChatResponse chatResponse = new ChatResponse(reply, false);
+        chatResponse.setHistory(request.getHistory());
+        chatResponse.setActionTaken(actionTaken);
+        if (understood != null) {
+            chatResponse.setOpenAiUsage(understood.usage());
+        }
+        return chatResponse;
+    }
+
+    private boolean allowExternalFallback(ChatRequest request) {
+        return request.getMode() != ChatMode.DOCS
+                || request.getExternalSourceEnabled() == null
+                || Boolean.TRUE.equals(request.getExternalSourceEnabled());
     }
 
     private ChatResponse buildRagChatResponse(ChatRequest request, String reply, OpenAIUsage usage) {

@@ -9,6 +9,8 @@ import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.MessageDto;
 import com.ai.openai_api_service.model.OpenAIUsage;
 import com.ai.openai_api_service.model.QueryRewriteResult;
+import com.ai.openai_api_service.model.RequestUnderstandResult;
+import com.ai.openai_api_service.model.RequestUnderstandType;
 import com.ai.openai_api_service.model.python_rag.ChunkItem;
 import com.ai.openai_api_service.model.rag.GroundedRagCallResult;
 import com.ai.openai_api_service.model.rag.GroundedRagResult;
@@ -130,6 +132,26 @@ public class OpenAIService {
             %s
 
             Return ONLY a valid JSON array of 1-3 strings.""";
+
+    private static final String ROUTER_SYSTEM_PROMPT = """
+            You are an Infor M3 request router. Recommend type CONVERSATIONAL, RAG, LIVE_M3, or NON_M3. \
+            Never identify as ChatGPT. Output ONLY JSON: {"type":"...","response":"...","queries":[]}
+
+            CONVERSATIONAL: greetings, identity, thanks, how are you, what can you do.
+            LIVE_M3: the user wants to retrieve, search, create, update, or execute against actual M3 tenant data.
+            RAG: the user wants documentation, explanation, configuration, procedure, definition, or conceptual M3 information.
+            NON_M3: unrelated to Infor M3 / CloudSuite. External tech connected to M3 (e.g. AWS with CloudSuite) is RAG, not NON_M3.
+
+            Examples of the LIVE vs RAG line: "Get customer ABC" → LIVE_M3. "What is customer master data in M3?" → RAG. \
+            "How do I get customer details?" with no tenant identifier and a how-to/docs intent → RAG.
+
+            For RAG only: 1-3 short keyword search queries. Preserve user identifiers exactly. Never invent program IDs, \
+            MI names, or fields. response must be "".
+            For LIVE_M3: response "" and queries [].
+            For CONVERSATIONAL and NON_M3: write the user-facing response only. Concise and appropriate to the exact request \
+            (1-3 sentences). Never mention ChatGPT. For NON_M3 never answer the off-topic topic; politely redirect to M3 / \
+            CloudSuite. queries [].
+            Never answer documentation questions in response.""";
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -527,6 +549,100 @@ public class OpenAIService {
         }
     }
 
+    /**
+     * Request-understanding router. Returns structured type + optional user response / RAG queries.
+     * Does not execute Live M3 or retrieval.
+     */
+    public RequestUnderstandResult understandRequest(ChatRequest request, String sanitizedQuery) {
+        validateApiKey();
+        if (sanitizedQuery == null || sanitizedQuery.isBlank()) {
+            throw new OpenAIException("Sanitized query cannot be empty for request router", 400);
+        }
+
+        String queryForLlm = sanitizedQuery;
+        List<MessageDto> userHistory = request == null ? List.of() : resolveHistory(request);
+        String userPrompt = buildUnderstandUserContent(queryForLlm, userHistory);
+
+        List<Map<String, String>> messages = List.of(
+                Map.of("role", "system", "content", ROUTER_SYSTEM_PROMPT),
+                Map.of("role", "user", "content", userPrompt)
+        );
+
+        OpenAiCallResult result = callOpenAi(messages, 0.3, 256, true);
+        RequestUnderstandResult parsed = parseUnderstandFromLlm(result.content(), result.usage());
+        log.info(
+                "Request router understood type={} queryCount={}",
+                parsed.type(),
+                parsed.queries() != null ? parsed.queries().size() : 0
+        );
+        return parsed;
+    }
+
+    RequestUnderstandResult parseUnderstandFromLlm(String content, OpenAIUsage usage) {
+        if (content == null || content.isBlank()) {
+            throw new OpenAIException("Empty request-router response from OpenAI", 502);
+        }
+        String cleaned = content.strip();
+        Matcher matcher = MARKDOWN_JSON_FENCE.matcher(cleaned);
+        if (matcher.find()) {
+            cleaned = matcher.group(1).strip();
+        }
+        try {
+            JsonNode root = objectMapper.readTree(cleaned);
+            if (root == null || !root.isObject()) {
+                throw new OpenAIException("Request-router response is not a JSON object", 502);
+            }
+            JsonNode typeNode = root.get("type");
+            if (typeNode == null || typeNode.isNull() || typeNode.asText().isBlank()) {
+                throw new OpenAIException("Request-router JSON missing type", 502);
+            }
+            String rawType = typeNode.asText().trim().toUpperCase(Locale.ROOT).replace('-', '_');
+            RequestUnderstandType type;
+            try {
+                type = RequestUnderstandType.valueOf(rawType);
+            } catch (IllegalArgumentException e) {
+                throw new OpenAIException("Unknown request-router type: " + rawType, 502);
+            }
+
+            String response = "";
+            JsonNode responseNode = root.get("response");
+            if (responseNode != null && !responseNode.isNull()) {
+                response = responseNode.asText("").strip();
+            }
+
+            List<String> queries = new ArrayList<>();
+            JsonNode queriesNode = root.get("queries");
+            if (queriesNode != null && queriesNode.isArray()) {
+                for (JsonNode item : queriesNode) {
+                    if (item != null && item.isTextual() && !item.asText().isBlank()) {
+                        queries.add(item.asText().strip());
+                    }
+                }
+            }
+            if (queries.size() > MAX_REWRITTEN_QUERIES) {
+                queries = new ArrayList<>(queries.subList(0, MAX_REWRITTEN_QUERIES));
+            }
+
+            if (type == RequestUnderstandType.RAG) {
+                response = "";
+            } else if (type == RequestUnderstandType.LIVE_M3) {
+                response = "";
+                queries = List.of();
+            } else if (response.isBlank()) {
+                throw new OpenAIException("Request-router " + type + " response must be non-empty", 502);
+            } else {
+                queries = List.of();
+            }
+
+            OpenAIUsage resolvedUsage = usage != null ? usage : new OpenAIUsage(0, 0, 0, model);
+            return new RequestUnderstandResult(type, response, List.copyOf(queries), resolvedUsage);
+        } catch (OpenAIException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new OpenAIException("Failed to parse request-router JSON: " + e.getMessage(), 502);
+        }
+    }
+
     List<String> parseQueriesFromLlm(String content) {
         if (content == null || content.isBlank()) {
             throw new OpenAIException("Empty rewrite response from OpenAI", 502);
@@ -700,18 +816,50 @@ public class OpenAIService {
                 + currentPrompt;
     }
 
+    String buildUnderstandUserContent(String sanitizedQuery, List<MessageDto> userHistory) {
+        String current = sanitizedQuery == null ? "" : sanitizedQuery.trim();
+        if (userHistory == null || userHistory.isEmpty()) {
+            return "CURRENT QUESTION:\n" + current;
+        }
+        StringBuilder previous = new StringBuilder();
+        for (MessageDto message : userHistory) {
+            String content = message.getContent() == null ? "" : message.getContent().trim();
+            if (content.isBlank()) {
+                continue;
+            }
+            previous.append("- ").append(content).append('\n');
+        }
+        if (previous.isEmpty()) {
+            return "CURRENT QUESTION:\n" + current;
+        }
+        return "PREVIOUS USER QUESTIONS:\n"
+                + previous
+                + "\nCURRENT QUESTION:\n"
+                + current;
+    }
+
     private OpenAiCallResult callOpenAi(List<Map<String, String>> messages) {
-        return callOpenAi(messages, null, null);
+        return callOpenAi(messages, null, null, false);
     }
 
     private OpenAiCallResult callOpenAi(List<Map<String, String>> messages, Double temperature, Integer maxTokens) {
+        return callOpenAi(messages, temperature, maxTokens, false);
+    }
+
+    private OpenAiCallResult callOpenAi(
+            List<Map<String, String>> messages,
+            Double temperature,
+            Integer maxTokens,
+            boolean jsonObjectResponse
+    ) {
         Map<String, Object> body = OpenAiChatRequestBuilder.buildChatCompletionBody(
                 model,
                 reasoningEffort,
                 defaultMaxCompletionTokens,
                 messages,
                 temperature,
-                maxTokens
+                maxTokens,
+                jsonObjectResponse
         );
 
         HttpHeaders headers = new HttpHeaders();
@@ -901,6 +1049,11 @@ public class OpenAIService {
     /** Package-visible for unit tests. External/fallback CLEAR prompt from configuration. */
     String assistantSystemPrompt() {
         return systemPromptForFallback();
+    }
+
+    /** Package-visible for unit tests. */
+    String routerSystemPrompt() {
+        return ROUTER_SYSTEM_PROMPT;
     }
 
     private boolean isValidRole(String role) {

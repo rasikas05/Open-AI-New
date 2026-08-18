@@ -125,4 +125,29 @@ class OpenAiChatRequestBuilderTest {
         assertEquals("medium", OpenAiChatRequestBuilder.effectiveReasoningEffort("gpt-5.6-terra", " medium "));
         assertNull(OpenAiChatRequestBuilder.effectiveReasoningEffort("gpt-4.1", "none"));
     }
+
+    @Test
+    void jsonObjectResponse_setsResponseFormatOnlyWhenRequested() {
+        Map<String, Object> withJson = OpenAiChatRequestBuilder.buildChatCompletionBody(
+                "gpt-4.1",
+                "none",
+                4096,
+                MESSAGES,
+                0.3,
+                256,
+                true
+        );
+        assertEquals(Map.of("type", "json_object"), withJson.get("response_format"));
+
+        Map<String, Object> withoutJson = OpenAiChatRequestBuilder.buildChatCompletionBody(
+                "gpt-4.1",
+                "none",
+                4096,
+                MESSAGES,
+                0.3,
+                256,
+                false
+        );
+        assertFalse(withoutJson.containsKey("response_format"));
+    }
 }
