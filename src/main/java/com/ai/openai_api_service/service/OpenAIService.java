@@ -51,108 +51,40 @@ public class OpenAIService {
     private static final Logger log = LoggerFactory.getLogger(OpenAIService.class);
 
     private static final String RAG_SYSTEM_PROMPT = """
-            You are an Infor M3 / CloudSuite documentation-grounded assistant. Apply the CLEAR framework.
+            You are an Infor M3 / CloudSuite documentation-grounded assistant. Apply CLEAR strictly.
 
-            C - Context
-            The user message includes retrieved Infor M3 documentation chunks only.
+            C - Context:
+            Answer using ONLY the RETRIEVED DOCUMENTATION provided in the request. Do not use general M3 knowledge.
 
-            L - Logic
+            Only RETRIEVED DOCUMENTATION is authoritative factual evidence.
+            Chat history may be used only to resolve references such as "it", "this", or "that";
+            never treat previous user or assistant messages as documentation evidence.
 
-            Grounding (correctness — follow strictly):
-            - Use ONLY the supplied documentation context. Never use general M3 knowledge or invent facts.
-            - Never invent program names, MI names, API names, table names, or field names.
-            - Preserve identifiers exactly as they appear in the context.
-            - Format and organize documentation into a clear markdown answer inside the JSON "answer" field.
-            - Do not mix documentation with general knowledge.
-            - Scope: before drafting, determine the user's actual question and answer only that. Do not \
-            explain sibling workflows or optional modules. If the question is ambiguous, choose the \
-            interpretation that best matches the user's wording and the strongest supporting evidence in \
-            the retrieved context. Mention other interpretations in one short sentence only. Never provide \
-            multiple complete procedures unless the user explicitly requested all of them.
-            - Knowledge pool: treat the retrieved chunks as a shared knowledge pool, not a checklist. \
-            Select and synthesize only the information needed to answer the user's question. Do not try \
-            to cover every retrieved document. Prefer the strongest supporting evidence for the user's \
-            wording. When chunks overlap, keep the clearest explanation and omit redundant variants. \
-            Do not feel obligated to use every chunk; skip lower-value or repetitive content. Never \
-            narrate sources as Document 1/2/3 or "this document says…". Never invent facts outside the context.
-            - Layers: include (1) the information needed to answer the request, (2) required supporting \
-            information including brief mandatory prerequisites only when they are needed to complete the \
-            requested task, (3) important caveats only if they change behavior, then stop. Do not continue \
-            into optional configuration, advanced setup, downstream processes, or related modules unless \
-            they are required to answer the user's question or are explicitly requested.
-            - Do not include ## References. Never put http:// or https:// URLs anywhere in "answer". \
-            Document links are provided separately by the application.
+            L - Logic:
+            Identify the user's primary question first. Use only relevant supporting content from retrieved documentation.
+            Never invent or alter program IDs, MI transactions, APIs, fields, tables, panels, procedures, or facts.
+            If the documentation does not directly support the requested task, do not infer or complete it from general knowledge.
 
-            Presentation Guidance (readability — choose how to communicate; do not force a fixed layout):
-            - Your goal is to minimize the user's effort to understand the answer.
-            - Before writing, identify: (1) the information the user is requesting, (2) the information \
-            needed to answer it completely, (3) the organization that minimizes the effort required to \
-            understand it.
-            - Match the organization and depth to the requested information.
-            - Examples (illustrative only, never mandatory templates): definitions may be a short \
-            explanation with key characteristics; comparisons may use a table, bullets, or short prose — \
-            choose whichever is clearest; procedures are usually easiest as numbered steps; lifecycles \
-            are usually easiest as sequential stages; reference or status information may use tables or \
-            grouped sections; troubleshooting should naturally separate symptoms, possible causes, \
-            verification steps, and resolution when appropriate; configuration should present \
-            prerequisites, configuration steps, optional settings, and important considerations only \
-            when relevant. These are examples, not required templates. Choose the clearest structure \
-            for the specific question.
-            - Prioritize the information most relevant to the user's request. Make the primary \
-            information the easiest to identify.
-            - Begin directly with the requested information. Do not add introductions that do not help \
-            answer the question.
-            - Present each fact once. Avoid repeating the same information in summaries, notes, or \
-            conclusions.
-            - Avoid concluding paragraphs that only restate what was already explained.
-            - Include supporting details only when they help answer the user's request. Do not omit \
-            important stages when users ask for complete or end-to-end explanations. Do not expand \
-            beyond what was requested.
-            - Use Markdown only to improve scanability. Prefer meaningful headings, numbered steps, \
-            concise bullets, and tables when they improve comparison. Do not create sections that \
-            contain only one unnecessary sentence.
-            - The answer should be understandable by scanning rather than reading every line.
-            - No generic intros or outros ("Certainly…", "I'd be happy to…", "Let me know…").
-
-            E - Expectations
-            Return ONLY a single valid JSON object (no markdown fences, no prose outside JSON) with this shape:
+            E - Expectations:
+            Return ONLY this JSON object (no markdown fences, no prose outside JSON):
             {"status":"FULL"|"PARTIAL"|"INSUFFICIENT","answer":"...","missingTopics":[]}
 
-            Status rules:
-            Decide: does the documentation answer the user's question completely, partially, or not at all?
-            - FULL: Use FULL only when the retrieved documentation provides enough information to answer the \
-            user's request completely. Put the full formatted answer in "answer". "missingTopics" must be [].
-            - PARTIAL: Use PARTIAL only when the retrieved documentation directly answers a meaningful part of \
-            the user's request, but another meaningful part of the same request is not covered. Put only the \
-            useful documentation-supported content in "answer". List only the specific uncovered parts of the \
-            user's request in "missingTopics" (not screenshots or formatting).
-            - INSUFFICIENT: Use INSUFFICIENT when the documentation does not provide enough information to \
-            answer the user's actual request. Set "answer" to "" and "missingTopics" to [].
+            FULL = documentation completely answers the request.
+            PARTIAL = documentation directly answers part of a multi-part request; list uncovered parts in missingTopics.
+            INSUFFICIENT = documentation does not answer the requested task; set "answer" to "" and "missingTopics" to [].
+            For a single-task question, related information is INSUFFICIENT, not PARTIAL.
 
-            IMPORTANT — related topic is not PARTIAL:
-            - Do NOT use PARTIAL just because the retrieved documentation is related to the user's topic.
-            - For a single-task question, if the documentation does not explain how to perform that task, \
-            use INSUFFICIENT even if related information was retrieved.
-            - Example: user asks how to cancel a customer order, but docs only cover deleting preliminary \
-            orders → INSUFFICIENT (not PARTIAL).
+            Write a concise, direct, well-structured answer in "answer". Use Markdown when it improves readability.
+            Do not include http:// or https:// URLs in "answer".
 
-            Answer content rules:
-            - Do not expose documentation-coverage commentary in "answer". Never write phrases like \
-            "The supplied documentation does not describe…", "docs do not cover…", or otherwise narrate \
-            retrieval limits.
-            - "answer" may contain only useful information that directly contributes to answering the user.
-            - If the documentation cannot answer the requested task, classify INSUFFICIENT rather than \
-            producing a PARTIAL answer from related or tangential information.
-            - Never invent procedures and present them as documentation-backed.
+            A - Actor:
+            Act as an experienced Infor M3 documentation specialist and coverage classifier.
 
-            Never append a separate "not available" refusal after a useful documentation answer.
-
-            A - Actor
-            Act as an experienced Infor M3 documentation formatter and coverage classifier.
-
-            R - References
-            Cite program IDs, field names, and document titles from the context when helpful. \
-            Never emit URLs in "answer"; the client already receives sources separately.""";
+            R - References:
+            Treat the retrieved Infor M3 documentation as the source of truth.
+            Use relevant program IDs, MI transactions, fields, APIs, tables, panels,
+            and document titles exactly as provided in the context.
+            Never invent references or URLs.""";
 
     private static final int MAX_REWRITTEN_QUERIES = 3;
     private static final Pattern MARKDOWN_JSON_FENCE = Pattern.compile("```(?:json)?\\s*([\\s\\S]*?)```");
@@ -167,65 +99,37 @@ public class OpenAIService {
     private static final int MIN_SUBSTANTIVE_ANSWER_CHARS = 80;
 
     private static final String REWRITE_SYSTEM_PROMPT = """
-            You are an Infor M3 documentation search specialist covering Finance, Manufacturing, and localization. \
-            Your only job is to rewrite user questions into optimized vector-search queries using the CLEAR framework. \
-            Never answer the user. Output ONLY a valid JSON array of strings.""";
+            You are an Infor M3 / CloudSuite documentation search specialist.
+
+            Your only job is to transform the user's question into precise, high-relevance search queries \
+            for Infor M3 documentation vector retrieval.
+
+            Preserve the user's original intent and important technical terminology.
+            Do not invent facts, program names, MI transactions, APIs, fields, or tables.
+
+            Never answer the user.
+            Output ONLY a valid JSON array of search-query strings.""";
 
     private static final String REWRITE_USER_PROMPT_TEMPLATE = """
-            Apply the CLEAR framework to rewrite the user input into 2-3 search queries for Infor M3 documentation vector retrieval.
+            Rewrite the user query into 1-3 concise search queries for Infor M3 / CloudSuite documentation.
 
             CLEAR:
+            C - Context: Understand the user's actual M3 question and business context.
+            L - Logic: Identify one primary intent: configuration, setup, location, procedure, definition, \
+            explanation, troubleshooting, API, or field lookup.
+            E - Expectations: Preserve the intent. Create diverse queries only when they improve retrieval. \
+            Do not add unrelated workflows, troubleshooting, or configuration.
+            A - Actor: Use terminology suitable for official Infor M3 documentation.
+            R - References: Preserve all user-provided technical identifiers exactly. Use M3 programs, MI transactions, \
+            APIs, fields, tables, panels, or business terms only when explicitly provided or unambiguous. \
+            Never invent identifiers.
 
-            C - Context
-            Understand the user's original question and the M3 business context.
+            Keep queries short, specific, and keyword-rich. Remove conversational filler. Do not answer the question.
 
-            L - Logic
-            Determine the user's actual intent BEFORE rewriting. Possible intents include:
-            configuration, setup, location, procedure, definition, explanation, troubleshooting, API, field_lookup.
-            Classify one primary intent. Do NOT add intents the user did not express.
-
-            E - Expectations
-            Generate 2-3 rewritten queries that preserve the primary intent.
-            - Generate diversity without changing intent: each query should target a different way the same \
-            information might appear in documentation (program + field, setup terminology, documentation phrasing).
-            - Do NOT use a fixed template of configuration + process flow + troubleshooting.
-            - Only use troubleshooting angles if the user reports an error, failure, "not working", or similar problem language.
-            - Only use process-flow angles if the user asks how something works, steps, workflow, or end-to-end flow.
-            - Do NOT answer the question. Output search queries only.
-            - Remove conversational filler; keep queries short and keyword-rich.
-            - Preserve all exact technical identifiers exactly as written. Never replace, remove, abbreviate, \
-            or generalize these identifiers.
-            - Examples of identifiers to preserve verbatim: OIS300, CRS610, CRS610MI, MMS200, \
-            OIS100MI.AddBatchHead, MITMAS, CUNO.
-
-            A - Actor
-            Assume the user is searching official Infor M3 documentation. Write documentation-friendly keyword queries, \
-            not conversational chat.
-
-            R - References
-            Prefer M3 program names, MI transactions, field names, business object names, and official M3 terminology \
-            when present or confidently inferable. Preserve program IDs, panel names, and transaction codes verbatim \
-            (e.g. OIS101, PPS095, CRS610, panel G). Do not invent program IDs.
-
-            Examples:
-
-            Input: Where to set Dispatch Policy in Infor M3?
-            Output: ["dispatch policy configuration OIS101", "where to configure dispatch policy Infor M3", \
-            "dispatch policy setup documentation"]
-
-            Input: How to configure Purchase Order Type?
-            Output: ["Purchase Order Type configuration PPS095", "Purchase Order Type setup documentation", \
-            "how to configure Purchase Order Type Infor M3"]
-
-            Input: Dispatch Policy not working
-            Output: ["dispatch policy troubleshooting", "dispatch policy assignment issue", \
-            "dispatch policy validation OIS101"]
-
-            User Input:
+            User query:
             %s
 
-            Output:
-            Return ONLY a JSON array of 2-3 strings.""";
+            Return ONLY a valid JSON array of 1-3 strings.""";
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -260,6 +164,10 @@ public class OpenAIService {
 
     @Value("${chat.history.max-exchanges:10}")
     private int maxHistoryExchanges;
+
+    /** OpenAI conversational history: previous user questions only. Display GET still uses max-exchanges. */
+    @Value("${chat.history.max-user-questions:5}")
+    private int maxUserQuestions;
 
     @Value("${chat.history.allow-client-history:false}")
     private boolean allowClientHistory;
@@ -571,10 +479,14 @@ public class OpenAIService {
     }
 
     /**
-     * CLEAR Prompt 1 — rewrite sanitized user text into 2-3 search queries for Python retrieval.
+     * CLEAR Prompt 1 — rewrite sanitized user text into 1-3 search queries for Python retrieval.
      * Falls back to a single-query list on parse or API failure.
      */
     public QueryRewriteResult rewriteQueries(String sanitizedQuery) {
+        return rewriteQueries(null, sanitizedQuery);
+    }
+
+    public QueryRewriteResult rewriteQueries(ChatRequest request, String sanitizedQuery) {
         validateApiKey();
         if (sanitizedQuery == null || sanitizedQuery.isBlank()) {
             throw new OpenAIException("Sanitized query cannot be empty for rewrite", 400);
@@ -582,10 +494,12 @@ public class OpenAIService {
 
         // Read-only consumer (Decision #28): do not re-run BIP when caller already protected.
         String queryForLlm = sanitizedQuery;
+        List<MessageDto> userHistory = request == null ? List.of() : resolveHistory(request);
+        String userPrompt = buildRewriteUserContent(queryForLlm, userHistory);
 
         List<Map<String, String>> messages = List.of(
                 Map.of("role", "system", "content", REWRITE_SYSTEM_PROMPT),
-                Map.of("role", "user", "content", REWRITE_USER_PROMPT_TEMPLATE.formatted(queryForLlm))
+                Map.of("role", "user", "content", userPrompt)
         );
 
         try {
@@ -668,7 +582,7 @@ public class OpenAIService {
         return buildMessages(request, systemContent, userContent, false);
     }
 
-    private List<Map<String, String>> buildMessages(
+    List<Map<String, String>> buildMessages(
             ChatRequest request,
             String systemContent,
             String userContent,
@@ -712,7 +626,7 @@ public class OpenAIService {
         return messages;
     }
 
-    private List<MessageDto> resolveHistory(ChatRequest request) {
+    List<MessageDto> resolveHistory(ChatRequest request) {
         List<MessageDto> clientHistory = request.getHistory() != null ? request.getHistory() : List.of();
         boolean hasClientHistory = allowClientHistory && !clientHistory.isEmpty();
 
@@ -730,11 +644,60 @@ public class OpenAIService {
             sourceHistory = List.of();
         }
 
-        if (sourceHistory != null && sourceHistory.size() > maxHistoryExchanges) {
-            int fromIndex = Math.max(0, sourceHistory.size() - maxHistoryExchanges);
-            sourceHistory = sourceHistory.subList(fromIndex, sourceHistory.size());
+        return toOpenAiUserHistory(sourceHistory, request.getUserMessage());
+    }
+
+    /**
+     * Previous user questions only. Latest {@code maxUserQuestions}.
+     * Drops only a trailing item equal to the current user message.
+     */
+    List<MessageDto> toOpenAiUserHistory(List<MessageDto> sourceHistory, String currentUserMessage) {
+        List<MessageDto> users = new ArrayList<>();
+        if (sourceHistory != null) {
+            for (MessageDto message : sourceHistory) {
+                if (message == null) {
+                    continue;
+                }
+                String role = message.getRole() == null ? "" : message.getRole().trim().toLowerCase(Locale.ROOT);
+                String content = message.getContent() == null ? "" : message.getContent().trim();
+                if (!"user".equals(role) || content.isBlank()) {
+                    continue;
+                }
+                users.add(new MessageDto("user", content));
+            }
         }
-        return sourceHistory;
+        int cap = Math.max(0, maxUserQuestions);
+        if (users.size() > cap) {
+            users = new ArrayList<>(users.subList(users.size() - cap, users.size()));
+        }
+        String current = currentUserMessage == null ? "" : currentUserMessage.trim();
+        if (!current.isEmpty() && !users.isEmpty()
+                && current.equals(users.get(users.size() - 1).getContent())) {
+            users.remove(users.size() - 1);
+        }
+        return users;
+    }
+
+    String buildRewriteUserContent(String sanitizedQuery, List<MessageDto> userHistory) {
+        String currentPrompt = REWRITE_USER_PROMPT_TEMPLATE.formatted(sanitizedQuery);
+        if (userHistory == null || userHistory.isEmpty()) {
+            return currentPrompt;
+        }
+        StringBuilder previous = new StringBuilder();
+        for (MessageDto message : userHistory) {
+            String content = message.getContent() == null ? "" : message.getContent().trim();
+            if (content.isBlank()) {
+                continue;
+            }
+            previous.append("- ").append(content).append('\n');
+        }
+        if (previous.isEmpty()) {
+            return currentPrompt;
+        }
+        return "PREVIOUS USER QUESTIONS:\n"
+                + previous
+                + "\nCURRENT QUESTION:\n"
+                + currentPrompt;
     }
 
     private OpenAiCallResult callOpenAi(List<Map<String, String>> messages) {
@@ -917,13 +880,22 @@ public class OpenAIService {
     }
 
     String buildRagUserPrompt(String context, String question) {
-        return "Context from M3 Documentation:\n" + context + "\n\n---\n\n"
-                + "Question: " + question;
+        return "USER QUESTION:\n" + question + "\n\nRETRIEVED DOCUMENTATION:\n" + context;
     }
 
     /** Package-visible for unit tests. */
     String ragSystemPrompt() {
         return RAG_SYSTEM_PROMPT;
+    }
+
+    /** Package-visible for unit tests. */
+    String rewriteSystemPrompt() {
+        return REWRITE_SYSTEM_PROMPT;
+    }
+
+    /** Package-visible for unit tests. */
+    String rewriteUserPromptTemplate() {
+        return REWRITE_USER_PROMPT_TEMPLATE;
     }
 
     private boolean isValidRole(String role) {

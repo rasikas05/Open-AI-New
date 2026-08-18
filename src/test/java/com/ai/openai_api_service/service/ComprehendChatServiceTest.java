@@ -780,6 +780,7 @@ class ComprehendChatServiceTest {
         comprehendChatService.chat(baseRequest("pricing issue"));
 
         verify(openAIService, never()).rewriteQueries(anyString());
+        verify(openAIService, never()).rewriteQueries(any(), anyString());
         verify(pythonRagService).retrieve(eq("pricing issue"), eq(List.of("pricing issue")), any(), any(), any(), any());
     }
 
@@ -792,7 +793,7 @@ class ComprehendChatServiceTest {
 
         List<String> rewritten = List.of("customer pricing configuration", "price list setup");
         OpenAIUsage rewriteUsage = new OpenAIUsage(8, 4, 12, "gpt-4.1");
-        when(openAIService.rewriteQueries("pricing issue")).thenReturn(new QueryRewriteResult(rewritten, rewriteUsage));
+        when(openAIService.rewriteQueries(any(), eq("pricing issue"))).thenReturn(new QueryRewriteResult(rewritten, rewriteUsage));
 
         PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
         retrieval.setRetrievalReason("below_prompt_threshold");
@@ -807,7 +808,7 @@ class ComprehendChatServiceTest {
 
         ChatResponse response = comprehendChatService.chat(baseRequest("pricing issue"));
 
-        verify(openAIService).rewriteQueries("pricing issue");
+        verify(openAIService).rewriteQueries(any(), eq("pricing issue"));
         verify(pythonRagService).retrieve(
                 eq("pricing issue"),
                 eq(List.of("pricing issue", "customer pricing configuration", "price list setup")),
