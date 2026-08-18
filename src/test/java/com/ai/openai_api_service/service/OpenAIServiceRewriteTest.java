@@ -7,7 +7,9 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class OpenAIServiceRewriteTest {
 
@@ -37,5 +39,25 @@ class OpenAIServiceRewriteTest {
     @Test
     void parseQueriesFromLlm_rejectsEmptyArray() {
         assertThrows(OpenAIException.class, () -> openAIService.parseQueriesFromLlm("[]"));
+    }
+
+    @Test
+    void rewritePrompts_areConciseAndExampleFree() {
+        String system = openAIService.rewriteSystemPrompt();
+        String userTemplate = openAIService.rewriteUserPromptTemplate();
+
+        assertFalse(system.contains("CLEAR"));
+        assertTrue(system.contains("Never answer the user"));
+        assertTrue(system.contains("JSON array"));
+
+        assertTrue(userTemplate.contains("CLEAR:"));
+        assertTrue(userTemplate.contains("%s"));
+        assertTrue(userTemplate.contains("1-3"));
+        assertTrue(userTemplate.contains("Never invent identifiers"));
+
+        assertFalse(userTemplate.contains("OIS101"));
+        assertFalse(userTemplate.contains("PPS095"));
+        assertFalse(userTemplate.contains("Input:"));
+        assertFalse(userTemplate.contains("Output:"));
     }
 }
