@@ -165,6 +165,10 @@ public class OpenAIService {
     @Value("${chat.history.max-exchanges:10}")
     private int maxHistoryExchanges;
 
+    /** OpenAI conversational history: previous user questions only. Display GET still uses max-exchanges. */
+    @Value("${chat.history.max-user-questions:5}")
+    private int maxUserQuestions;
+
     @Value("${chat.history.allow-client-history:false}")
     private boolean allowClientHistory;
 
@@ -479,6 +483,10 @@ public class OpenAIService {
      * Falls back to a single-query list on parse or API failure.
      */
     public QueryRewriteResult rewriteQueries(String sanitizedQuery) {
+        return rewriteQueries(null, sanitizedQuery);
+    }
+
+    public QueryRewriteResult rewriteQueries(ChatRequest request, String sanitizedQuery) {
         validateApiKey();
         if (sanitizedQuery == null || sanitizedQuery.isBlank()) {
             throw new OpenAIException("Sanitized query cannot be empty for rewrite", 400);
@@ -486,10 +494,12 @@ public class OpenAIService {
 
         // Read-only consumer (Decision #28): do not re-run BIP when caller already protected.
         String queryForLlm = sanitizedQuery;
+        List<MessageDto> userHistory = request == null ? List.of() : resolveHistory(request);
+        String userPrompt = buildRewriteUserContent(queryForLlm, userHistory);
 
         List<Map<String, String>> messages = List.of(
                 Map.of("role", "system", "content", REWRITE_SYSTEM_PROMPT),
-                Map.of("role", "user", "content", REWRITE_USER_PROMPT_TEMPLATE.formatted(queryForLlm))
+                Map.of("role", "user", "content", userPrompt)
         );
 
         try {
@@ -572,7 +582,7 @@ public class OpenAIService {
         return buildMessages(request, systemContent, userContent, false);
     }
 
-    private List<Map<String, String>> buildMessages(
+    List<Map<String, String>> buildMessages(
             ChatRequest request,
             String systemContent,
             String userContent,
@@ -616,7 +626,7 @@ public class OpenAIService {
         return messages;
     }
 
-    private List<MessageDto> resolveHistory(ChatRequest request) {
+    List<MessageDto> resolveHistory(ChatRequest request) {
         List<MessageDto> clientHistory = request.getHistory() != null ? request.getHistory() : List.of();
         boolean hasClientHistory = allowClientHistory && !clientHistory.isEmpty();
 
@@ -634,11 +644,60 @@ public class OpenAIService {
             sourceHistory = List.of();
         }
 
-        if (sourceHistory != null && sourceHistory.size() > maxHistoryExchanges) {
-            int fromIndex = Math.max(0, sourceHistory.size() - maxHistoryExchanges);
-            sourceHistory = sourceHistory.subList(fromIndex, sourceHistory.size());
+        return toOpenAiUserHistory(sourceHistory, request.getUserMessage());
+    }
+
+    /**
+     * Previous user questions only. Latest {@code maxUserQuestions}.
+     * Drops only a trailing item equal to the current user message.
+     */
+    List<MessageDto> toOpenAiUserHistory(List<MessageDto> sourceHistory, String currentUserMessage) {
+        List<MessageDto> users = new ArrayList<>();
+        if (sourceHistory != null) {
+            for (MessageDto message : sourceHistory) {
+                if (message == null) {
+                    continue;
+                }
+                String role = message.getRole() == null ? "" : message.getRole().trim().toLowerCase(Locale.ROOT);
+                String content = message.getContent() == null ? "" : message.getContent().trim();
+                if (!"user".equals(role) || content.isBlank()) {
+                    continue;
+                }
+                users.add(new MessageDto("user", content));
+            }
         }
-        return sourceHistory;
+        int cap = Math.max(0, maxUserQuestions);
+        if (users.size() > cap) {
+            users = new ArrayList<>(users.subList(users.size() - cap, users.size()));
+        }
+        String current = currentUserMessage == null ? "" : currentUserMessage.trim();
+        if (!current.isEmpty() && !users.isEmpty()
+                && current.equals(users.get(users.size() - 1).getContent())) {
+            users.remove(users.size() - 1);
+        }
+        return users;
+    }
+
+    String buildRewriteUserContent(String sanitizedQuery, List<MessageDto> userHistory) {
+        String currentPrompt = REWRITE_USER_PROMPT_TEMPLATE.formatted(sanitizedQuery);
+        if (userHistory == null || userHistory.isEmpty()) {
+            return currentPrompt;
+        }
+        StringBuilder previous = new StringBuilder();
+        for (MessageDto message : userHistory) {
+            String content = message.getContent() == null ? "" : message.getContent().trim();
+            if (content.isBlank()) {
+                continue;
+            }
+            previous.append("- ").append(content).append('\n');
+        }
+        if (previous.isEmpty()) {
+            return currentPrompt;
+        }
+        return "PREVIOUS USER QUESTIONS:\n"
+                + previous
+                + "\nCURRENT QUESTION:\n"
+                + currentPrompt;
     }
 
     private OpenAiCallResult callOpenAi(List<Map<String, String>> messages) {

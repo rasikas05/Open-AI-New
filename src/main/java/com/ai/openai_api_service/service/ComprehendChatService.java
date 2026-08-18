@@ -1015,7 +1015,7 @@ public class ComprehendChatService {
         OpenAIUsage rewriteUsage = null;
         if (queryRewriteEnabled) {
             Instant rewriteStart = Instant.now();
-            QueryRewriteResult rewriteResult = openAIService.rewriteQueries(llmText);
+            QueryRewriteResult rewriteResult = openAIService.rewriteQueries(request, llmText);
             Instant rewriteEnd = Instant.now();
             queryRewriteMs = RequestTimingLog.durationMs(rewriteStart, rewriteEnd);
             RequestTimingLog.logStage("rewrite", rewriteStart, rewriteEnd);
