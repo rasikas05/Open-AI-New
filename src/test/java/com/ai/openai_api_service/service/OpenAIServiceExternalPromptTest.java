@@ -37,6 +37,8 @@ class OpenAIServiceExternalPromptTest {
         assertTrue(prompt.contains("docs.infor.com"));
         assertTrue(prompt.contains("If no verified reference is available, do not invent one"));
         assertTrue(prompt.contains("Do not provide a broad capability list unless requested"));
+        assertTrue(prompt.contains("previous user questions already include a greeting or identity/name question"));
+        assertTrue(prompt.contains("do not repeat the full identity"));
 
         assertFalse(prompt.contains("You are ChatGPT"));
         assertFalse(prompt.contains("Input:"));
