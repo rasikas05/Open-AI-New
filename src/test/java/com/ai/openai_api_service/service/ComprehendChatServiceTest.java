@@ -15,6 +15,8 @@ import com.ai.openai_api_service.model.TokenUsageDto;
 import com.ai.openai_api_service.model.lex.LexRecognizeResult;
 import com.ai.openai_api_service.model.python_rag.ChunkItem;
 import com.ai.openai_api_service.model.QueryRewriteResult;
+import com.ai.openai_api_service.model.RequestUnderstandResult;
+import com.ai.openai_api_service.model.RequestUnderstandType;
 import com.ai.openai_api_service.model.python_rag.PythonRetrievalResponse;
 import com.ai.openai_api_service.model.python_rag.PythonRouteResponse;
 import com.ai.openai_api_service.model.rag.GroundedRagCallResult;
@@ -2272,5 +2274,149 @@ class ComprehendChatServiceTest {
         request.setSessionId("session1");
         request.setUserMessage(message);
         return request;
+    }
+
+    private void enableRequestRouter() {
+        ReflectionTestUtils.setField(comprehendChatService, "requestRouterEnabled", true);
+    }
+
+    @Test
+    void requestRouter_hi_returnsConversationalWithoutRetrieval() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        when(openAIService.understandRequest(any(), eq("hi"))).thenReturn(new RequestUnderstandResult(
+                RequestUnderstandType.CONVERSATIONAL,
+                "Hi! I'm the M3 AI Assistant. How can I help you?",
+                List.of(),
+                new OpenAIUsage(3, 4, 7, "gpt")
+        ));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("hi"));
+
+        assertEquals("Hi! I'm the M3 AI Assistant. How can I help you?", response.getReply());
+        assertEquals("conversational", response.getActionTaken());
+        verify(pythonRagService, never()).route(anyString());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(openAIService, never()).rewriteQueries(any(), anyString());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+    }
+
+    @Test
+    void requestRouter_gls037_retrievesWithRouterQueries() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        List<String> queries = List.of("GLS037 accounting identities", "GLS037 Infor M3");
+        when(openAIService.understandRequest(any(), eq("what is GLS037"))).thenReturn(new RequestUnderstandResult(
+                RequestUnderstandType.RAG,
+                "",
+                queries,
+                new OpenAIUsage(2, 2, 4, "gpt")
+        ));
+        stubDocsGroundedPath("what is GLS037", "GLS037 is Accounting Identity.");
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("what is GLS037"));
+
+        assertEquals("GLS037 is Accounting Identity.", response.getReply());
+        assertEquals("rag", response.getActionTaken());
+        verify(pythonRagService, never()).route(anyString());
+        verify(openAIService, never()).rewriteQueries(any(), anyString());
+        ArgumentCaptor<List<String>> queryCaptor = ArgumentCaptor.forClass(List.class);
+        verify(pythonRagService).retrieve(eq("what is GLS037"), queryCaptor.capture(), any(), any(), any(), any());
+        assertTrue(queryCaptor.getValue().contains("GLS037 accounting identities"));
+    }
+
+    @Test
+    void requestRouter_getCustomerAuto_goesLiveNotRetrieve() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        when(openAIService.understandRequest(any(), eq("get customer ABC"))).thenReturn(new RequestUnderstandResult(
+                RequestUnderstandType.LIVE_M3,
+                "",
+                List.of(),
+                new OpenAIUsage(1, 1, 2, "gpt")
+        ));
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "InProgress",
+                "ElicitSlot",
+                "CustomerNumber",
+                Map.of(),
+                List.of("What is the customer number?")
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "get customer ABC")).thenReturn(lexResult);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("get customer ABC"));
+
+        assertEquals("What is the customer number?", response.getReply());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(pythonRagService, never()).route(anyString());
+    }
+
+    @Test
+    void requestRouter_getCustomerDocs_overridesLiveToRag() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        when(openAIService.understandRequest(any(), eq("get customer ABC"))).thenReturn(new RequestUnderstandResult(
+                RequestUnderstandType.LIVE_M3,
+                "",
+                List.of(),
+                new OpenAIUsage(1, 1, 2, "gpt")
+        ));
+        stubDocsGroundedPath("get customer ABC", "Docs about getting customer data.");
+
+        ChatRequest request = baseRequest("get customer ABC");
+        request.setMode(ChatMode.DOCS);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("Docs about getting customer data.", response.getReply());
+        assertEquals("rag", response.getActionTaken());
+        verify(pythonRagService).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void requestRouter_docsExternalOff_nonM3_usesCannedInsufficient() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        when(openAIService.understandRequest(any(), eq("what is AWS"))).thenReturn(new RequestUnderstandResult(
+                RequestUnderstandType.NON_M3,
+                "I mainly support Infor M3 and CloudSuite questions.",
+                List.of(),
+                new OpenAIUsage(1, 1, 2, "gpt")
+        ));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = baseRequest("what is AWS");
+        request.setMode(ChatMode.DOCS);
+        request.setExternalSourceEnabled(false);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals(ComprehendChatService.DOCS_INSUFFICIENT_MESSAGE, response.getReply());
+        assertEquals("rag", response.getActionTaken());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+    }
+
+    @Test
+    void requestRouter_disabled_stillUsesPythonRoute() {
+        ReflectionTestUtils.setField(comprehendChatService, "requestRouterEnabled", false);
+        stubQuotaAllowed();
+        stubSanitize();
+        when(pythonRagService.route("how to create customer")).thenReturn(new PythonRouteResponse("rag"));
+        stubDocsGroundedPath("how to create customer", "grounded");
+
+        comprehendChatService.chat(baseRequest("how to create customer"));
+
+        verify(pythonRagService).route("how to create customer");
+        verify(openAIService, never()).understandRequest(any(), anyString());
     }
 }
