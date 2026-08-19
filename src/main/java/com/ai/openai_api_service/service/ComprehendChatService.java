@@ -926,7 +926,10 @@ public class ComprehendChatService {
         }
 
         String lexSessionId = lexService.buildLexSessionId(request);
-        LexRecognizeResult lexResult = lexService.recognizeText(lexSessionId, originalUserText);
+        LexRecognizeResult lexResult = LexCustomerMasterIntentGuard.apply(
+                originalUserText,
+                lexService.recognizeText(lexSessionId, originalUserText)
+        );
         updatePendingLexState(lexSessionId, lexResult);
 
         if (lexResult.isFallbackIntent()) {

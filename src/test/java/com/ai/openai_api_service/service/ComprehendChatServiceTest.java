@@ -2611,4 +2611,334 @@ class ComprehendChatServiceTest {
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
         verify(lexService).recognizeText("tenant1:user1:session1", "Y00111");
     }
+
+    @Test
+    void requestRouter_tripPlanningAuto_redirectsWithoutRetrieveOrLex() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        stubUnderstand("tell me about trip planning", RequestUnderstandType.NON_M3,
+                "I mainly support Infor M3 and CloudSuite questions.");
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = baseRequest("tell me about trip planning");
+        request.setMode(ChatMode.AUTO);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("general_redirect", response.getActionTaken());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void requestRouter_tripPlanningDocs_doesNotRetrieveOrCallLex() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        stubUnderstand("tell me about trip planning", RequestUnderstandType.NON_M3,
+                "I mainly support Infor M3 and CloudSuite questions.");
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = baseRequest("tell me about trip planning");
+        request.setMode(ChatMode.DOCS);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+        assertEquals("general_redirect", response.getActionTaken());
+    }
+
+    @Test
+    void requestRouter_weatherAuto_redirectsWithoutRetrieve() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        stubUnderstand("what is the weather", RequestUnderstandType.NON_M3,
+                "I mainly support Infor M3 and CloudSuite questions.");
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("what is the weather"));
+
+        assertEquals("general_redirect", response.getActionTaken());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void requestRouter_ois100Auto_retrievesNotLex() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        stubUnderstandRag("what is OIS100?", List.of("OIS100"));
+        stubDocsGroundedPath("what is OIS100?", "OIS100 is Customer Order.");
+
+        ChatRequest request = baseRequest("what is OIS100?");
+        request.setMode(ChatMode.AUTO);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("rag", response.getActionTaken());
+        verify(pythonRagService).retrieve(eq("what is OIS100?"), anyList(), any(), any(), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void requestRouter_ois100Docs_retrievesNotLex() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        stubUnderstandRag("what is OIS100?", List.of("OIS100"));
+        stubDocsGroundedPath("what is OIS100?", "OIS100 is Customer Order.");
+
+        ChatRequest request = baseRequest("what is OIS100?");
+        request.setMode(ChatMode.DOCS);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("rag", response.getActionTaken());
+        verify(pythonRagService).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void requestRouter_fetchCustomerAuto_callsLexNotRetrieve() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        stubUnderstandLive("fetch customer Y11100");
+        stubLexGetCustomerReady("fetch customer Y11100", "Y11100");
+
+        ChatRequest request = baseRequest("fetch customer Y11100");
+        request.setMode(ChatMode.AUTO);
+        comprehendChatService.chat(request);
+
+        verify(lexService).recognizeText("tenant1:user1:session1", "fetch customer Y11100");
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+    }
+
+    @Test
+    void requestRouter_fetchCustomerDocs_overridesLiveToRag() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        stubUnderstandLive("fetch customer Y11100");
+        stubDocsGroundedPath("fetch customer Y11100", "Docs about fetching a customer.");
+
+        ChatRequest request = baseRequest("fetch customer Y11100");
+        request.setMode(ChatMode.DOCS);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("rag", response.getActionTaken());
+        verify(pythonRagService).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void requestRouter_greetingPlusHowToCreateCustomerOrder_retrievesNotLex() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        String message = "Hi, how do I create a customer order?";
+        stubUnderstandRag(message, List.of("create customer order"));
+        stubDocsGroundedPath(message, "How to create a customer order.");
+
+        ChatRequest request = baseRequest(message);
+        request.setMode(ChatMode.AUTO);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("rag", response.getActionTaken());
+        verify(pythonRagService).retrieve(eq(message), anyList(), any(), any(), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void requestRouter_helloAuto_conversationalWithoutRetrieveOrLex() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        stubUnderstand("hello", RequestUnderstandType.CONVERSATIONAL, "Hello! How can I help?");
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = baseRequest("hello");
+        request.setMode(ChatMode.AUTO);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("conversational", response.getActionTaken());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void requestRouter_showCustomerOrdersAuto_callsLexNotRetrieve() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        stubUnderstandLive("show customer orders for Y11100");
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "SearchCustomerOrder",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "Y11100"),
+                List.of()
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "show customer orders for Y11100"))
+                .thenReturn(lexResult);
+        ChatResponse fulfillResponse = new ChatResponse("Orders for Y11100", false);
+        fulfillResponse.setActionTaken("search");
+        fulfillResponse.setM3Request(new M3RequestDto(true, "OIS100MI", "SearchHead", Map.of("CUNO", "Y11100")));
+        when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq("show customer orders for Y11100"), any()))
+                .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = baseRequest("show customer orders for Y11100");
+        request.setMode(ChatMode.AUTO);
+        comprehendChatService.chat(request);
+
+        verify(lexService).recognizeText("tenant1:user1:session1", "show customer orders for Y11100");
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        ArgumentCaptor<LexRecognizeResult> lexCaptor = ArgumentCaptor.forClass(LexRecognizeResult.class);
+        verify(lexFulfillmentService).fulfillOutcome(lexCaptor.capture(), eq("show customer orders for Y11100"), any());
+        assertEquals("SearchCustomerOrder", lexCaptor.getValue().getIntentName());
+    }
+
+    @Test
+    void requestRouter_fetchCustomer_lexSearchCustomerOrderRemappedToGetCustomer() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        stubUnderstandLive("fetch customer Y11100");
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        LexRecognizeResult confused = new LexRecognizeResult(
+                "SearchCustomerOrder",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "Y11100"),
+                List.of()
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "fetch customer Y11100")).thenReturn(confused);
+        ChatResponse fulfillResponse = new ChatResponse("Customer Y11100", false);
+        fulfillResponse.setActionTaken("read");
+        fulfillResponse.setM3Request(new M3RequestDto(true, "CRS610MI", "GetBasicData", Map.of("CUNO", "Y11100")));
+        when(lexFulfillmentService.fulfillOutcome(any(), eq("fetch customer Y11100"), any()))
+                .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("fetch customer Y11100"));
+
+        assertEquals("read", response.getActionTaken());
+        assertEquals("CRS610MI", response.getM3Request().getProgram());
+        ArgumentCaptor<LexRecognizeResult> lexCaptor = ArgumentCaptor.forClass(LexRecognizeResult.class);
+        verify(lexFulfillmentService).fulfillOutcome(lexCaptor.capture(), eq("fetch customer Y11100"), any());
+        assertEquals("GetCustomer", lexCaptor.getValue().getIntentName());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+    }
+
+    @Test
+    void requestRouter_showCustomer_lexSearchCustomerOrderRemappedToGetCustomer() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        stubUnderstandLive("show customer Y11100");
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        LexRecognizeResult confused = new LexRecognizeResult(
+                "SearchCustomerOrder",
+                "InProgress",
+                "ElicitSlot",
+                "CustomerOrderNumber",
+                Map.of(),
+                List.of("What is the order number?")
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "show customer Y11100")).thenReturn(confused);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("show customer Y11100"));
+
+        assertEquals("lex_elicit_slot", response.getActionTaken());
+        assertEquals("GetCustomer", response.getLexIntent());
+        assertEquals("CustomerNumber", response.getLexSlotToElicit());
+        verify(lexFulfillmentService, never()).fulfillOutcome(any(), any(), any());
+    }
+
+    @Test
+    void requestRouter_fetchCustomerOrders_keepsSearchCustomerOrder() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        stubUnderstandLive("fetch customer orders for Y11100");
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "SearchCustomerOrder",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "Y11100"),
+                List.of()
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "fetch customer orders for Y11100"))
+                .thenReturn(lexResult);
+        ChatResponse fulfillResponse = new ChatResponse("Orders", false);
+        fulfillResponse.setActionTaken("search");
+        fulfillResponse.setM3Request(new M3RequestDto(true, "OIS100MI", "SearchHead", Map.of("CUNO", "Y11100")));
+        when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq("fetch customer orders for Y11100"), any()))
+                .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        comprehendChatService.chat(baseRequest("fetch customer orders for Y11100"));
+
+        ArgumentCaptor<LexRecognizeResult> lexCaptor = ArgumentCaptor.forClass(LexRecognizeResult.class);
+        verify(lexFulfillmentService).fulfillOutcome(lexCaptor.capture(), eq("fetch customer orders for Y11100"), any());
+        assertEquals("SearchCustomerOrder", lexCaptor.getValue().getIntentName());
+    }
+
+    private void stubUnderstand(String message, RequestUnderstandType type, String response) {
+        when(openAIService.understandRequest(any(), eq(message))).thenReturn(new RequestUnderstandResult(
+                type,
+                response,
+                List.of(),
+                new OpenAIUsage(1, 1, 2, "gpt")
+        ));
+    }
+
+    private void stubUnderstandRag(String message, List<String> queries) {
+        when(openAIService.understandRequest(any(), eq(message))).thenReturn(new RequestUnderstandResult(
+                RequestUnderstandType.RAG,
+                "",
+                queries,
+                new OpenAIUsage(1, 1, 2, "gpt")
+        ));
+    }
+
+    private void stubUnderstandLive(String message) {
+        when(openAIService.understandRequest(any(), eq(message))).thenReturn(new RequestUnderstandResult(
+                RequestUnderstandType.LIVE_M3,
+                "",
+                List.of(),
+                new OpenAIUsage(1, 1, 2, "gpt")
+        ));
+    }
+
+    private void stubLexGetCustomerReady(String message, String cuno) {
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", cuno),
+                List.of()
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", message)).thenReturn(lexResult);
+        ChatResponse fulfillResponse = new ChatResponse("Customer " + cuno, false);
+        fulfillResponse.setActionTaken("read");
+        fulfillResponse.setM3Request(new M3RequestDto(true, "CRS610MI", "GetBasicData", Map.of("CUNO", cuno)));
+        when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq(message), any()))
+                .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+    }
 }

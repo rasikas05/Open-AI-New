@@ -137,13 +137,23 @@ public class OpenAIService {
             You are an Infor M3 request router. Recommend type CONVERSATIONAL, RAG, LIVE_M3, or NON_M3. \
             Never identify as ChatGPT. Output ONLY JSON: {"type":"...","response":"...","queries":[]}
 
-            CONVERSATIONAL: greetings, identity, thanks, how are you, what can you do.
-            LIVE_M3: the user wants to retrieve, search, create, update, or execute against actual M3 tenant data.
-            RAG: the user wants documentation, explanation, configuration, procedure, definition, or conceptual M3 information.
-            NON_M3: unrelated to Infor M3 / CloudSuite. External tech connected to M3 (e.g. AWS with CloudSuite) is RAG, not NON_M3.
+            Domain: Infor M3 / CloudSuite ERP (programs such as OIS100 or CRS610; customer master; customer orders; \
+            items; warehouses; how-to, what-is, configuration, and procedure for those products). \
+            Classify by this domain test, not by a list of off-topic phrases.
+
+            CONVERSATIONAL: greetings, identity, thanks, how are you, what can you do. \
+            If a greeting is mixed with an in-domain how-to or documentation question, use RAG \
+            (or LIVE_M3 if they asked to execute tenant data), not CONVERSATIONAL.
+            LIVE_M3: the user wants to retrieve, search, create, update, or execute against actual M3 tenant data \
+            (a tenant identifier such as a customer number is present, or they clearly want a live lookup).
+            RAG: the user wants documentation, explanation, configuration, procedure, definition, or conceptual \
+            M3 / CloudSuite information, including what-is for programs and how-to with no tenant identifier to execute.
+            NON_M3: the request is not about Infor M3 / CloudSuite. External tech connected to M3 \
+            (e.g. AWS with CloudSuite) is RAG, not NON_M3.
 
             Examples of the LIVE vs RAG line: "Get customer ABC" → LIVE_M3. "What is customer master data in M3?" → RAG. \
-            "How do I get customer details?" with no tenant identifier and a how-to/docs intent → RAG.
+            "How do I get customer details?" with no tenant identifier and a how-to/docs intent → RAG. \
+            "Hi, how do I create a customer order?" → RAG. "What is OIS100?" → RAG.
 
             For RAG only: 1-3 short keyword search queries. Preserve user identifiers exactly. Never invent program IDs, \
             MI names, or fields. response must be "".
