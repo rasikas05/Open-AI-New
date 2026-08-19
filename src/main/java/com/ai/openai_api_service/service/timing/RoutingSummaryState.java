@@ -16,6 +16,7 @@ public final class RoutingSummaryState {
     private String route = "-";
     private String handler = "-";
     private String action = "-";
+    private String intent = "-";
 
     public void setRequestText(String requestText) {
         this.requestText = requestText != null ? requestText : "";
@@ -53,6 +54,10 @@ public final class RoutingSummaryState {
         this.action = blankToDash(action);
     }
 
+    public void setIntent(String intent) {
+        this.intent = blankToDash(intent);
+    }
+
     public String getRequestText() {
         return requestText;
     }
@@ -83,6 +88,10 @@ public final class RoutingSummaryState {
 
     public String getAction() {
         return action;
+    }
+
+    public String getIntent() {
+        return intent;
     }
 
     private static String blankToDash(String value) {

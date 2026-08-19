@@ -47,6 +47,9 @@ public final class RoutingSummaryLog {
         }
         parts.add("route=" + state.getRoute());
         parts.add("handler=" + state.getHandler());
+        if (state.getIntent() != null && !state.getIntent().isBlank() && !"-".equals(state.getIntent())) {
+            parts.add("intent=" + state.getIntent());
+        }
         parts.add("action=" + state.getAction());
         parts.add("lex=" + (lexCalled ? "CALLED" : "SKIP"));
         parts.add("rag=" + (ragCalled ? "CALLED" : "SKIP"));
