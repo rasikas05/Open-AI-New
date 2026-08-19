@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/base.xml"/>
+    <appender name="HTTP_CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %clr(%-5level){blue} %clr(HTTP){blue} %clr(%msg){blue}%n</pattern>
+        </encoder>
+    </appender>
+    <logger name="HTTP" level="INFO" additivity="false">
+        <appender-ref ref="HTTP_CONSOLE"/>
+    </logger>
+</configuration>
