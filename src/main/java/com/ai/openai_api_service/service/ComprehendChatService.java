@@ -85,6 +85,10 @@ public class ComprehendChatService {
             "I couldn't find enough information to answer your request. Please try another combination "
                     + "or clarify your request, and I'll help you with the available information.";
 
+    static final String DEFAULT_M3_LIVE_STEER_MESSAGE =
+            "I'm your Infor M3 live assistant. I can help retrieve tenant data such as customer and order details. "
+                    + "For M3 documentation or how-to questions, switch to Auto or Docs.";
+
     private final ChatPersistenceService chatPersistenceService;
     private final TenantQuotaService tenantQuotaService;
     private final SuggestionEngineService suggestionEngineService;
@@ -111,6 +115,9 @@ public class ComprehendChatService {
 
     @Value("${chat.request-router.enabled:false}")
     private boolean requestRouterEnabled;
+
+    @Value("${chat.m3.live-steer-message:" + DEFAULT_M3_LIVE_STEER_MESSAGE + "}")
+    private String m3LiveSteerMessage;
 
     @Value("${rag.partial.gap-fill.enabled:true}")
     private boolean ragPartialGapFillEnabled;
@@ -273,41 +280,43 @@ public class ComprehendChatService {
             boolean routerHandled = false;
 
             if (mode == ChatMode.M3) {
-                route = ROUTE_LIVE;
-            } else if (requestRouterEnabled) {
-                Instant understandStart = Instant.now();
-                protectionSession = ProtectionSession.fromOriginal(
-                        originalUserText,
-                        businessInformationProtectionService.isEnabled()
-                );
-                businessInformationProtectionService.protect(
-                        protectionSession,
-                        ProtectionContext.forPurpose(ProtectionPurpose.ANSWER, true)
-                );
-                protectPiiSafely(protectionSession);
-                Instant piiEnd = Instant.now();
-                piiDetectionMs = RequestTimingLog.durationMs(understandStart, piiEnd);
-                RequestTimingLog.logStage("pii", understandStart, piiEnd);
-
-                String llmText = protectionSession.textForLlm();
-                sanitizedUserText = llmText;
-                workingRequest = copyRequestWithUserMessage(request, llmText);
-                try {
-                    understood = openAIService.understandRequest(workingRequest, llmText);
-                } catch (OpenAIException e) {
-                    if (e.isAiServiceUnavailable()) {
-                        throw e;
+                if (requestRouterEnabled) {
+                    UnderstandRun understandRun = runUnderstandRequest(request, originalUserText);
+                    protectionSession = understandRun.protectionSession();
+                    sanitizedUserText = understandRun.sanitizedUserText();
+                    workingRequest = understandRun.workingRequest();
+                    piiDetectionMs = understandRun.piiDetectionMs();
+                    routeDecisionMs = understandRun.routeDecisionMs();
+                    understood = understandRun.understood();
+                    if (understood != null) {
+                        RequestUnderstandType type = understood.type();
+                        if (type == RequestUnderstandType.CONVERSATIONAL) {
+                            chatResponse = buildRouterUserResponse(
+                                    workingRequest, understood, "conversational");
+                            route = "conversational";
+                            routerHandled = true;
+                        } else if (type == RequestUnderstandType.RAG || type == RequestUnderstandType.NON_M3) {
+                            log.info("routerType={} overriddenByMode=m3", type);
+                            chatResponse = buildM3LiveSteerResponse(workingRequest, understood);
+                            route = "m3_live_steer";
+                            routerHandled = true;
+                        } else {
+                            route = ROUTE_LIVE;
+                        }
+                    } else {
+                        route = ROUTE_LIVE;
                     }
-                    log.warn("Request router failed: {}. Falling back to Python /route.", e.getMessage());
-                } catch (Exception e) {
-                    if (AiServiceErrors.isQuotaOrCreditExhaustion(e.getMessage())) {
-                        throw AiServiceErrors.unavailable(e.getMessage());
-                    }
-                    log.warn("Request router failed: {}. Falling back to Python /route.", e.getMessage());
+                } else {
+                    route = ROUTE_LIVE;
                 }
-                Instant understandEnd = Instant.now();
-                routeDecisionMs = RequestTimingLog.durationMs(understandStart, understandEnd);
-                RequestTimingLog.logStage("understand", understandStart, understandEnd);
+            } else if (requestRouterEnabled) {
+                UnderstandRun understandRun = runUnderstandRequest(request, originalUserText);
+                protectionSession = understandRun.protectionSession();
+                sanitizedUserText = understandRun.sanitizedUserText();
+                workingRequest = understandRun.workingRequest();
+                piiDetectionMs = understandRun.piiDetectionMs();
+                routeDecisionMs = understandRun.routeDecisionMs();
+                understood = understandRun.understood();
 
                 if (understood != null) {
                     RequestUnderstandType type = understood.type();
@@ -1542,6 +1551,56 @@ public class ComprehendChatService {
         return new DocAnswerOutcome(general, RETRIEVAL_RAG_NO_ANSWER, 0, generalTimeMs, 0, generalTokens);
     }
 
+    private UnderstandRun runUnderstandRequest(ChatRequest request, String originalUserText) {
+        Instant understandStart = Instant.now();
+        ProtectionSession session = ProtectionSession.fromOriginal(
+                originalUserText,
+                businessInformationProtectionService.isEnabled()
+        );
+        businessInformationProtectionService.protect(
+                session,
+                ProtectionContext.forPurpose(ProtectionPurpose.ANSWER, true)
+        );
+        protectPiiSafely(session);
+        Instant piiEnd = Instant.now();
+        long piiMs = RequestTimingLog.durationMs(understandStart, piiEnd);
+        RequestTimingLog.logStage("pii", understandStart, piiEnd);
+
+        String llmText = session.textForLlm();
+        ChatRequest llmRequest = copyRequestWithUserMessage(request, llmText);
+        RequestUnderstandResult understood = null;
+        try {
+            understood = openAIService.understandRequest(llmRequest, llmText);
+        } catch (OpenAIException e) {
+            if (e.isAiServiceUnavailable()) {
+                throw e;
+            }
+            log.warn("Request router failed: {}.", e.getMessage());
+        } catch (Exception e) {
+            if (AiServiceErrors.isQuotaOrCreditExhaustion(e.getMessage())) {
+                throw AiServiceErrors.unavailable(e.getMessage());
+            }
+            log.warn("Request router failed: {}.", e.getMessage());
+        }
+        Instant understandEnd = Instant.now();
+        long understandMs = RequestTimingLog.durationMs(understandStart, understandEnd);
+        RequestTimingLog.logStage("understand", understandStart, understandEnd);
+        return new UnderstandRun(understood, session, llmRequest, llmText, piiMs, understandMs);
+    }
+
+    private ChatResponse buildM3LiveSteerResponse(ChatRequest request, RequestUnderstandResult understood) {
+        String steer = m3LiveSteerMessage != null && !m3LiveSteerMessage.isBlank()
+                ? m3LiveSteerMessage
+                : DEFAULT_M3_LIVE_STEER_MESSAGE;
+        ChatResponse chatResponse = new ChatResponse(steer, false);
+        chatResponse.setHistory(request.getHistory());
+        chatResponse.setActionTaken("m3_live_steer");
+        if (understood != null) {
+            chatResponse.setOpenAiUsage(understood.usage());
+        }
+        return chatResponse;
+    }
+
     private ChatResponse buildRouterUserResponse(
             ChatRequest request,
             RequestUnderstandResult understood,
@@ -1785,6 +1844,16 @@ public class ComprehendChatService {
             Integer groundedTokens,
             Integer gapFillTokens,
             Integer generalGptTokens
+    ) {
+    }
+
+    private record UnderstandRun(
+            RequestUnderstandResult understood,
+            ProtectionSession protectionSession,
+            ChatRequest workingRequest,
+            String sanitizedUserText,
+            long piiDetectionMs,
+            long routeDecisionMs
     ) {
     }
 

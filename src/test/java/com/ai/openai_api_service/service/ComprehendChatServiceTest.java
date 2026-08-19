@@ -119,6 +119,11 @@ class ComprehendChatServiceTest {
     void setUp() {
         ReflectionTestUtils.setField(comprehendChatService, "ragPartialGapFillEnabled", true);
         ReflectionTestUtils.setField(comprehendChatService, "queryRewriteEnabled", false);
+        ReflectionTestUtils.setField(
+                comprehendChatService,
+                "m3LiveSteerMessage",
+                ComprehendChatService.DEFAULT_M3_LIVE_STEER_MESSAGE
+        );
         pendingLexSessionService = new InMemoryPendingLexSessionService(3600);
         ReflectionTestUtils.setField(comprehendChatService, "pendingLexSessionService", pendingLexSessionService);
         lenient().when(guidedSearchSessionService.find(any())).thenReturn(Optional.empty());
@@ -2418,5 +2423,191 @@ class ComprehendChatServiceTest {
 
         verify(pythonRagService).route("how to create customer");
         verify(openAIService, never()).understandRequest(any(), anyString());
+    }
+
+    static Stream<Arguments> m3ConversationalMessages() {
+        return Stream.of(
+                Arguments.of("hi", "Hello! How can I help?"),
+                Arguments.of("how are you?", "I'm doing well. How can I help with live M3 data?"),
+                Arguments.of("what is your name?", "I'm your Infor M3 assistant.")
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("m3ConversationalMessages")
+    void requestRouter_m3Conversational_skipsLex(String message, String reply) {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        when(openAIService.understandRequest(any(), eq(message))).thenReturn(new RequestUnderstandResult(
+                RequestUnderstandType.CONVERSATIONAL,
+                reply,
+                List.of(),
+                new OpenAIUsage(1, 1, 2, "gpt")
+        ));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = baseRequest(message);
+        request.setMode(ChatMode.M3);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals(reply, response.getReply());
+        assertEquals("conversational", response.getActionTaken());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(pythonRagService, never()).route(anyString());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+    }
+
+    @Test
+    void requestRouter_m3ShowCustomer_goesLex() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        when(openAIService.understandRequest(any(), eq("Show customer Y00111"))).thenReturn(
+                new RequestUnderstandResult(
+                        RequestUnderstandType.LIVE_M3,
+                        "",
+                        List.of(),
+                        new OpenAIUsage(1, 1, 2, "gpt")
+                )
+        );
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "InProgress",
+                "ElicitSlot",
+                "CustomerNumber",
+                Map.of("CustomerNumber", "Y00111"),
+                List.of("Here are the customer details.")
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "Show customer Y00111")).thenReturn(lexResult);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = baseRequest("Show customer Y00111");
+        request.setMode(ChatMode.M3);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("Here are the customer details.", response.getReply());
+        verify(lexService).recognizeText("tenant1:user1:session1", "Show customer Y00111");
+        verify(pythonRagService, never()).route(anyString());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+    }
+
+    @Test
+    void requestRouter_m3Rag_returnsLiveSteerNotLex() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        when(openAIService.understandRequest(any(), eq("what is OIS100?"))).thenReturn(new RequestUnderstandResult(
+                RequestUnderstandType.RAG,
+                "",
+                List.of("OIS100"),
+                new OpenAIUsage(1, 1, 2, "gpt")
+        ));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = baseRequest("what is OIS100?");
+        request.setMode(ChatMode.M3);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals(ComprehendChatService.DEFAULT_M3_LIVE_STEER_MESSAGE, response.getReply());
+        assertEquals("m3_live_steer", response.getActionTaken());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(pythonRagService, never()).route(anyString());
+    }
+
+    @Test
+    void requestRouter_m3NonM3_returnsLiveSteerNotGeneralRedirect() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        when(openAIService.understandRequest(any(), eq("tell me a joke"))).thenReturn(new RequestUnderstandResult(
+                RequestUnderstandType.NON_M3,
+                "I mainly support Infor M3 and CloudSuite questions.",
+                List.of(),
+                new OpenAIUsage(1, 1, 2, "gpt")
+        ));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = baseRequest("tell me a joke");
+        request.setMode(ChatMode.M3);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals(ComprehendChatService.DEFAULT_M3_LIVE_STEER_MESSAGE, response.getReply());
+        assertEquals("m3_live_steer", response.getActionTaken());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(pythonRagService, never()).route(anyString());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+    }
+
+    @Test
+    void requestRouter_m3UnderstandFailure_staysLiveNotPythonRoute() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        when(openAIService.understandRequest(any(), eq("Show customer Y00111")))
+                .thenThrow(new OpenAIException("Request-router JSON missing type", 502));
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "InProgress",
+                "ElicitSlot",
+                "CustomerNumber",
+                Map.of(),
+                List.of("What is the customer number?")
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "Show customer Y00111")).thenReturn(lexResult);
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = baseRequest("Show customer Y00111");
+        request.setMode(ChatMode.M3);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("What is the customer number?", response.getReply());
+        verify(lexService).recognizeText("tenant1:user1:session1", "Show customer Y00111");
+        verify(pythonRagService, never()).route(anyString());
+    }
+
+    @Test
+    void pendingLex_modeM3_pendingLexStillOwnsTurnWithoutUnderstand() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        pendingLexSessionService.markPending("tenant1:user1:session1");
+
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomerFinancial",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "Y00111"),
+                List.of(),
+                Map.of(LexRecognizeResult.ATTR_REQUESTED_INFORMATION, "CREDIT_LIMIT")
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", "Y00111")).thenReturn(lexResult);
+
+        M3RequestDto m3Request = new M3RequestDto(true, "CRS610MI", "GetFinancial", Map.of("CUNO", "Y00111"));
+        ChatResponse fulfillResponse = new ChatResponse("Credit limit for Y00111...", false);
+        fulfillResponse.setActionTaken("read");
+        fulfillResponse.setM3Request(m3Request);
+        when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq("Y00111"), any()))
+                .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = baseRequest("Y00111");
+        request.setMode(ChatMode.M3);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("read", response.getActionTaken());
+        assertNotNull(response.getM3Request());
+        verify(openAIService, never()).understandRequest(any(), anyString());
+        verify(pythonRagService, never()).route(anyString());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(lexService).recognizeText("tenant1:user1:session1", "Y00111");
     }
 }
