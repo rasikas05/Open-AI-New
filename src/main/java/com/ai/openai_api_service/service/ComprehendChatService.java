@@ -44,6 +44,9 @@ import com.ai.openai_api_service.service.protection.ProtectionSession;
 import com.ai.openai_api_service.service.query.SearchContextService;
 import com.ai.openai_api_service.service.rag.ProgramIdDetector;
 import com.ai.openai_api_service.service.rag.SearchQueryAssembler;
+import com.ai.openai_api_service.service.timing.RoutingCallTracker;
+import com.ai.openai_api_service.service.timing.RoutingSummaryLog;
+import com.ai.openai_api_service.service.timing.RoutingSummaryState;
 import com.ai.openai_api_service.service.timing.ComprehendChatTimingSnapshot;
 import com.ai.openai_api_service.service.timing.RequestTimingLog;
 import com.ai.openai_api_service.service.validation.SearchCriteriaValidator;
@@ -121,6 +124,9 @@ public class ComprehendChatService {
 
     @Value("${rag.partial.gap-fill.enabled:true}")
     private boolean ragPartialGapFillEnabled;
+
+    @Value("${openai.api.model:}")
+    private String openAiModel;
 
     public ComprehendChatService(
             ChatPersistenceService chatPersistenceService,
@@ -227,20 +233,28 @@ public class ComprehendChatService {
                 originalUserText != null ? originalUserText.length() : 0
         );
 
-        boolean guidedHandled = false;
+        RoutingSummaryState routingSummary = new RoutingSummaryState();
+        routingSummary.setRequestText(originalUserText);
+        routingSummary.setMode(resolvedMode);
         ChatResponse chatResponse = null;
+        String route = null;
+        RoutingCallTracker.begin();
+        try {
+        boolean guidedHandled = false;
         List<SourceItem> sourcesForSuggestions = null;
         List<SourceItem> responseSources = null;
         String retrievalReason = null;
         Integer retrievalTimeMs = null;
         Float maxScore = null;
-        String route = null;
 
         GuidedRouteAttempt guidedAttempt = tryHandleActiveGuidedTurn(request, originalUserText);
         if (guidedAttempt.guidedHandled()) {
             guidedHandled = true;
             chatResponse = guidedAttempt.response();
             route = "guided";
+            routingSummary.setRouter("skipped (guided)");
+            routingSummary.setRoute("guided");
+            routingSummary.setHandler("guided-search");
             long piiStartMs = System.currentTimeMillis();
             sanitizedUserText = anonymizeForPersistence(originalUserText);
             piiDetectionMs = System.currentTimeMillis() - piiStartMs;
@@ -263,6 +277,9 @@ public class ComprehendChatService {
                 LexLiveRouteResult lexResult = pendingLexAttempt.lexResult();
                 chatResponse = lexResult.chatResponse();
                 route = "live";
+                routingSummary.setRouter("skipped (pending-lex)");
+                routingSummary.setRoute("live");
+                routingSummary.setHandler("lex-pending");
                 if (lexResult.fallbackToDoc()) {
                     sourcesForSuggestions = lexResult.sourcesForSuggestions();
                     responseSources = lexResult.responseSources();
@@ -288,6 +305,7 @@ public class ComprehendChatService {
                     piiDetectionMs = understandRun.piiDetectionMs();
                     routeDecisionMs = understandRun.routeDecisionMs();
                     understood = understandRun.understood();
+                    recordUnderstandResult(routingSummary, understood);
                     if (understood != null) {
                         RequestUnderstandType type = understood.type();
                         if (type == RequestUnderstandType.CONVERSATIONAL) {
@@ -295,19 +313,31 @@ public class ComprehendChatService {
                                     workingRequest, understood, "conversational");
                             route = "conversational";
                             routerHandled = true;
+                            routingSummary.setRoute("conversational");
+                            routingSummary.setHandler("request-router");
                         } else if (type == RequestUnderstandType.RAG || type == RequestUnderstandType.NON_M3) {
                             log.info("routerType={} overriddenByMode=m3", type);
                             chatResponse = buildM3LiveSteerResponse(workingRequest, understood);
                             route = "m3_live_steer";
                             routerHandled = true;
+                            routingSummary.setOverride(type.name() + " -> m3_live_steer");
+                            routingSummary.setRoute("m3_live_steer");
+                            routingSummary.setHandler("request-router");
                         } else {
                             route = ROUTE_LIVE;
+                            routingSummary.setRoute(ROUTE_LIVE);
+                            routingSummary.setHandler(lexService.isEnabled() ? "lex" : "live/python-chat");
                         }
                     } else {
                         route = ROUTE_LIVE;
+                        routingSummary.setRoute(ROUTE_LIVE);
+                        routingSummary.setHandler(lexService.isEnabled() ? "lex" : "live/python-chat");
                     }
                 } else {
                     route = ROUTE_LIVE;
+                    routingSummary.setRouter("skipped (m3-hard-live)");
+                    routingSummary.setRoute(ROUTE_LIVE);
+                    routingSummary.setHandler(lexService.isEnabled() ? "lex" : "live/python-chat");
                 }
             } else if (requestRouterEnabled) {
                 UnderstandRun understandRun = runUnderstandRequest(request, originalUserText);
@@ -317,11 +347,13 @@ public class ComprehendChatService {
                 piiDetectionMs = understandRun.piiDetectionMs();
                 routeDecisionMs = understandRun.routeDecisionMs();
                 understood = understandRun.understood();
+                recordUnderstandResult(routingSummary, understood);
 
                 if (understood != null) {
                     RequestUnderstandType type = understood.type();
                     if (mode == ChatMode.DOCS && type == RequestUnderstandType.LIVE_M3) {
                         log.info("routerType=LIVE_M3 overriddenByMode=docs");
+                        routingSummary.setOverride("LIVE_M3 -> RAG");
                         type = RequestUnderstandType.RAG;
                     }
                     switch (type) {
@@ -330,22 +362,33 @@ public class ComprehendChatService {
                                     workingRequest, understood, "conversational");
                             route = "conversational";
                             routerHandled = true;
+                            routingSummary.setRoute("conversational");
+                            routingSummary.setHandler("request-router");
                         }
                         case NON_M3 -> {
                             if (allowExternalFallback(request)) {
                                 chatResponse = buildRouterUserResponse(
                                         workingRequest, understood, "general_redirect");
                                 route = "general_redirect";
+                                routingSummary.setRoute("general_redirect");
                             } else {
                                 chatResponse = buildDocsOnlyInsufficientResponse(
                                         workingRequest, understood.usage());
                                 route = "rag";
+                                routingSummary.setRoute("rag");
                             }
+                            routingSummary.setHandler("request-router");
                             routerHandled = true;
                         }
-                        case LIVE_M3 -> route = ROUTE_LIVE;
+                        case LIVE_M3 -> {
+                            route = ROUTE_LIVE;
+                            routingSummary.setRoute(ROUTE_LIVE);
+                            routingSummary.setHandler(lexService.isEnabled() ? "lex" : "live/python-chat");
+                        }
                         case RAG -> {
                             route = "rag";
+                            routingSummary.setRoute("rag");
+                            routingSummary.setHandler("documentation/retrieval");
                             DocRouteResult docResult = handleDocumentationRoute(
                                     workingRequest,
                                     originalUserText,
@@ -374,15 +417,29 @@ public class ComprehendChatService {
                     }
                 } else if (mode == ChatMode.DOCS) {
                     route = "rag";
+                    routingSummary.setRoute("rag");
+                    routingSummary.setHandler("documentation/retrieval");
                 } else {
                     PythonRouteResponse routeResponse = pythonRagService.route(originalUserText);
                     route = routeResponse != null ? routeResponse.getRoute() : "rag";
+                    routingSummary.setRoute(route);
+                    routingSummary.setHandler(ROUTE_LIVE.equalsIgnoreCase(route)
+                            ? (lexService.isEnabled() ? "lex" : "live/python-chat")
+                            : "documentation/retrieval");
                 }
             } else if (mode == ChatMode.DOCS) {
                 route = "rag";
+                routingSummary.setRouter("skipped (router-disabled)");
+                routingSummary.setRoute("rag");
+                routingSummary.setHandler("documentation/retrieval");
             } else {
                 PythonRouteResponse routeResponse = pythonRagService.route(originalUserText);
                 route = routeResponse != null ? routeResponse.getRoute() : "rag";
+                routingSummary.setRouter("skipped (router-disabled)");
+                routingSummary.setRoute(route);
+                routingSummary.setHandler(ROUTE_LIVE.equalsIgnoreCase(route)
+                        ? (lexService.isEnabled() ? "lex" : "live/python-chat")
+                        : "documentation/retrieval");
             }
             Instant routeEnd = Instant.now();
             if (routeDecisionMs == 0L) {
@@ -435,8 +492,12 @@ public class ComprehendChatService {
                     }
                 } else {
                     chatResponse = handleLiveRoute(request, originalUserText);
+                    routingSummary.setHandler("live/python-chat");
+                    routingSummary.setRoute(ROUTE_LIVE);
                 }
             } else {
+                routingSummary.setRoute("rag");
+                routingSummary.setHandler("documentation/retrieval");
                 Instant piiStart = Instant.now();
                 protectionSession = ProtectionSession.fromOriginal(
                         originalUserText,
@@ -686,6 +747,19 @@ public class ComprehendChatService {
         }
 
         return chatResponse;
+        } finally {
+            if (chatResponse != null && chatResponse.getActionTaken() != null && !chatResponse.getActionTaken().isBlank()) {
+                routingSummary.setAction(chatResponse.getActionTaken());
+            }
+            if (route != null && !route.isBlank() && "-".equals(routingSummary.getRoute())) {
+                routingSummary.setRoute(route);
+            }
+            RoutingSummaryLog.log(
+                    routingSummary,
+                    RequestTimingLog.durationMs(serviceStart, Instant.now())
+            );
+            RoutingCallTracker.clear();
+        }
     }
 
     /**
@@ -1549,6 +1623,17 @@ public class ComprehendChatService {
                 general.getActionTaken()
         );
         return new DocAnswerOutcome(general, RETRIEVAL_RAG_NO_ANSWER, 0, generalTimeMs, 0, generalTokens);
+    }
+
+    private void recordUnderstandResult(RoutingSummaryState summary, RequestUnderstandResult understood) {
+        if (understood != null) {
+            String model = openAiModel == null || openAiModel.isBlank() ? "openai" : openAiModel;
+            summary.setRouter("OpenAI / " + model);
+            summary.setType(understood.type());
+        } else {
+            summary.setRouter("skipped (router-error)");
+            summary.setTypeRaw("-");
+        }
     }
 
     private UnderstandRun runUnderstandRequest(ChatRequest request, String originalUserText) {

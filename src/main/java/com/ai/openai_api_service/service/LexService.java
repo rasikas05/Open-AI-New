@@ -4,6 +4,7 @@ import com.ai.openai_api_service.config.LexProperties;
 import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.lex.LexRecognizeResult;
+import com.ai.openai_api_service.service.timing.RoutingCallTracker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -16,12 +17,14 @@ import software.amazon.awssdk.services.lexruntimev2.model.RecognizeTextResponse;
 import software.amazon.awssdk.services.lexruntimev2.model.SessionState;
 
 import java.util.Map;
+import java.util.Locale;
 import java.util.regex.Pattern;
 
 @Service
 public class LexService {
 
     private static final Logger log = LoggerFactory.getLogger(LexService.class);
+    private static final Logger HTTP = LoggerFactory.getLogger("HTTP");
     /** Lex V2 sessionId pattern: [0-9a-zA-Z._:-]+ */
     private static final Pattern LEX_SESSION_INVALID_CHARS = Pattern.compile("[^0-9a-zA-Z._:-]");
 
@@ -52,6 +55,11 @@ public class LexService {
         return LEX_SESSION_INVALID_CHARS.matcher(value.trim()).replaceAll("_");
     }
 
+    private static String formatLexSeconds(long lexStartMs) {
+        long elapsed = Math.max(0L, System.currentTimeMillis() - lexStartMs);
+        return String.format(Locale.ROOT, "%.2fs", elapsed / 1000.0);
+    }
+
     public LexRecognizeResult recognizeText(String lexSessionId, String text) {
         if (!lexProperties.isEnabled()) {
             throw new OpenAIException("Lex integration is disabled", 503);
@@ -76,8 +84,11 @@ public class LexService {
                 .text(text)
                 .build();
 
+        long lexStart = System.currentTimeMillis();
         try {
+            RoutingCallTracker.markLexCalled();
             RecognizeTextResponse response = lexClient.recognizeText(request);
+            HTTP.info("[LEX] RecognizeText -> OK | {}", formatLexSeconds(lexStart));
             LexRecognizeResult result = LexRecognizeResult.fromResponse(response);
             log.info(
                     "Lex RecognizeText: session='{}' intent='{}' state='{}' dialogAction='{}' slotToElicit='{}' slots={} attrs={}",
@@ -91,11 +102,13 @@ public class LexService {
             );
             return result;
         } catch (LexRuntimeV2Exception e) {
+            HTTP.info("[LEX] RecognizeText -> ERROR | {}", formatLexSeconds(lexStart));
             log.error("Lex RecognizeText failed: {}", e.awsErrorDetails() != null
                     ? e.awsErrorDetails().errorMessage()
                     : e.getMessage());
             throw new OpenAIException("Lex RecognizeText failed: " + e.getMessage(), 502);
         } catch (SdkClientException e) {
+            HTTP.info("[LEX] RecognizeText -> ERROR | {}", formatLexSeconds(lexStart));
             String region = lexProperties.getRegion();
             log.error(
                     "Lex connectivity failed (region={}, endpoint=runtime-v2-lex.{}.amazonaws.com): {}",

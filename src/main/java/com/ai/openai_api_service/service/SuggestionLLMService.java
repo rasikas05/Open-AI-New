@@ -1,5 +1,6 @@
 package com.ai.openai_api_service.service;
 
+import com.ai.openai_api_service.config.RestTemplateFactory;
 import com.ai.openai_api_service.model.SuggestionCategory;
 import com.ai.openai_api_service.model.SuggestionContext;
 import com.ai.openai_api_service.model.SuggestionItem;
@@ -28,7 +29,7 @@ public class SuggestionLLMService {
 
     private static final Logger log = LoggerFactory.getLogger(SuggestionLLMService.class);
 
-    private final RestTemplate restTemplate = new RestTemplate();
+    private final RestTemplate restTemplate;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Value("${openai.api.key}")
@@ -48,6 +49,12 @@ public class SuggestionLLMService {
 
     @Value("${openai.api.max-completion-tokens:4096}")
     private int defaultMaxCompletionTokens;
+
+    public SuggestionLLMService(
+            @Value("${openai.api.timeout-ms:120000}") int openAiTimeoutMs
+    ) {
+        this.restTemplate = RestTemplateFactory.create(openAiTimeoutMs);
+    }
 
     public List<SuggestionItem> suggest(SuggestionContext context, int minCount, int maxCount) {
         if (!llmEnabled || context == null || apiKey == null || apiKey.isBlank()) {

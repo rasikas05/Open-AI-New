@@ -13,6 +13,7 @@ import com.ai.openai_api_service.model.python_rag.PythonRetrievalRequest;
 import com.ai.openai_api_service.model.python_rag.PythonRetrievalResponse;
 import com.ai.openai_api_service.model.python_rag.PythonRouteRequest;
 import com.ai.openai_api_service.model.python_rag.PythonRouteResponse;
+import com.ai.openai_api_service.service.timing.RoutingCallTracker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -355,6 +356,9 @@ public class PythonRagService {
         HttpEntity<Object> entity = new HttpEntity<>(body, headers);
 
         try {
+            if ("retrieval".equals(operation) || "chat".equals(operation)) {
+                RoutingCallTracker.markRagCalled();
+            }
             ResponseEntity<T> responseEntity = restTemplate.postForEntity(url, entity, responseType);
             T response = responseEntity.getBody();
             long responseTime = System.currentTimeMillis() - startTime;

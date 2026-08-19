@@ -124,6 +124,7 @@ class ComprehendChatServiceTest {
                 "m3LiveSteerMessage",
                 ComprehendChatService.DEFAULT_M3_LIVE_STEER_MESSAGE
         );
+        ReflectionTestUtils.setField(comprehendChatService, "openAiModel", "gpt-5.6-terra");
         pendingLexSessionService = new InMemoryPendingLexSessionService(3600);
         ReflectionTestUtils.setField(comprehendChatService, "pendingLexSessionService", pendingLexSessionService);
         lenient().when(guidedSearchSessionService.find(any())).thenReturn(Optional.empty());
