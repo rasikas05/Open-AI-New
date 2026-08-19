@@ -35,10 +35,10 @@ public class SuggestionEngineService {
     private final SuggestionLLMService suggestionLLMService;
     private final SuggestionCacheService suggestionCacheService;
 
-    @Value("${suggestion.min-count:3}")
+    @Value("${suggestion.min-count:2}")
     private int minSuggestionCount;
 
-    @Value("${suggestion.max-count:5}")
+    @Value("${suggestion.max-count:2}")
     private int maxSuggestionCount;
 
     @Value("${suggestion.rule.enabled:true}")
@@ -78,33 +78,38 @@ public class SuggestionEngineService {
 
         int targetCount = Math.max(1, Math.min(maxCount, Math.max(minCount, maxCount)));
         Instant totalStart = Instant.now();
-        List<SuggestionItem> topicItems = buildTopicBasedItems(context, targetCount);
-        List<SuggestionItem> ruleItems = buildRuleItems(userMessage, targetCount);
         Instant llmStart = Instant.now();
-        LlmSuggestionBatch llmBatch = llmEnabled ? getLlmSuggestionsTimed(context, targetCount) : LlmSuggestionBatch.empty();
+        LlmSuggestionBatch llmBatch = llmEnabled
+                ? getLlmSuggestionsTimed(context, targetCount)
+                : LlmSuggestionBatch.empty();
         long llmWallMs = Duration.between(llmStart, Instant.now()).toMillis();
         List<SuggestionItem> llmItems = llmBatch.items();
 
-        List<SuggestionItem> merged = new ArrayList<>();
-        if (!topicItems.isEmpty()) {
-            merged.addAll(topicItems);
-            merged.addAll(llmItems);
-        } else if (!ruleItems.isEmpty()) {
-            merged.addAll(ruleItems);
-            merged.addAll(llmItems);
-        }
-
+        List<SuggestionItem> topicItems = List.of();
+        List<SuggestionItem> ruleItems = List.of();
         List<SuggestionItem> genericItems = List.of();
-        if (merged.isEmpty()) {
-            genericItems = buildGenericItems(targetCount);
-            merged.addAll(genericItems);
+        List<SuggestionItem> merged = new ArrayList<>();
+        if (!llmItems.isEmpty()) {
+            merged.addAll(llmItems);
+        } else {
+            topicItems = buildTopicBasedItems(context, targetCount);
+            ruleItems = buildRuleItems(userMessage, targetCount);
+            if (!topicItems.isEmpty()) {
+                merged.addAll(topicItems);
+            } else if (!ruleItems.isEmpty()) {
+                merged.addAll(ruleItems);
+            }
+            if (merged.isEmpty()) {
+                genericItems = buildGenericItems(targetCount);
+                merged.addAll(genericItems);
+            }
         }
 
         List<SuggestionItem> ranked = normalizeAndRankSuggestions(merged, targetCount);
         long totalMs = Duration.between(totalStart, Instant.now()).toMillis();
         int deterministicCount = topicItems.size() + ruleItems.size() + genericItems.size();
         log.info(
-                "Suggestion Summary | totalMs={} | llmWallMs={} | deterministicCount={} | topicCount={} | ruleCount={} | genericCount={} | llmCount={} | llmCacheHit={} | llmCalled={} | generatedCount={} | returnedCount={} | model={}",
+                "Suggestion Summary | totalMs={} | llmWallMs={} | skipLlm=false | deterministicCount={} | topicCount={} | ruleCount={} | genericCount={} | llmCount={} | llmCacheHit={} | llmCalled={} | generatedCount={} | returnedCount={} | model={}",
                 totalMs,
                 llmWallMs,
                 deterministicCount,

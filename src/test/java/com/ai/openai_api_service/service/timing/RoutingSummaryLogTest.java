@@ -38,6 +38,7 @@ class RoutingSummaryLogTest {
         state.setType(RequestUnderstandType.LIVE_M3);
         state.setRoute("live");
         state.setHandler("lex");
+        state.setIntent("SearchCustomerOrder");
         state.setAction("lex_elicit_intent");
 
         String text = RoutingSummaryLog.format(state, true, false, 3820);
@@ -45,6 +46,7 @@ class RoutingSummaryLogTest {
         assertTrue(text.startsWith("[ROUTING] \"Show customer Y00111\""));
         assertTrue(text.contains("type=LIVE_M3"));
         assertTrue(text.contains("handler=lex"));
+        assertTrue(text.contains("intent=SearchCustomerOrder"));
         assertTrue(text.contains("lex=CALLED"));
         assertTrue(text.contains("rag=SKIP"));
         assertTrue(text.contains("total=3.82s"));

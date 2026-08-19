@@ -2366,6 +2366,61 @@ class ComprehendChatServiceTest {
     }
 
     @Test
+    void requestRouter_live_reusesUnderstandPii_doesNotAnonymizeAgain() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        String original = "fetch customer Y11100 for John";
+        String sanitized = "fetch customer Y11100 for [Name]";
+        stubSanitizeWithPii(original, sanitized);
+        when(openAIService.understandRequest(any(), eq(sanitized))).thenReturn(new RequestUnderstandResult(
+                RequestUnderstandType.LIVE_M3,
+                "",
+                List.of(),
+                new OpenAIUsage(1, 1, 2, "gpt")
+        ));
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "ReadyForFulfillment",
+                "Close",
+                null,
+                Map.of("CustomerNumber", "Y11100"),
+                List.of()
+        );
+        when(lexService.recognizeText("tenant1:user1:session1", original)).thenReturn(lexResult);
+        ChatResponse fulfillResponse = new ChatResponse("Customer Y11100", false);
+        fulfillResponse.setActionTaken("read");
+        fulfillResponse.setM3Request(new M3RequestDto(true, "CRS610MI", "GetBasicData", Map.of("CUNO", "Y11100")));
+        when(lexFulfillmentService.fulfillOutcome(any(), eq(original), any()))
+                .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest(original));
+
+        assertEquals("read", response.getActionTaken());
+        verify(lexService).recognizeText("tenant1:user1:session1", original);
+        verify(piiProtectionService).protect(any());
+        verify(piiProtectionService, never()).anonymize(anyString());
+        verify(chatPersistenceService).persistChat(
+                eq("tenant1"),
+                eq("user1"),
+                eq("session1"),
+                eq(original),
+                eq(sanitized),
+                any(),
+                any(),
+                eq("read"),
+                eq(true),
+                any(),
+                any(),
+                any(),
+                any(),
+                eq(ChatMode.AUTO)
+        );
+    }
+
+    @Test
     void requestRouter_getCustomerDocs_overridesLiveToRag() {
         enableRequestRouter();
         stubQuotaAllowed();

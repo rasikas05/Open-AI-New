@@ -47,8 +47,10 @@ public class SuggestionLLMService {
     @Value("${openai.api.reasoning-effort:none}")
     private String reasoningEffort;
 
-    @Value("${openai.api.max-completion-tokens:4096}")
-    private int defaultMaxCompletionTokens;
+    @Value("${suggestion.llm.max-completion-tokens:80}")
+    private int suggestionMaxCompletionTokens;
+
+    static final int SUGGESTION_COMPLETION_RETRY_TOKENS = 128;
 
     public SuggestionLLMService(
             @Value("${openai.api.timeout-ms:120000}") int openAiTimeoutMs
@@ -69,22 +71,17 @@ public class SuggestionLLMService {
         }
 
         List<Map<String, String>> messages = List.of(
-                Map.of(
-                        "role", "system",
-                        "content", "You are an expert Infor M3 assistant. Generate concise, user-centric follow-up suggestions based on the user query, answer, and retrieval context."
-                ),
-                Map.of(
-                        "role", "user",
-                        "content", prompt
-                )
+                Map.of("role", "system", "content", suggestionSystemPrompt()),
+                Map.of("role", "user", "content", prompt)
         );
+        int tokenCap = suggestionCompletionTokenCap();
         Map<String, Object> body = OpenAiChatRequestBuilder.buildChatCompletionBody(
                 model,
                 reasoningEffort,
-                defaultMaxCompletionTokens,
+                tokenCap,
                 messages,
-                null,
-                null
+                0.3,
+                tokenCap
         );
 
         HttpHeaders headers = new HttpHeaders();
@@ -108,6 +105,25 @@ public class SuggestionLLMService {
             Map<String, Object> response = responseEntity.getBody();
             Instant parseStart = Instant.now();
             List<SuggestionItem> items = extractSuggestions(response, maxCount);
+            if (items.isEmpty() && isLengthTruncated(response) && tokenCap < SUGGESTION_COMPLETION_RETRY_TOKENS) {
+                log.info("Suggestion JSON truncated; retrying with max_completion_tokens={}", SUGGESTION_COMPLETION_RETRY_TOKENS);
+                body = OpenAiChatRequestBuilder.buildChatCompletionBody(
+                        model,
+                        reasoningEffort,
+                        SUGGESTION_COMPLETION_RETRY_TOKENS,
+                        messages,
+                        0.3,
+                        SUGGESTION_COMPLETION_RETRY_TOKENS
+                );
+                responseEntity = restTemplate.exchange(
+                        openaiUrl,
+                        HttpMethod.POST,
+                        new HttpEntity<>(body, headers),
+                        Map.class
+                );
+                response = responseEntity.getBody();
+                items = extractSuggestions(response, maxCount);
+            }
             long parseMs = Duration.between(parseStart, Instant.now()).toMillis();
             int promptTokens = extractUsageField(response, "prompt_tokens");
             int completionTokens = extractUsageField(response, "completion_tokens");
@@ -144,48 +160,46 @@ public class SuggestionLLMService {
     }
 
     private String buildPrompt(SuggestionContext context, int minCount, int maxCount) {
+        return buildUserPrompt(context);
+    }
+
+    String suggestionSystemPrompt() {
+        return "You generate Infor M3 follow-up questions. Output ONLY a JSON array of exactly 2 strings.";
+    }
+
+    int suggestionCompletionTokenCap() {
+        int cap = suggestionMaxCompletionTokens > 0 ? suggestionMaxCompletionTokens : 80;
+        return Math.min(Math.max(cap, 48), SUGGESTION_COMPLETION_RETRY_TOKENS);
+    }
+
+    String buildUserPrompt(SuggestionContext context) {
         String message = context.getUserMessage() == null ? "" : context.getUserMessage().trim();
         String answer = context.getAnswer() == null ? "" : context.getAnswer().trim();
-        int sourceCount = context.getSources() == null ? 0 : context.getSources().size();
-
         StringBuilder builder = new StringBuilder();
-        builder.append("You are an expert Infor M3 business process assistant. Generate practical, task-oriented follow-up suggestions.\n\n");
-        builder.append("User question: ").append(message).append("\n");
+        builder.append("User request: ").append(message).append('\n');
         if (!answer.isBlank()) {
-            builder.append("Assistant answer: ").append(answer).append("\n");
+            builder.append("Assistant answer: ").append(answer).append('\n');
         }
-        builder.append("Retrieved source count: ").append(sourceCount).append("\n\n");
-        
-        builder.append("CRITICAL REQUIREMENTS:\n");
-        builder.append("1. Generate ONLY complete, actionable suggestions (minimum 4 words, full sentences)\n");
-        builder.append("2. NEVER generate incomplete phrases ending with: in, of, for, with, and, to, by, from, is, can be, are\n");
-        builder.append("3. Focus on PRACTICAL operations: how-to steps, troubleshooting, API usage, configuration, navigation\n");
-        builder.append("4. AVOID generic topics like 'Customer order process', 'Purchase order information', 'Explore X'\n");
-        builder.append("5. AVOID marketing or informational topics unrelated to actual tasks\n");
-        builder.append("6. Ensure each suggestion helps the user continue their workflow naturally\n");
-        builder.append("7. Each suggestion must be a COMPLETE thought, not a fragment\n\n");
-        
-        builder.append("GOOD EXAMPLES:\n");
-        builder.append("- 'How to monitor purchase order status in PPS200'\n");
-        builder.append("- 'Common reasons for delayed purchase orders'\n");
-        builder.append("- 'How to approve customer orders in OIS100'\n");
-        builder.append("- 'Which APIs are related to OIS100'\n");
-        builder.append("- 'Troubleshoot delivery receipt issues'\n\n");
-        
-        builder.append("BAD EXAMPLES (DO NOT GENERATE):\n");
-        builder.append("- 'How to track purchase order in' (incomplete)\n");
-        builder.append("- 'Benefits of ad' (fragment)\n");
-        builder.append("- 'Customer order process' (generic)\n");
-        builder.append("- 'Explore order' (vague)\n\n");
-        
-        builder.append("Generate between ").append(minCount).append(" and ").append(maxCount)
-                .append(" suggestions. Output ONLY a valid JSON array of objects with:\n")
-                .append("- text: complete, actionable suggestion (not a fragment)\n")
-                .append("- category: one of FOLLOW_UP, TROUBLESHOOTING, CONFIGURATION, API_RELATED, BEST_PRACTICE\n")
-                .append("- relevance_score: number from 0.0 to 1.0\n\n")
-                .append("Ensure ALL suggestions are complete sentences with proper structure. Do not include markdown or explanations.\n");
-        
+        builder.append("Return exactly 2 relevant follow-up questions.\n");
+        builder.append("Each under 12 words. Complete questions only.\n");
+        builder.append("JSON array of 2 strings. No objects, markdown, or extra text.");
         return builder.toString();
+    }
+
+    private boolean isLengthTruncated(Map<String, Object> response) {
+        if (response == null) {
+            return false;
+        }
+        Object choicesObj = response.get("choices");
+        if (!(choicesObj instanceof List<?> choices) || choices.isEmpty()) {
+            return false;
+        }
+        Object first = choices.get(0);
+        if (!(first instanceof Map<?, ?> choiceMap)) {
+            return false;
+        }
+        Object finish = choiceMap.get("finish_reason");
+        return finish != null && "length".equalsIgnoreCase(finish.toString());
     }
 
     private List<SuggestionItem> extractSuggestions(Map<String, Object> response, int maxCount) {
@@ -206,65 +220,65 @@ public class SuggestionLLMService {
         }
         Object contentObj = messageMap.get("content");
         String content = contentObj == null ? "" : contentObj.toString();
-        if (content.isBlank()) {
+        return parseSuggestionContent(content, maxCount);
+    }
+
+    List<SuggestionItem> parseSuggestionContent(String content, int maxCount) {
+        if (content == null || content.isBlank()) {
             return List.of();
         }
-
+        String cleaned = content.strip();
+        if (cleaned.startsWith("```")) {
+            int start = cleaned.indexOf('\n');
+            int end = cleaned.lastIndexOf("```");
+            if (start > 0 && end > start) {
+                cleaned = cleaned.substring(start + 1, end).strip();
+            }
+        }
+        int cap = Math.max(1, maxCount);
         try {
-            List<Map<String, Object>> rawItems = objectMapper.readValue(
-                    content,
-                    new TypeReference<>() {
-                    }
-            );
-            List<SuggestionItem> items = new ArrayList<>();
+            List<String> rawTexts = objectMapper.readValue(cleaned, new TypeReference<>() {
+            });
+            return toItems(rawTexts, cap);
+        } catch (Exception ignored) {
+            // object-array fallback
+        }
+        try {
+            List<Map<String, Object>> rawItems = objectMapper.readValue(cleaned, new TypeReference<>() {
+            });
+            List<String> texts = new ArrayList<>();
             for (Map<String, Object> raw : rawItems) {
                 if (raw == null) {
                     continue;
                 }
-                String text = raw.getOrDefault("text", "").toString().trim();
-                String categoryText = raw.getOrDefault("category", "GENERIC").toString();
-                double score = parseScore(raw.get("relevance_score"));
-                SuggestionCategory category = SuggestionCategory.fromString(categoryText);
-                
-                // Filter out incomplete or low-quality suggestions
-                if (!isCompleteAndValid(text)) {
-                    log.debug("Filtered incomplete LLM suggestion: {}", text);
-                    continue;
-                }
-                
-                items.add(new SuggestionItem(text, category, score, "LLM"));
-                if (items.size() >= maxCount) {
-                    break;
-                }
+                texts.add(raw.getOrDefault("text", "").toString());
             }
-            return items;
+            return toItems(texts, cap);
         } catch (Exception parseError) {
-            log.warn("LLM suggestion parsing failed, trying fallback parse as string list: {}", parseError.getMessage());
-        }
-
-        try {
-            List<String> rawTexts = objectMapper.readValue(content, new TypeReference<>() {
-            });
-            List<SuggestionItem> items = new ArrayList<>();
-            for (String rawText : rawTexts) {
-                if (rawText == null || rawText.isBlank()) {
-                    continue;
-                }
-                rawText = rawText.trim();
-                if (!isCompleteAndValid(rawText)) {
-                    log.debug("Filtered incomplete fallback suggestion: {}", rawText);
-                    continue;
-                }
-                items.add(new SuggestionItem(rawText, SuggestionCategory.RELATED_TOPIC, 0.55d, "LLM"));
-                if (items.size() >= maxCount) {
-                    break;
-                }
-            }
-            return items;
-        } catch (Exception fallbackError) {
-            log.warn("LLM fallback parsing also failed: {}", fallbackError.getMessage());
+            log.warn("LLM suggestion parsing failed: {}", parseError.getMessage());
             return List.of();
         }
+    }
+
+    private List<SuggestionItem> toItems(List<String> rawTexts, int cap) {
+        List<SuggestionItem> items = new ArrayList<>();
+        if (rawTexts == null) {
+            return items;
+        }
+        for (String rawText : rawTexts) {
+            if (rawText == null || rawText.isBlank()) {
+                continue;
+            }
+            String text = rawText.trim();
+            if (!isCompleteAndValid(text)) {
+                continue;
+            }
+            items.add(new SuggestionItem(text, SuggestionCategory.FOLLOW_UP, 0.8d, "LLM"));
+            if (items.size() >= cap) {
+                break;
+            }
+        }
+        return items;
     }
     
     private boolean isCompleteAndValid(String text) {
@@ -298,18 +312,5 @@ public class SuggestionLLMService {
             log.error("Error validating LLM suggestion: {}", text, e);
             return false;
         }
-    }
-
-    private double parseScore(Object rawScore) {
-        if (rawScore instanceof Number number) {
-            return Math.max(0.0d, Math.min(1.0d, number.doubleValue()));
-        }
-        if (rawScore != null) {
-            try {
-                return Math.max(0.0d, Math.min(1.0d, Double.parseDouble(rawScore.toString())));
-            } catch (NumberFormatException ignored) {
-            }
-        }
-        return 0.5d;
     }
 }

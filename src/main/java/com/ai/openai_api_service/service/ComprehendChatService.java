@@ -44,6 +44,7 @@ import com.ai.openai_api_service.service.protection.ProtectionSession;
 import com.ai.openai_api_service.service.query.SearchContextService;
 import com.ai.openai_api_service.service.rag.ProgramIdDetector;
 import com.ai.openai_api_service.service.rag.SearchQueryAssembler;
+import com.ai.openai_api_service.service.timing.ChatRequestSummaryLog;
 import com.ai.openai_api_service.service.timing.RoutingCallTracker;
 import com.ai.openai_api_service.service.timing.RoutingSummaryLog;
 import com.ai.openai_api_service.service.timing.RoutingSummaryState;
@@ -183,10 +184,13 @@ public class ComprehendChatService {
         long restoreMs = 0L;
         long liveHistoryMs = 0L;
         long suggestionsMs = 0L;
+        long persistenceMs = 0L;
         long preRetrievalGlueMs = 0L;
         int groundedTokens = 0;
         int gapFillTokens = 0;
         int generalGptTokens = 0;
+        int routerPromptTokens = 0;
+        int routerCompletionTokens = 0;
 
         ComprehendChatTimingSnapshot timingSnapshot = currentTimingSnapshot();
         if (timingSnapshot != null) {
@@ -306,6 +310,10 @@ public class ComprehendChatService {
                     routeDecisionMs = understandRun.routeDecisionMs();
                     understood = understandRun.understood();
                     recordUnderstandResult(routingSummary, understood);
+                    if (understood != null && understood.usage() != null) {
+                        routerPromptTokens = nullSafeInt(understood.usage().getPromptTokens());
+                        routerCompletionTokens = nullSafeInt(understood.usage().getCompletionTokens());
+                    }
                     if (understood != null) {
                         RequestUnderstandType type = understood.type();
                         if (type == RequestUnderstandType.CONVERSATIONAL) {
@@ -348,6 +356,10 @@ public class ComprehendChatService {
                 routeDecisionMs = understandRun.routeDecisionMs();
                 understood = understandRun.understood();
                 recordUnderstandResult(routingSummary, understood);
+                if (understood != null && understood.usage() != null) {
+                    routerPromptTokens = nullSafeInt(understood.usage().getPromptTokens());
+                    routerCompletionTokens = nullSafeInt(understood.usage().getCompletionTokens());
+                }
 
                 if (understood != null) {
                     RequestUnderstandType type = understood.type();
@@ -471,11 +483,13 @@ public class ComprehendChatService {
                     RequestTimingLog.logStage("restore", restoreStart, restoreEnd);
                 }
             } else if (ROUTE_LIVE.equalsIgnoreCase(route)) {
-                Instant piiStart = Instant.now();
-                sanitizedUserText = anonymizeForPersistence(originalUserText);
-                Instant piiEnd = Instant.now();
-                piiDetectionMs = RequestTimingLog.durationMs(piiStart, piiEnd);
-                RequestTimingLog.logStage("pii", piiStart, piiEnd);
+                if (sanitizedUserText == null) {
+                    Instant piiStart = Instant.now();
+                    sanitizedUserText = anonymizeForPersistence(originalUserText);
+                    Instant piiEnd = Instant.now();
+                    piiDetectionMs = RequestTimingLog.durationMs(piiStart, piiEnd);
+                    RequestTimingLog.logStage("pii", piiStart, piiEnd);
+                }
                 if (lexService.isEnabled()) {
                     LexLiveRouteResult lexResult = handleLexLiveRoute(
                             request,
@@ -641,7 +655,7 @@ public class ComprehendChatService {
         }
         chatResponse.setRequestLogId(requestLogId);
         Instant persistenceEnd = Instant.now();
-        long persistenceMs = RequestTimingLog.durationMs(persistenceStart, persistenceEnd);
+        persistenceMs = RequestTimingLog.durationMs(persistenceStart, persistenceEnd);
         RequestTimingLog.logStage("persistence", persistenceStart, persistenceEnd);
 
         chatResponse.setRetrievalReason(retrievalReason);
@@ -674,7 +688,10 @@ public class ComprehendChatService {
                 consumedTokens
         );
         log.info(
-                "Request Token Summary | grounded={} | gapFill={} | generalGPT={} | prompt={} | completion={} | total={}",
+                "Request Token Summary | routerPrompt={} | routerCompletion={} | grounded={} | gapFill={} | generalGPT={} | "
+                        + "prompt={} | completion={} | total={}",
+                routerPromptTokens,
+                routerCompletionTokens,
                 groundedTokens,
                 gapFillTokens,
                 generalGptTokens,
@@ -751,13 +768,41 @@ public class ComprehendChatService {
             if (chatResponse != null && chatResponse.getActionTaken() != null && !chatResponse.getActionTaken().isBlank()) {
                 routingSummary.setAction(chatResponse.getActionTaken());
             }
+            if (chatResponse != null && chatResponse.getLexIntent() != null && !chatResponse.getLexIntent().isBlank()) {
+                routingSummary.setIntent(chatResponse.getLexIntent());
+            }
             if (route != null && !route.isBlank() && "-".equals(routingSummary.getRoute())) {
                 routingSummary.setRoute(route);
             }
-            RoutingSummaryLog.log(
-                    routingSummary,
-                    RequestTimingLog.durationMs(serviceStart, Instant.now())
-            );
+            long wallMs = RequestTimingLog.durationMs(serviceStart, Instant.now());
+            RoutingSummaryLog.log(routingSummary, wallMs);
+            log.info(ChatRequestSummaryLog.formatChat(
+                    routingSummary.getRequestText(),
+                    routingSummary.getMode(),
+                    routingSummary.getType(),
+                    routingSummary.getRoute(),
+                    routingSummary.getHandler(),
+                    routingSummary.getIntent(),
+                    routingSummary.getAction()
+            ));
+            log.info(ChatRequestSummaryLog.formatTiming(
+                    piiDetectionMs,
+                    routeDecisionMs,
+                    0L,
+                    retrievalMs,
+                    groundedMs,
+                    persistenceMs,
+                    suggestionsMs,
+                    wallMs
+            ));
+            int tokenTotal = routerPromptTokens + routerCompletionTokens + groundedTokens + gapFillTokens;
+            log.info(ChatRequestSummaryLog.formatTokens(
+                    routerPromptTokens + routerCompletionTokens,
+                    groundedTokens,
+                    gapFillTokens,
+                    0,
+                    tokenTotal
+            ));
             RoutingCallTracker.clear();
         }
     }
@@ -1633,6 +1678,7 @@ public class ComprehendChatService {
             String model = openAiModel == null || openAiModel.isBlank() ? "openai" : openAiModel;
             summary.setRouter("OpenAI / " + model);
             summary.setType(understood.type());
+            logUsage("Router", understood.usage(), 0L);
         } else {
             summary.setRouter("skipped (router-error)");
             summary.setTypeRaw("-");
