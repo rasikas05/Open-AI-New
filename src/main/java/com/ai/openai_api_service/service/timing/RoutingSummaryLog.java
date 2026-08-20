@@ -35,11 +35,16 @@ public final class RoutingSummaryLog {
         List<String> parts = new ArrayList<>();
         parts.add("[ROUTING] \"" + oneLine(state.getRequestText(), MAX_REQUEST_CHARS) + "\"");
         parts.add("mode=" + state.getMode());
-        String compactRouter = compactRouter(state.getRouter());
-        if (compactRouter != null) {
-            parts.add("router=" + compactRouter);
+        if (isPresent(state.getPythonRoute())) {
+            parts.add("python=" + state.getPythonRoute());
         }
-        if (state.getType() != null && !state.getType().isBlank() && !"-".equals(state.getType())) {
+        if (isPresent(state.getPlanner())) {
+            parts.add("planner=" + state.getPlanner());
+        }
+        if (isPresent(state.getFallback())) {
+            parts.add("fallback=" + state.getFallback());
+        }
+        if (isPresent(state.getType())) {
             parts.add("type=" + state.getType());
         }
         if (state.getOverride() != null && !state.getOverride().isBlank() && !"none".equals(state.getOverride())) {
@@ -47,7 +52,7 @@ public final class RoutingSummaryLog {
         }
         parts.add("route=" + state.getRoute());
         parts.add("handler=" + state.getHandler());
-        if (state.getIntent() != null && !state.getIntent().isBlank() && !"-".equals(state.getIntent())) {
+        if (isPresent(state.getIntent())) {
             parts.add("intent=" + state.getIntent());
         }
         parts.add("action=" + state.getAction());
@@ -55,24 +60,6 @@ public final class RoutingSummaryLog {
         parts.add("rag=" + (ragCalled ? "CALLED" : "SKIP"));
         parts.add("total=" + formatSeconds(serviceWallMs));
         return String.join(" | ", parts);
-    }
-
-    /** Successful OpenAI router calls are omitted; skip reasons stay as SKIP(...). */
-    static String compactRouter(String router) {
-        if (router == null || router.isBlank() || "-".equals(router)) {
-            return null;
-        }
-        if (router.startsWith("OpenAI /") || router.startsWith("OpenAI/")) {
-            return null;
-        }
-        if (router.startsWith("skipped (")) {
-            String inner = router.substring("skipped (".length());
-            if (inner.endsWith(")")) {
-                inner = inner.substring(0, inner.length() - 1);
-            }
-            return "SKIP(" + inner + ")";
-        }
-        return router;
     }
 
     static String formatSeconds(long millis) {
@@ -88,5 +75,9 @@ public final class RoutingSummaryLog {
             return flattened;
         }
         return flattened.substring(0, maxChars);
+    }
+
+    private static boolean isPresent(String value) {
+        return value != null && !value.isBlank() && !"-".equals(value);
     }
 }

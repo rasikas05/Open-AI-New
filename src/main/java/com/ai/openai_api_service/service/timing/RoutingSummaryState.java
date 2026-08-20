@@ -11,6 +11,9 @@ public final class RoutingSummaryState {
     private String requestText = "";
     private String mode = "-";
     private String router = "-";
+    private String pythonRoute = "-";
+    private String planner = "-";
+    private String fallback = "-";
     private String type = "-";
     private String override = "none";
     private String route = "-";
@@ -28,6 +31,18 @@ public final class RoutingSummaryState {
 
     public void setRouter(String router) {
         this.router = blankToDash(router);
+    }
+
+    public void setPythonRoute(String pythonRoute) {
+        this.pythonRoute = blankToDash(pythonRoute);
+    }
+
+    public void setPlanner(String planner) {
+        this.planner = blankToDash(planner);
+    }
+
+    public void setFallback(String fallback) {
+        this.fallback = fallback == null || fallback.isBlank() ? "-" : fallback;
     }
 
     public void setType(RequestUnderstandType understandType) {
@@ -68,6 +83,18 @@ public final class RoutingSummaryState {
 
     public String getRouter() {
         return router;
+    }
+
+    public String getPythonRoute() {
+        return pythonRoute;
+    }
+
+    public String getPlanner() {
+        return planner;
+    }
+
+    public String getFallback() {
+        return fallback;
     }
 
     public String getType() {

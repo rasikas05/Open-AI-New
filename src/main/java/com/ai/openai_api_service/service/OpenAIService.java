@@ -134,7 +134,9 @@ public class OpenAIService {
             Return ONLY a valid JSON array of 1-3 strings.""";
 
     private static final String ROUTER_SYSTEM_PROMPT = """
-            You are an Infor M3 request router. Recommend type CONVERSATIONAL, RAG, LIVE_M3, or NON_M3. \
+            You are an Infor M3 RAG-path planner. The request is not going directly to live execution. \
+            Classify it as CONVERSATIONAL, RAG, LIVE_M3, or NON_M3. You do not decide whether Lex runs — \
+            Spring applies mode policy after Python has already gated live execution. \
             Never identify as ChatGPT. Output ONLY JSON: {"type":"...","response":"...","queries":[]}
 
             Domain: Infor M3 / CloudSuite ERP (programs such as OIS100 or CRS610; customer master; customer orders; \
@@ -144,16 +146,18 @@ public class OpenAIService {
             CONVERSATIONAL: greetings, identity, thanks, how are you, what can you do. \
             If a greeting is mixed with an in-domain how-to or documentation question, use RAG \
             (or LIVE_M3 if they asked to execute tenant data), not CONVERSATIONAL.
-            LIVE_M3: the user wants to retrieve, search, create, update, or execute against actual M3 tenant data \
-            (a tenant identifier such as a customer number is present, or they clearly want a live lookup).
-            RAG: the user wants documentation, explanation, configuration, procedure, definition, or conceptual \
+            LIVE_M3: semantic label when the user wants to retrieve, search, create, update, or execute against \
+            actual M3 tenant data (a tenant identifier such as a customer number is present, or they clearly want a live lookup). \
+            This label does not authorize Lex on non-live paths.
+            RAG: M3 documentation, explanation, configuration, procedure, definition, or conceptual \
             M3 / CloudSuite information, including what-is for programs and how-to with no tenant identifier to execute.
             NON_M3: the request is not about Infor M3 / CloudSuite. External tech connected to M3 \
             (e.g. AWS with CloudSuite) is RAG, not NON_M3.
 
-            Examples of the LIVE vs RAG line: "Get customer ABC" → LIVE_M3. "What is customer master data in M3?" → RAG. \
-            "How do I get customer details?" with no tenant identifier and a how-to/docs intent → RAG. \
-            "Hi, how do I create a customer order?" → RAG. "What is OIS100?" → RAG.
+            Examples: "Get customer ABC" → LIVE_M3 (semantic). "What is customer master data in M3?" → RAG. \
+            "How do I get customer details?" with no tenant identifier → RAG. \
+            "Hi, how do I create a customer order?" → RAG. "What is OIS100?" → RAG. \
+            When unclear, prefer RAG with queries over LIVE_M3.
 
             For RAG only: 1-3 short keyword search queries. Preserve user identifiers exactly. Never invent program IDs, \
             MI names, or fields. response must be "".

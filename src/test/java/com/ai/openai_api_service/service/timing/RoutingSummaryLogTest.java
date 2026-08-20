@@ -11,96 +11,96 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class RoutingSummaryLogTest {
 
     @Test
-    void format_conversationalM3() {
-        RoutingSummaryState state = base("Hi", ChatMode.M3);
-        state.setRouter("OpenAI / gpt-5.6-terra");
-        state.setType(RequestUnderstandType.CONVERSATIONAL);
-        state.setOverride("none");
-        state.setRoute("conversational");
-        state.setHandler("request-router");
-        state.setAction("conversational");
-
-        String text = RoutingSummaryLog.format(state, false, false, 2310);
-
-        assertEquals(
-                "[ROUTING] \"Hi\" | mode=M3 | type=CONVERSATIONAL | route=conversational"
-                        + " | handler=request-router | action=conversational | lex=SKIP | rag=SKIP | total=2.31s",
-                text
-        );
-        assertFalse(text.contains("router="));
-        assertFalse(text.contains("override="));
-    }
-
-    @Test
-    void format_liveLex() {
-        RoutingSummaryState state = base("Show customer Y00111", ChatMode.M3);
-        state.setRouter("OpenAI / gpt-5.6-terra");
-        state.setType(RequestUnderstandType.LIVE_M3);
+    void format_autoLivePythonFirst() {
+        RoutingSummaryState state = base("show customer C10001", ChatMode.AUTO);
+        state.setPythonRoute("LIVE");
+        state.setPlanner("SKIP");
         state.setRoute("live");
         state.setHandler("lex");
-        state.setIntent("SearchCustomerOrder");
         state.setAction("lex_elicit_intent");
 
-        String text = RoutingSummaryLog.format(state, true, false, 3820);
+        String text = RoutingSummaryLog.format(state, true, false, 8480);
 
-        assertTrue(text.startsWith("[ROUTING] \"Show customer Y00111\""));
-        assertTrue(text.contains("type=LIVE_M3"));
-        assertTrue(text.contains("handler=lex"));
-        assertTrue(text.contains("intent=SearchCustomerOrder"));
-        assertTrue(text.contains("lex=CALLED"));
-        assertTrue(text.contains("rag=SKIP"));
-        assertTrue(text.contains("total=3.82s"));
-        assertFalse(text.contains("router="));
+        assertEquals(
+                "[ROUTING] \"show customer C10001\" | mode=AUTO | python=LIVE | planner=SKIP"
+                        + " | route=live | handler=lex | action=lex_elicit_intent | lex=CALLED | rag=SKIP | total=8.48s",
+                text
+        );
     }
 
     @Test
-    void format_m3RagSteer() {
-        RoutingSummaryState state = base("What is OIS100?", ChatMode.M3);
-        state.setRouter("OpenAI / gpt-5.6-terra");
+    void format_autoRagPlanner() {
+        RoutingSummaryState state = base("what is OIS100?", ChatMode.AUTO);
+        state.setPythonRoute("RAG");
+        state.setPlanner("RAG");
         state.setType(RequestUnderstandType.RAG);
-        state.setOverride("RAG -> m3_live_steer");
-        state.setRoute("m3_live_steer");
-        state.setHandler("request-router");
-        state.setAction("m3_live_steer");
+        state.setRoute("rag");
+        state.setHandler("documentation/retrieval");
+        state.setAction("rag");
 
-        String text = RoutingSummaryLog.format(state, false, false, 2810);
+        String text = RoutingSummaryLog.format(state, false, true, 18160);
 
-        assertTrue(text.contains("override=RAG->m3_live_steer"));
-        assertTrue(text.contains("route=m3_live_steer"));
+        assertTrue(text.contains("python=RAG"));
+        assertTrue(text.contains("planner=RAG"));
+        assertTrue(text.contains("type=RAG"));
         assertTrue(text.contains("lex=SKIP"));
-        assertFalse(text.contains("SKIPPED"));
+        assertTrue(text.contains("rag=CALLED"));
+        assertTrue(text.contains("total=18.16s"));
+    }
+
+    @Test
+    void format_docsLiveSteer() {
+        RoutingSummaryState state = base("fetch customer Y11100", ChatMode.DOCS);
+        state.setPythonRoute("SKIP");
+        state.setPlanner("LIVE_M3");
+        state.setType(RequestUnderstandType.LIVE_M3);
+        state.setRoute("docs_live_steer");
+        state.setHandler("planner");
+        state.setAction("docs_live_steer");
+
+        String text = RoutingSummaryLog.format(state, false, false, 5490);
+
+        assertTrue(text.contains("python=SKIP"));
+        assertTrue(text.contains("planner=LIVE_M3"));
+        assertTrue(text.contains("route=docs_live_steer"));
+        assertTrue(text.contains("lex=SKIP"));
+        assertTrue(text.contains("rag=SKIP"));
+    }
+
+    @Test
+    void format_pythonErrorFallback() {
+        RoutingSummaryState state = base("what is the weather?", ChatMode.AUTO);
+        state.setPythonRoute("ERROR");
+        state.setFallback("RAG");
+        state.setPlanner("NON_M3");
+        state.setType(RequestUnderstandType.NON_M3);
+        state.setRoute("general_redirect");
+        state.setHandler("planner");
+        state.setAction("general_redirect");
+
+        String text = RoutingSummaryLog.format(state, false, false, 5490);
+
+        assertTrue(text.contains("python=ERROR"));
+        assertTrue(text.contains("fallback=RAG"));
+        assertTrue(text.contains("planner=NON_M3"));
     }
 
     @Test
     void format_pendingLex() {
         RoutingSummaryState state = base("Y00111", ChatMode.M3);
-        state.setRouter("skipped (pending-lex)");
-        state.setTypeRaw("-");
+        state.setPythonRoute("SKIP");
+        state.setPlanner("SKIP");
         state.setRoute("live");
         state.setHandler("lex-pending");
         state.setAction("lex_elicit_intent");
 
         String text = RoutingSummaryLog.format(state, true, false, 1100);
 
-        assertTrue(text.contains("router=SKIP(pending-lex)"));
+        assertTrue(text.contains("python=SKIP"));
+        assertTrue(text.contains("planner=SKIP"));
         assertFalse(text.contains("type="));
         assertTrue(text.contains("handler=lex-pending"));
         assertTrue(text.contains("lex=CALLED"));
-    }
-
-    @Test
-    void format_failureMissingAction() {
-        RoutingSummaryState state = base("Show customer Y00111", ChatMode.M3);
-        state.setRouter("skipped (router-error)");
-        state.setRoute("live");
-        state.setHandler("lex");
-
-        String text = RoutingSummaryLog.format(state, false, false, 500);
-
-        assertTrue(text.contains("action=-"));
-        assertTrue(text.contains("lex=SKIP"));
-        assertFalse(text.contains("lex=CALLED"));
-        assertTrue(text.contains("router=SKIP(router-error)"));
     }
 
     private static RoutingSummaryState base(String request, ChatMode mode) {
