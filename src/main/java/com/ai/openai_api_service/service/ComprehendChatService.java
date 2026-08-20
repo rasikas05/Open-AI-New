@@ -93,6 +93,20 @@ public class ComprehendChatService {
             "I'm your Infor M3 live assistant. I can help retrieve tenant data such as customer and order details. "
                     + "For M3 documentation or how-to questions, switch to Auto or Docs.";
 
+    static final String DEFAULT_M3_DOCS_STEER_MESSAGE =
+            "For M3 documentation and how-to questions, switch to Auto or Docs mode. "
+                    + "I can help retrieve live tenant data here.";
+
+    static final String DEFAULT_M3_NON_M3_MESSAGE =
+            "I'm focused on Infor M3 live data in this mode. For general questions outside M3, switch to Auto mode.";
+
+    static final String DEFAULT_M3_CLASSIFIER_ERROR_MESSAGE =
+            "I'm your Infor M3 live assistant. I can help retrieve tenant data such as customer and order details. "
+                    + "Please ask for a specific M3 data request, such as show customer Y00111.";
+
+    static final String DEFAULT_DOCS_LIVE_STEER_MESSAGE =
+            "To retrieve live M3 tenant data, switch to Auto or M3 mode. I can help with M3 documentation here.";
+
     private final ChatPersistenceService chatPersistenceService;
     private final TenantQuotaService tenantQuotaService;
     private final SuggestionEngineService suggestionEngineService;
@@ -122,6 +136,18 @@ public class ComprehendChatService {
 
     @Value("${chat.m3.live-steer-message:" + DEFAULT_M3_LIVE_STEER_MESSAGE + "}")
     private String m3LiveSteerMessage;
+
+    @Value("${chat.m3.docs-steer-message:" + DEFAULT_M3_DOCS_STEER_MESSAGE + "}")
+    private String m3DocsSteerMessage;
+
+    @Value("${chat.m3.non-m3-message:" + DEFAULT_M3_NON_M3_MESSAGE + "}")
+    private String m3NonM3Message;
+
+    @Value("${chat.m3.classifier-error-message:" + DEFAULT_M3_CLASSIFIER_ERROR_MESSAGE + "}")
+    private String m3ClassifierErrorMessage;
+
+    @Value("${chat.docs.live-steer-message:" + DEFAULT_DOCS_LIVE_STEER_MESSAGE + "}")
+    private String docsLiveSteerMessage;
 
     @Value("${rag.partial.gap-fill.enabled:true}")
     private boolean ragPartialGapFillEnabled;
@@ -258,7 +284,8 @@ public class ComprehendChatService {
             guidedHandled = true;
             chatResponse = guidedAttempt.response();
             route = "guided";
-            routingSummary.setRouter("skipped (guided)");
+            routingSummary.setPythonRoute("SKIP");
+            routingSummary.setPlanner("SKIP");
             routingSummary.setRoute("guided");
             routingSummary.setHandler("guided-search");
             long piiStartMs = System.currentTimeMillis();
@@ -283,7 +310,8 @@ public class ComprehendChatService {
                 LexLiveRouteResult lexResult = pendingLexAttempt.lexResult();
                 chatResponse = lexResult.chatResponse();
                 route = "live";
-                routingSummary.setRouter("skipped (pending-lex)");
+                routingSummary.setPythonRoute("SKIP");
+                routingSummary.setPlanner("SKIP");
                 routingSummary.setRoute("live");
                 routingSummary.setHandler("lex-pending");
                 if (lexResult.fallbackToDoc()) {
@@ -302,8 +330,9 @@ public class ComprehendChatService {
             RequestUnderstandResult understood = null;
             boolean routerHandled = false;
 
-            if (mode == ChatMode.M3) {
-                if (requestRouterEnabled) {
+            if (requestRouterEnabled) {
+                if (mode == ChatMode.DOCS) {
+                    routingSummary.setPythonRoute("SKIP");
                     UnderstandRun understandRun = runUnderstandRequest(request, originalUserText);
                     protectionSession = understandRun.protectionSession();
                     sanitizedUserText = understandRun.sanitizedUserText();
@@ -311,145 +340,165 @@ public class ComprehendChatService {
                     piiDetectionMs = understandRun.piiDetectionMs();
                     routeDecisionMs = understandRun.routeDecisionMs();
                     understood = understandRun.understood();
-                    recordUnderstandResult(routingSummary, understood);
+                    recordPlannerResult(routingSummary, understood);
                     if (understood != null && understood.usage() != null) {
                         routerPromptTokens = nullSafeInt(understood.usage().getPromptTokens());
                         routerCompletionTokens = nullSafeInt(understood.usage().getCompletionTokens());
                     }
                     if (understood != null) {
-                        RequestUnderstandType type = understood.type();
-                        if (type == RequestUnderstandType.CONVERSATIONAL) {
-                            chatResponse = buildRouterUserResponse(
-                                    workingRequest, understood, "conversational");
-                            route = "conversational";
-                            routerHandled = true;
-                            routingSummary.setRoute("conversational");
-                            routingSummary.setHandler("request-router");
-                        } else if (type == RequestUnderstandType.RAG || type == RequestUnderstandType.NON_M3) {
-                            log.info("routerType={} overriddenByMode=m3", type);
-                            chatResponse = buildM3LiveSteerResponse(workingRequest, understood);
-                            route = "m3_live_steer";
-                            routerHandled = true;
-                            routingSummary.setOverride(type.name() + " -> m3_live_steer");
-                            routingSummary.setRoute("m3_live_steer");
-                            routingSummary.setHandler("request-router");
-                        } else {
-                            route = ROUTE_LIVE;
-                            routingSummary.setRoute(ROUTE_LIVE);
-                            routingSummary.setHandler(lexService.isEnabled() ? "lex" : "live/python-chat");
+                        PlannerRouteOutcome docsOutcome = applyDocsPlannerOutcome(
+                                request,
+                                originalUserText,
+                                workingRequest,
+                                protectionSession,
+                                understood,
+                                routingSummary
+                        );
+                        routerHandled = docsOutcome.handled();
+                        route = docsOutcome.route();
+                        chatResponse = docsOutcome.chatResponse();
+                        DocRouteSideEffectBundle docFx = bundleDocRouteSideEffects(docsOutcome.docResult());
+                        if (docFx != null) {
+                            sourcesForSuggestions = docFx.sourcesForSuggestions();
+                            responseSources = docFx.responseSources();
+                            retrievalReason = docFx.retrievalReason();
+                            retrievalTimeMs = docFx.retrievalTimeMs();
+                            maxScore = docFx.maxScore();
+                            queryRewriteMs = docFx.queryRewriteMs();
+                            retrievalMs = docFx.retrievalMs();
+                            retrievalPythonMs = docFx.retrievalPythonMs();
+                            preRetrievalGlueMs = docFx.preRetrievalGlueMs();
+                            groundedMs = docFx.groundedMs();
+                            gapFillMs = docFx.gapFillMs();
+                            generalGptMs = docFx.generalGptMs();
+                            groundedTokens = docFx.groundedTokens();
+                            gapFillTokens = docFx.gapFillTokens();
+                            generalGptTokens = docFx.generalGptTokens();
                         }
                     } else {
+                        route = "rag";
+                        routingSummary.setPlanner("ERROR");
+                        routingSummary.setRoute("rag");
+                        routingSummary.setHandler("documentation/retrieval");
+                    }
+                } else {
+                    String pythonRoute = resolvePythonRouteValue(originalUserText, routingSummary);
+                    if (ROUTE_LIVE.equalsIgnoreCase(pythonRoute)) {
+                        routingSummary.setPlanner("SKIP");
                         route = ROUTE_LIVE;
                         routingSummary.setRoute(ROUTE_LIVE);
                         routingSummary.setHandler(lexService.isEnabled() ? "lex" : "live/python-chat");
-                    }
-                } else {
-                    route = ROUTE_LIVE;
-                    routingSummary.setRouter("skipped (m3-hard-live)");
-                    routingSummary.setRoute(ROUTE_LIVE);
-                    routingSummary.setHandler(lexService.isEnabled() ? "lex" : "live/python-chat");
-                }
-            } else if (requestRouterEnabled) {
-                UnderstandRun understandRun = runUnderstandRequest(request, originalUserText);
-                protectionSession = understandRun.protectionSession();
-                sanitizedUserText = understandRun.sanitizedUserText();
-                workingRequest = understandRun.workingRequest();
-                piiDetectionMs = understandRun.piiDetectionMs();
-                routeDecisionMs = understandRun.routeDecisionMs();
-                understood = understandRun.understood();
-                recordUnderstandResult(routingSummary, understood);
-                if (understood != null && understood.usage() != null) {
-                    routerPromptTokens = nullSafeInt(understood.usage().getPromptTokens());
-                    routerCompletionTokens = nullSafeInt(understood.usage().getCompletionTokens());
-                }
-
-                if (understood != null) {
-                    RequestUnderstandType type = understood.type();
-                    if (mode == ChatMode.DOCS && type == RequestUnderstandType.LIVE_M3) {
-                        log.info("routerType=LIVE_M3 overriddenByMode=docs");
-                        routingSummary.setOverride("LIVE_M3 -> RAG");
-                        type = RequestUnderstandType.RAG;
-                    }
-                    switch (type) {
-                        case CONVERSATIONAL -> {
-                            chatResponse = buildRouterUserResponse(
-                                    workingRequest, understood, "conversational");
-                            route = "conversational";
-                            routerHandled = true;
-                            routingSummary.setRoute("conversational");
-                            routingSummary.setHandler("request-router");
+                    } else if (mode == ChatMode.M3 && pythonRoute == null) {
+                        routingSummary.setPlanner("SKIP");
+                        routingSummary.setFallback("M3_SAFE");
+                        chatResponse = buildM3ClassifierErrorResponse(request);
+                        route = "m3_classifier_error";
+                        routerHandled = true;
+                        routingSummary.setRoute("m3_classifier_error");
+                        routingSummary.setHandler("python-route");
+                    } else {
+                        if (pythonRoute == null) {
+                            routingSummary.setFallback("RAG");
                         }
-                        case NON_M3 -> {
-                            if (allowExternalFallback(request)) {
-                                chatResponse = buildRouterUserResponse(
-                                        workingRequest, understood, "general_redirect");
-                                route = "general_redirect";
-                                routingSummary.setRoute("general_redirect");
+                        UnderstandRun understandRun = runUnderstandRequest(request, originalUserText);
+                        protectionSession = understandRun.protectionSession();
+                        sanitizedUserText = understandRun.sanitizedUserText();
+                        workingRequest = understandRun.workingRequest();
+                        piiDetectionMs = understandRun.piiDetectionMs();
+                        routeDecisionMs = understandRun.routeDecisionMs();
+                        understood = understandRun.understood();
+                        recordPlannerResult(routingSummary, understood);
+                        if (understood != null && understood.usage() != null) {
+                            routerPromptTokens = nullSafeInt(understood.usage().getPromptTokens());
+                            routerCompletionTokens = nullSafeInt(understood.usage().getCompletionTokens());
+                        }
+                        if (understood != null) {
+                            if (mode == ChatMode.AUTO) {
+                                PlannerRouteOutcome autoOutcome = applyAutoPlannerOutcome(
+                                        request,
+                                        originalUserText,
+                                        workingRequest,
+                                        protectionSession,
+                                        understood,
+                                        routingSummary
+                                );
+                                routerHandled = autoOutcome.handled();
+                                route = autoOutcome.route();
+                                chatResponse = autoOutcome.chatResponse();
+                                DocRouteSideEffectBundle docFx = bundleDocRouteSideEffects(autoOutcome.docResult());
+                                if (docFx != null) {
+                                    sourcesForSuggestions = docFx.sourcesForSuggestions();
+                                    responseSources = docFx.responseSources();
+                                    retrievalReason = docFx.retrievalReason();
+                                    retrievalTimeMs = docFx.retrievalTimeMs();
+                                    maxScore = docFx.maxScore();
+                                    queryRewriteMs = docFx.queryRewriteMs();
+                                    retrievalMs = docFx.retrievalMs();
+                                    retrievalPythonMs = docFx.retrievalPythonMs();
+                                    preRetrievalGlueMs = docFx.preRetrievalGlueMs();
+                                    groundedMs = docFx.groundedMs();
+                                    gapFillMs = docFx.gapFillMs();
+                                    generalGptMs = docFx.generalGptMs();
+                                    groundedTokens = docFx.groundedTokens();
+                                    gapFillTokens = docFx.gapFillTokens();
+                                    generalGptTokens = docFx.generalGptTokens();
+                                }
                             } else {
-                                chatResponse = buildDocsOnlyInsufficientResponse(
-                                        workingRequest, understood.usage());
-                                route = "rag";
-                                routingSummary.setRoute("rag");
+                                PlannerRouteOutcome m3Outcome = applyM3PlannerOutcome(
+                                        workingRequest,
+                                        understood,
+                                        routingSummary
+                                );
+                                routerHandled = m3Outcome.handled();
+                                route = m3Outcome.route();
+                                chatResponse = m3Outcome.chatResponse();
                             }
-                            routingSummary.setHandler("request-router");
+                        } else if (mode == ChatMode.M3) {
+                            routingSummary.setPlanner("ERROR");
+                            chatResponse = buildM3ClassifierErrorResponse(request);
+                            route = "m3_classifier_error";
                             routerHandled = true;
-                        }
-                        case LIVE_M3 -> {
-                            route = ROUTE_LIVE;
-                            routingSummary.setRoute(ROUTE_LIVE);
-                            routingSummary.setHandler(lexService.isEnabled() ? "lex" : "live/python-chat");
-                        }
-                        case RAG -> {
+                            routingSummary.setRoute("m3_classifier_error");
+                            routingSummary.setHandler("planner");
+                        } else {
                             route = "rag";
+                            routingSummary.setPlanner("ERROR");
                             routingSummary.setRoute("rag");
                             routingSummary.setHandler("documentation/retrieval");
-                            DocRouteResult docResult = handleDocumentationRoute(
-                                    workingRequest,
-                                    originalUserText,
-                                    protectionSession,
-                                    understood.queries() != null ? understood.queries() : List.of(),
-                                    understood.usage()
-                            );
-                            chatResponse = docResult.chatResponse();
-                            sourcesForSuggestions = docResult.sourcesForSuggestions();
-                            responseSources = docResult.responseSources();
-                            retrievalReason = docResult.retrievalReason();
-                            retrievalTimeMs = docResult.retrievalTimeMs();
-                            maxScore = docResult.maxScore();
-                            queryRewriteMs = nullSafeInt(docResult.queryRewriteTimeMs());
-                            retrievalMs = nullSafeInt(docResult.retrievalSpringMs());
-                            retrievalPythonMs = nullSafeInt(docResult.retrievalPythonMs());
-                            preRetrievalGlueMs = nullSafeInt(docResult.preRetrievalGlueMs());
-                            groundedMs = nullSafeInt(docResult.groundedTimeMs());
-                            gapFillMs = nullSafeInt(docResult.gapFillTimeMs());
-                            generalGptMs = nullSafeInt(docResult.generalGptTimeMs());
-                            groundedTokens = docResult.groundedTokens();
-                            gapFillTokens = docResult.gapFillTokens();
-                            generalGptTokens = docResult.generalGptTokens();
-                            routerHandled = true;
                         }
                     }
-                } else if (mode == ChatMode.DOCS) {
-                    route = "rag";
-                    routingSummary.setRoute("rag");
-                    routingSummary.setHandler("documentation/retrieval");
-                } else {
-                    PythonRouteResponse routeResponse = pythonRagService.route(originalUserText);
-                    route = routeResponse != null ? routeResponse.getRoute() : "rag";
-                    routingSummary.setRoute(route);
-                    routingSummary.setHandler(ROUTE_LIVE.equalsIgnoreCase(route)
-                            ? (lexService.isEnabled() ? "lex" : "live/python-chat")
-                            : "documentation/retrieval");
                 }
             } else if (mode == ChatMode.DOCS) {
+                routingSummary.setPythonRoute("SKIP");
+                routingSummary.setPlanner("SKIP");
                 route = "rag";
-                routingSummary.setRouter("skipped (router-disabled)");
                 routingSummary.setRoute("rag");
                 routingSummary.setHandler("documentation/retrieval");
+            } else if (mode == ChatMode.M3) {
+                String pythonRoute = resolvePythonRouteValue(originalUserText, routingSummary);
+                routingSummary.setPlanner("SKIP");
+                if (ROUTE_LIVE.equalsIgnoreCase(pythonRoute)) {
+                    route = ROUTE_LIVE;
+                    routingSummary.setRoute(ROUTE_LIVE);
+                    routingSummary.setHandler(lexService.isEnabled() ? "lex" : "live/python-chat");
+                } else {
+                    chatResponse = buildM3ClassifierErrorResponse(request);
+                    route = "m3_classifier_error";
+                    routerHandled = true;
+                    routingSummary.setRoute("m3_classifier_error");
+                    routingSummary.setHandler("python-route");
+                }
             } else {
                 PythonRouteResponse routeResponse = pythonRagService.route(originalUserText);
                 route = routeResponse != null ? routeResponse.getRoute() : "rag";
-                routingSummary.setRouter("skipped (router-disabled)");
+                if (routeResponse != null && ROUTE_LIVE.equalsIgnoreCase(routeResponse.getRoute())) {
+                    routingSummary.setPythonRoute("LIVE");
+                } else if (routeResponse != null) {
+                    routingSummary.setPythonRoute("RAG");
+                } else {
+                    routingSummary.setPythonRoute("ERROR");
+                }
+                routingSummary.setPlanner("SKIP");
                 routingSummary.setRoute(route);
                 routingSummary.setHandler(ROUTE_LIVE.equalsIgnoreCase(route)
                         ? (lexService.isEnabled() ? "lex" : "live/python-chat")
@@ -466,7 +515,7 @@ public class ComprehendChatService {
                     route,
                     ROUTE_LIVE.equalsIgnoreCase(route)
                             ? (lexService.isEnabled() ? "live/lex" : "live/python-chat")
-                            : (routerHandled ? "request-router" : "documentation/retrieval"),
+                            : (routerHandled ? "planner" : "documentation/retrieval"),
                     originalUserText != null ? originalUserText.length() : 0
             );
 
@@ -1669,16 +1718,225 @@ public class ComprehendChatService {
         return new DocAnswerOutcome(general, RETRIEVAL_RAG_NO_ANSWER, 0, generalTimeMs, 0, generalTokens);
     }
 
-    private void recordUnderstandResult(RoutingSummaryState summary, RequestUnderstandResult understood) {
+    private void recordPlannerResult(RoutingSummaryState summary, RequestUnderstandResult understood) {
         if (understood != null) {
-            String model = openAiModel == null || openAiModel.isBlank() ? "openai" : openAiModel;
-            summary.setRouter("OpenAI / " + model);
+            summary.setPlanner(understood.type().name());
             summary.setType(understood.type());
-            logUsage("Router", understood.usage(), 0L);
+            logUsage("Planner", understood.usage(), 0L);
         } else {
-            summary.setRouter("skipped (router-error)");
+            summary.setPlanner("ERROR");
             summary.setTypeRaw("-");
         }
+    }
+
+    private String resolvePythonRouteValue(String message, RoutingSummaryState summary) {
+        try {
+            PythonRouteResponse response = pythonRagService.route(message);
+            if (response == null || response.getRoute() == null || response.getRoute().isBlank()) {
+                summary.setPythonRoute("ERROR");
+                return null;
+            }
+            if (ROUTE_LIVE.equalsIgnoreCase(response.getRoute())) {
+                summary.setPythonRoute("LIVE");
+                return ROUTE_LIVE;
+            }
+            summary.setPythonRoute("RAG");
+            return "rag";
+        } catch (Exception e) {
+            log.warn("Python route failed: {}", e.getMessage());
+            summary.setPythonRoute("ERROR");
+            return null;
+        }
+    }
+
+    private PlannerRouteOutcome applyAutoPlannerOutcome(
+            ChatRequest request,
+            String originalUserText,
+            ChatRequest workingRequest,
+            ProtectionSession protectionSession,
+            RequestUnderstandResult understood,
+            RoutingSummaryState routingSummary
+    ) {
+        RequestUnderstandType type = understood.type();
+        return switch (type) {
+            case CONVERSATIONAL -> {
+                routingSummary.setRoute("conversational");
+                routingSummary.setHandler("planner");
+                yield new PlannerRouteOutcome(
+                        true,
+                        "conversational",
+                        buildRouterUserResponse(workingRequest, understood, "conversational"),
+                        null
+                );
+            }
+            case NON_M3 -> {
+                ChatResponse response;
+                String routeName;
+                if (allowExternalFallback(request)) {
+                    response = buildRouterUserResponse(workingRequest, understood, "general_redirect");
+                    routeName = "general_redirect";
+                } else {
+                    response = buildDocsOnlyInsufficientResponse(workingRequest, understood.usage());
+                    routeName = "rag";
+                }
+                routingSummary.setRoute(routeName);
+                routingSummary.setHandler("planner");
+                yield new PlannerRouteOutcome(true, routeName, response, null);
+            }
+            case LIVE_M3 -> {
+                log.info("plannerType=LIVE_M3 resolvedByPolicy=rag (python=RAG)");
+                routingSummary.setOverride("LIVE_M3 -> RAG");
+                routingSummary.setRoute("rag");
+                routingSummary.setHandler("documentation/retrieval");
+                DocRouteResult docResult = handleDocumentationRoute(
+                        workingRequest,
+                        originalUserText,
+                        protectionSession,
+                        understood.queries() != null ? understood.queries() : List.of(),
+                        understood.usage()
+                );
+                yield new PlannerRouteOutcome(true, "rag", docResult.chatResponse(), docResult);
+            }
+            case RAG -> {
+                routingSummary.setRoute("rag");
+                routingSummary.setHandler("documentation/retrieval");
+                DocRouteResult docResult = handleDocumentationRoute(
+                        workingRequest,
+                        originalUserText,
+                        protectionSession,
+                        understood.queries() != null ? understood.queries() : List.of(),
+                        understood.usage()
+                );
+                yield new PlannerRouteOutcome(true, "rag", docResult.chatResponse(), docResult);
+            }
+        };
+    }
+
+    private PlannerRouteOutcome applyM3PlannerOutcome(
+            ChatRequest workingRequest,
+            RequestUnderstandResult understood,
+            RoutingSummaryState routingSummary
+    ) {
+        RequestUnderstandType type = understood.type();
+        return switch (type) {
+            case CONVERSATIONAL -> {
+                routingSummary.setRoute("conversational");
+                routingSummary.setHandler("planner");
+                yield new PlannerRouteOutcome(
+                        true,
+                        "conversational",
+                        buildRouterUserResponse(workingRequest, understood, "conversational"),
+                        null
+                );
+            }
+            case NON_M3 -> {
+                routingSummary.setRoute("m3_non_m3_steer");
+                routingSummary.setHandler("planner");
+                yield new PlannerRouteOutcome(
+                        true,
+                        "m3_non_m3_steer",
+                        buildM3NonM3Response(workingRequest, understood),
+                        null
+                );
+            }
+            case RAG, LIVE_M3 -> {
+                if (type == RequestUnderstandType.LIVE_M3) {
+                    log.info("plannerType=LIVE_M3 resolvedByPolicy=m3_docs_steer (python=RAG)");
+                    routingSummary.setOverride("LIVE_M3 -> m3_docs_steer");
+                }
+                routingSummary.setRoute("m3_docs_steer");
+                routingSummary.setHandler("planner");
+                yield new PlannerRouteOutcome(
+                        true,
+                        "m3_docs_steer",
+                        buildM3DocsSteerResponse(workingRequest, understood),
+                        null
+                );
+            }
+        };
+    }
+
+    private PlannerRouteOutcome applyDocsPlannerOutcome(
+            ChatRequest request,
+            String originalUserText,
+            ChatRequest workingRequest,
+            ProtectionSession protectionSession,
+            RequestUnderstandResult understood,
+            RoutingSummaryState routingSummary
+    ) {
+        RequestUnderstandType type = understood.type();
+        return switch (type) {
+            case CONVERSATIONAL -> {
+                routingSummary.setRoute("conversational");
+                routingSummary.setHandler("planner");
+                yield new PlannerRouteOutcome(
+                        true,
+                        "conversational",
+                        buildRouterUserResponse(workingRequest, understood, "conversational"),
+                        null
+                );
+            }
+            case NON_M3 -> {
+                ChatResponse response;
+                String routeName;
+                if (allowExternalFallback(request)) {
+                    response = buildRouterUserResponse(workingRequest, understood, "general_redirect");
+                    routeName = "general_redirect";
+                } else {
+                    response = buildDocsOnlyInsufficientResponse(workingRequest, understood.usage());
+                    routeName = "rag";
+                }
+                routingSummary.setRoute(routeName);
+                routingSummary.setHandler("planner");
+                yield new PlannerRouteOutcome(true, routeName, response, null);
+            }
+            case LIVE_M3 -> {
+                log.info("plannerType=LIVE_M3 resolvedByPolicy=docs_live_steer");
+                routingSummary.setRoute("docs_live_steer");
+                routingSummary.setHandler("planner");
+                yield new PlannerRouteOutcome(
+                        true,
+                        "docs_live_steer",
+                        buildDocsLiveSteerResponse(workingRequest, understood),
+                        null
+                );
+            }
+            case RAG -> {
+                routingSummary.setRoute("rag");
+                routingSummary.setHandler("documentation/retrieval");
+                DocRouteResult docResult = handleDocumentationRoute(
+                        workingRequest,
+                        originalUserText,
+                        protectionSession,
+                        understood.queries() != null ? understood.queries() : List.of(),
+                        understood.usage()
+                );
+                yield new PlannerRouteOutcome(true, "rag", docResult.chatResponse(), docResult);
+            }
+        };
+    }
+
+    private DocRouteSideEffectBundle bundleDocRouteSideEffects(DocRouteResult docResult) {
+        if (docResult == null) {
+            return null;
+        }
+        return new DocRouteSideEffectBundle(
+                docResult.sourcesForSuggestions(),
+                docResult.responseSources(),
+                docResult.retrievalReason(),
+                docResult.retrievalTimeMs(),
+                docResult.maxScore(),
+                nullSafeInt(docResult.queryRewriteTimeMs()),
+                nullSafeInt(docResult.retrievalSpringMs()),
+                nullSafeInt(docResult.retrievalPythonMs()),
+                nullSafeInt(docResult.preRetrievalGlueMs()),
+                nullSafeInt(docResult.groundedTimeMs()),
+                nullSafeInt(docResult.gapFillTimeMs()),
+                nullSafeInt(docResult.generalGptTimeMs()),
+                docResult.groundedTokens(),
+                docResult.gapFillTokens(),
+                docResult.generalGptTokens()
+        );
     }
 
     private UnderstandRun runUnderstandRequest(ChatRequest request, String originalUserText) {
@@ -1705,12 +1963,12 @@ public class ComprehendChatService {
             if (e.isAiServiceUnavailable()) {
                 throw e;
             }
-            log.warn("Request router failed: {}.", e.getMessage());
+            log.warn("RAG-path planner failed: {}.", e.getMessage());
         } catch (Exception e) {
             if (AiServiceErrors.isQuotaOrCreditExhaustion(e.getMessage())) {
                 throw AiServiceErrors.unavailable(e.getMessage());
             }
-            log.warn("Request router failed: {}.", e.getMessage());
+            log.warn("RAG-path planner failed: {}.", e.getMessage());
         }
         Instant understandEnd = Instant.now();
         long understandMs = RequestTimingLog.durationMs(understandStart, understandEnd);
@@ -1718,17 +1976,54 @@ public class ComprehendChatService {
         return new UnderstandRun(understood, session, llmRequest, llmText, piiMs, understandMs);
     }
 
-    private ChatResponse buildM3LiveSteerResponse(ChatRequest request, RequestUnderstandResult understood) {
-        String steer = m3LiveSteerMessage != null && !m3LiveSteerMessage.isBlank()
-                ? m3LiveSteerMessage
-                : DEFAULT_M3_LIVE_STEER_MESSAGE;
+    private ChatResponse buildM3DocsSteerResponse(ChatRequest request, RequestUnderstandResult understood) {
+        String steer = m3DocsSteerMessage != null && !m3DocsSteerMessage.isBlank()
+                ? m3DocsSteerMessage
+                : DEFAULT_M3_DOCS_STEER_MESSAGE;
+        return buildSteerResponse(request, understood, steer, "m3_docs_steer");
+    }
+
+    private ChatResponse buildM3NonM3Response(ChatRequest request, RequestUnderstandResult understood) {
+        String steer = m3NonM3Message != null && !m3NonM3Message.isBlank()
+                ? m3NonM3Message
+                : DEFAULT_M3_NON_M3_MESSAGE;
+        return buildSteerResponse(request, understood, steer, "m3_non_m3_steer");
+    }
+
+    private ChatResponse buildM3ClassifierErrorResponse(ChatRequest request) {
+        String steer = m3ClassifierErrorMessage != null && !m3ClassifierErrorMessage.isBlank()
+                ? m3ClassifierErrorMessage
+                : DEFAULT_M3_CLASSIFIER_ERROR_MESSAGE;
+        return buildSteerResponse(request, null, steer, "m3_classifier_error");
+    }
+
+    private ChatResponse buildDocsLiveSteerResponse(ChatRequest request, RequestUnderstandResult understood) {
+        String steer = docsLiveSteerMessage != null && !docsLiveSteerMessage.isBlank()
+                ? docsLiveSteerMessage
+                : DEFAULT_DOCS_LIVE_STEER_MESSAGE;
+        return buildSteerResponse(request, understood, steer, "docs_live_steer");
+    }
+
+    private ChatResponse buildSteerResponse(
+            ChatRequest request,
+            RequestUnderstandResult understood,
+            String steer,
+            String actionTaken
+    ) {
         ChatResponse chatResponse = new ChatResponse(steer, false);
         chatResponse.setHistory(request.getHistory());
-        chatResponse.setActionTaken("m3_live_steer");
+        chatResponse.setActionTaken(actionTaken);
         if (understood != null) {
             chatResponse.setOpenAiUsage(understood.usage());
         }
         return chatResponse;
+    }
+
+    private ChatResponse buildM3LiveSteerResponse(ChatRequest request, RequestUnderstandResult understood) {
+        String steer = m3LiveSteerMessage != null && !m3LiveSteerMessage.isBlank()
+                ? m3LiveSteerMessage
+                : DEFAULT_M3_LIVE_STEER_MESSAGE;
+        return buildSteerResponse(request, understood, steer, "m3_live_steer");
     }
 
     private ChatResponse buildRouterUserResponse(
@@ -1955,6 +2250,33 @@ public class ComprehendChatService {
         copy.setHistory(originalRequest.getHistory());
         copy.setM3ClientReport(originalRequest.getM3ClientReport());
         return copy;
+    }
+
+    private record PlannerRouteOutcome(
+            boolean handled,
+            String route,
+            ChatResponse chatResponse,
+            DocRouteResult docResult
+    ) {
+    }
+
+    private record DocRouteSideEffectBundle(
+            List<SourceItem> sourcesForSuggestions,
+            List<SourceItem> responseSources,
+            String retrievalReason,
+            Integer retrievalTimeMs,
+            Float maxScore,
+            Integer queryRewriteMs,
+            Integer retrievalMs,
+            Integer retrievalPythonMs,
+            Integer preRetrievalGlueMs,
+            Integer groundedMs,
+            Integer gapFillMs,
+            Integer generalGptMs,
+            Integer groundedTokens,
+            Integer gapFillTokens,
+            Integer generalGptTokens
+    ) {
     }
 
     private record DocRouteResult(
