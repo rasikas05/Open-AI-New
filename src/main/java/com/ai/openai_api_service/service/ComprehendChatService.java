@@ -191,6 +191,8 @@ public class ComprehendChatService {
         int generalGptTokens = 0;
         int routerPromptTokens = 0;
         int routerCompletionTokens = 0;
+        int suggestionPromptTokens = 0;
+        int suggestionCompletionTokens = 0;
 
         ComprehendChatTimingSnapshot timingSnapshot = currentTimingSnapshot();
         if (timingSnapshot != null) {
@@ -674,11 +676,13 @@ public class ComprehendChatService {
         SuggestionResult suggestionResult = suggestionEngineService.generateSuggestions(context);
         chatResponse.setSuggestions(suggestionResult.getSuggestions());
         chatResponse.setSuggestionDetails(suggestionResult.getDetails());
+        suggestionPromptTokens = suggestionResult.getPromptTokens();
+        suggestionCompletionTokens = suggestionResult.getCompletionTokens();
         Instant suggestionsEnd = Instant.now();
         suggestionsMs = RequestTimingLog.durationMs(suggestionsStart, suggestionsEnd);
         RequestTimingLog.logStage("suggestions", suggestionsStart, suggestionsEnd);
 
-        log.info(
+        log.debug(
                 "Spring chat complete | session={} | route={} | action={} | retrievalReason={} | collecting={} | tokens={}",
                 request.getSessionId(),
                 route,
@@ -687,7 +691,7 @@ public class ComprehendChatService {
                 chatResponse.getCollectingTool(),
                 consumedTokens
         );
-        log.info(
+        log.debug(
                 "Request Token Summary | routerPrompt={} | routerCompletion={} | grounded={} | gapFill={} | generalGPT={} | "
                         + "prompt={} | completion={} | total={}",
                 routerPromptTokens,
@@ -703,13 +707,13 @@ public class ComprehendChatService {
         Instant serviceEnd = Instant.now();
         long totalRequestMs = RequestTimingLog.durationMs(serviceStart, serviceEnd);
         long httpTaxMs = Math.max(0L, retrievalMs - retrievalPythonMs);
-        log.info(
+        log.debug(
                 "Retrieval Clocks | springHttpMs={} | pythonInternalMs={} | httpTaxMs={}",
                 retrievalMs,
                 retrievalPythonMs,
                 httpTaxMs
         );
-        log.info(
+        log.debug(
                 "Request Timing Summary | pii={}ms | route={}ms | rewrite={}ms | retrieval={}ms | grounded={}ms | "
                         + "gapFill={}ms | generalGPT={}ms | persistence={}ms | suggestions={}ms | liveHistory={}ms | "
                         + "restore={}ms | preRetrievalGlue={}ms | total={}ms | totalScope=serviceWall",
@@ -776,15 +780,6 @@ public class ComprehendChatService {
             }
             long wallMs = RequestTimingLog.durationMs(serviceStart, Instant.now());
             RoutingSummaryLog.log(routingSummary, wallMs);
-            log.info(ChatRequestSummaryLog.formatChat(
-                    routingSummary.getRequestText(),
-                    routingSummary.getMode(),
-                    routingSummary.getType(),
-                    routingSummary.getRoute(),
-                    routingSummary.getHandler(),
-                    routingSummary.getIntent(),
-                    routingSummary.getAction()
-            ));
             log.info(ChatRequestSummaryLog.formatTiming(
                     piiDetectionMs,
                     routeDecisionMs,
@@ -795,12 +790,13 @@ public class ComprehendChatService {
                     suggestionsMs,
                     wallMs
             ));
-            int tokenTotal = routerPromptTokens + routerCompletionTokens + groundedTokens + gapFillTokens;
+            int suggestionTokens = suggestionPromptTokens + suggestionCompletionTokens;
+            int tokenTotal = routerPromptTokens + routerCompletionTokens + groundedTokens + gapFillTokens + suggestionTokens;
             log.info(ChatRequestSummaryLog.formatTokens(
                     routerPromptTokens + routerCompletionTokens,
                     groundedTokens,
                     gapFillTokens,
-                    0,
+                    suggestionTokens,
                     tokenTotal
             ));
             RoutingCallTracker.clear();
@@ -1321,7 +1317,7 @@ public class ComprehendChatService {
                     conversationId,
                     retrievalStageMs
             );
-            log.info(
+            log.debug(
                     "Retrieval Clocks | springHttpMs={} | pythonInternalMs={} | httpTaxMs={}",
                     retrievalStageMs,
                     retrievalPythonMs,

@@ -84,38 +84,17 @@ public class SuggestionEngineService {
                 : LlmSuggestionBatch.empty();
         long llmWallMs = Duration.between(llmStart, Instant.now()).toMillis();
         List<SuggestionItem> llmItems = llmBatch.items();
-
-        List<SuggestionItem> topicItems = List.of();
-        List<SuggestionItem> ruleItems = List.of();
-        List<SuggestionItem> genericItems = List.of();
         List<SuggestionItem> merged = new ArrayList<>();
         if (!llmItems.isEmpty()) {
             merged.addAll(llmItems);
-        } else {
-            topicItems = buildTopicBasedItems(context, targetCount);
-            ruleItems = buildRuleItems(userMessage, targetCount);
-            if (!topicItems.isEmpty()) {
-                merged.addAll(topicItems);
-            } else if (!ruleItems.isEmpty()) {
-                merged.addAll(ruleItems);
-            }
-            if (merged.isEmpty()) {
-                genericItems = buildGenericItems(targetCount);
-                merged.addAll(genericItems);
-            }
         }
 
         List<SuggestionItem> ranked = normalizeAndRankSuggestions(merged, targetCount);
         long totalMs = Duration.between(totalStart, Instant.now()).toMillis();
-        int deterministicCount = topicItems.size() + ruleItems.size() + genericItems.size();
-        log.info(
-                "Suggestion Summary | totalMs={} | llmWallMs={} | skipLlm=false | deterministicCount={} | topicCount={} | ruleCount={} | genericCount={} | llmCount={} | llmCacheHit={} | llmCalled={} | generatedCount={} | returnedCount={} | model={}",
+        log.debug(
+                "Suggestion Summary | totalMs={} | llmWallMs={} | skipLlm=false | deterministicCount=0 | topicCount=0 | ruleCount=0 | genericCount=0 | llmCount={} | llmCacheHit={} | llmCalled={} | generatedCount={} | returnedCount={} | model={}",
                 totalMs,
                 llmWallMs,
-                deterministicCount,
-                topicItems.size(),
-                ruleItems.size(),
-                genericItems.size(),
                 llmItems.size(),
                 llmBatch.cacheHit(),
                 llmBatch.called(),
@@ -123,7 +102,7 @@ public class SuggestionEngineService {
                 ranked.size(),
                 llmBatch.model()
         );
-        return mapToResult(ranked);
+        return mapToResult(ranked, llmBatch.promptTokens(), llmBatch.completionTokens());
     }
 
     private List<SuggestionItem> buildTopicBasedItems(SuggestionContext context, int maxCount) {
@@ -275,16 +254,24 @@ public class SuggestionEngineService {
             List<SuggestionItem> items = cached.stream()
                     .map(text -> new SuggestionItem(text, SuggestionCategory.RELATED_TOPIC, 0.55d, "LLM"))
                     .collect(Collectors.toList());
-            return new LlmSuggestionBatch(items, true, false, "cache");
+            return new LlmSuggestionBatch(items, true, false, "cache", 0, 0);
         }
 
-        List<SuggestionItem> suggestions = suggestionLLMService.suggest(context, 1, maxCount);
+        SuggestionLLMService.SuggestionLlmOutcome outcome = suggestionLLMService.suggestWithUsage(context, 1, maxCount);
+        List<SuggestionItem> suggestions = outcome.items();
         if (!suggestions.isEmpty()) {
             suggestionCacheService.put(cacheKey, suggestions.stream()
                     .map(SuggestionItem::getText)
                     .collect(Collectors.toList()));
         }
-        return new LlmSuggestionBatch(suggestions, false, true, openaiModel);
+        return new LlmSuggestionBatch(
+                suggestions,
+                false,
+                true,
+                openaiModel,
+                outcome.promptTokens(),
+                outcome.completionTokens()
+        );
     }
 
     private List<SuggestionItem> getLlmSuggestions(SuggestionContext context, int maxCount) {
@@ -295,10 +282,12 @@ public class SuggestionEngineService {
             List<SuggestionItem> items,
             boolean cacheHit,
             boolean called,
-            String model
+            String model,
+            int promptTokens,
+            int completionTokens
     ) {
         static LlmSuggestionBatch empty() {
-            return new LlmSuggestionBatch(List.of(), false, false, null);
+            return new LlmSuggestionBatch(List.of(), false, false, null, 0, 0);
         }
     }
 
@@ -365,12 +354,6 @@ public class SuggestionEngineService {
                 return null;
             }
             
-            clean = clean.replaceAll("[?.!]+$", "").trim();
-            if (clean.isBlank()) {
-                return null;
-            }
-            
-            // Remove trailing incomplete words
             clean = clean.replaceAll("\\s+(in|of|for|with|and|to|by|from)\\s*$", "").trim();
             if (clean.isBlank()) {
                 log.debug("Normalization: filtered incomplete phrase: {}", item.getText());
@@ -393,12 +376,7 @@ public class SuggestionEngineService {
             }
 
             SuggestionCategory category = item.getCategory() == null ? SuggestionCategory.GENERIC : item.getCategory();
-            String userCentric = transformToUserCentricSuggestion(clean, category);
-            if (userCentric == null || userCentric.isBlank()) {
-                log.debug("Normalization: transformation resulted in empty text");
-                return null;
-            }
-            return new SuggestionItem(userCentric, category, item.getScore(), item.getSource());
+            return new SuggestionItem(clean, category, item.getScore(), item.getSource());
         } catch (Exception e) {
             log.error("Error normalizing suggestion item: {}", item, e);
             return null;
@@ -507,12 +485,19 @@ public class SuggestionEngineService {
                 return false;
             }
             
-            // Minimum 4 words and 15 characters for meaningful suggestion
             String[] words = text.split("\\s+");
             int wordCount = words.length;
-            
-            if (text.length() < 15 || wordCount < 4) {
-                log.debug("Validation: rejecting short suggestion (chars={}, words={}): {}", text.length(), wordCount, text);
+            if (wordCount > SuggestionLLMService.SUGGESTION_MAX_WORDS
+                    || text.length() > SuggestionLLMService.SUGGESTION_MAX_CHARS) {
+                log.debug("Validation: rejecting long suggestion (chars={}, words={}): {}", text.length(), wordCount, text);
+                return false;
+            }
+            String lowerTextForVoice = text.toLowerCase(Locale.ROOT);
+            if (lowerTextForVoice.matches("^how can i\\s+(which|what|do|how)\\b.*")
+                    || lowerTextForVoice.contains("do you need help")
+                    || lowerTextForVoice.contains("would you like")
+                    || lowerTextForVoice.contains("i can help")) {
+                log.debug("Validation: rejecting unsendable suggestion: {}", text);
                 return false;
             }
             
@@ -711,7 +696,7 @@ public class SuggestionEngineService {
         return value.trim().toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
     }
 
-    private SuggestionResult mapToResult(List<SuggestionItem> items) {
+    private SuggestionResult mapToResult(List<SuggestionItem> items, int promptTokens, int completionTokens) {
         List<String> suggestions = items.stream()
                 .map(SuggestionItem::getText)
                 .collect(Collectors.toList());
@@ -723,6 +708,6 @@ public class SuggestionEngineService {
                         item.getScore()
                 ))
                 .collect(Collectors.toList());
-        return new SuggestionResult(suggestions, details);
+        return new SuggestionResult(suggestions, details, promptTokens, completionTokens);
     }
 }
