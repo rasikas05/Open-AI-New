@@ -28,10 +28,10 @@ class ChatRequestSummaryLogTest {
     void formatTiming_usesProvidedBucketsOnly() {
         String line = ChatRequestSummaryLog.formatTiming(655, 2941, 0, 0, 0, 690, 400, 5000);
         assertTrue(line.startsWith("[TIMING]"));
-        assertTrue(line.contains("pii=655ms"));
-        assertTrue(line.contains("router=2941ms"));
-        assertTrue(line.contains("suggestions=400ms"));
-        assertTrue(line.contains("total=5000ms"));
+        assertTrue(line.contains("pii=0.66s"));
+        assertTrue(line.contains("router=2.94s"));
+        assertTrue(line.contains("suggestions=0.40s"));
+        assertTrue(line.contains("total=5.00s"));
     }
 
     @Test

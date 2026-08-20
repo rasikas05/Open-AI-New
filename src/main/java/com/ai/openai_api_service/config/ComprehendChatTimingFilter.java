@@ -74,7 +74,7 @@ public class ComprehendChatTimingFilter extends OncePerRequestFilter {
             RequestTimingLog.Residual residual = RequestTimingLog.computeResidual(measuredSum, filterTotalMs);
             RequestTimingLog.logResidual(residual, "filterWall");
 
-            log.info(
+            log.debug(
                     "Request Timing Summary E2E | pii={}ms | route={}ms | rewrite={}ms | retrieval={}ms | "
                             + "grounded={}ms | gapFill={}ms | generalGPT={}ms | persistence={}ms | "
                             + "suggestions={}ms | liveHistory={}ms | restore={}ms | preRetrievalGlue={}ms | "

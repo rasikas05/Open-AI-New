@@ -18,7 +18,7 @@ public final class RequestTimingLog {
 
     public static void logStage(String stage, Instant start, Instant end) {
         long durationMs = Math.max(0L, end.toEpochMilli() - start.toEpochMilli());
-        log.info(
+        log.debug(
                 "Stage Timing | stage={} | start={} | end={} | durationMs={}",
                 stage,
                 start,
@@ -42,7 +42,7 @@ public final class RequestTimingLog {
     }
 
     public static void logResidual(Residual residual, String totalScope) {
-        log.info(
+        log.debug(
                 "Request Timing Residual | measuredSum={}ms | total={}ms | residual={}ms | residualPct={} | totalScope={}",
                 residual.measuredSumMs(),
                 residual.totalMs(),

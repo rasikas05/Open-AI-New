@@ -1,5 +1,7 @@
 package com.ai.openai_api_service.service.timing;
 
+import java.util.Locale;
+
 /**
  * One-request human-readable summaries. Timing values must be existing measured buckets only.
  */
@@ -36,15 +38,14 @@ public final class ChatRequestSummaryLog {
             long suggestionsMs,
             long totalMs
     ) {
-        return "[TIMING] pii=" + piiMs
-                + "ms | router=" + routerMs
-                + "ms | lex=" + lexMs
-                + "ms | m3OrQdrant=" + m3OrQdrantMs
-                + "ms | grounding=" + groundingMs
-                + "ms | persistence=" + persistenceMs
-                + "ms | suggestions=" + suggestionsMs
-                + "ms | total=" + totalMs
-                + "ms";
+        return "[TIMING] pii=" + seconds(piiMs)
+                + " | router=" + seconds(routerMs)
+                + " | lex=" + seconds(lexMs)
+                + " | m3OrQdrant=" + seconds(m3OrQdrantMs)
+                + " | grounding=" + seconds(groundingMs)
+                + " | persistence=" + seconds(persistenceMs)
+                + " | suggestions=" + seconds(suggestionsMs)
+                + " | total=" + seconds(totalMs);
     }
 
     public static String formatTokens(
@@ -59,6 +60,10 @@ public final class ChatRequestSummaryLog {
                 + " | gapFill=" + gapFill
                 + " | suggestions=" + suggestions
                 + " | total=" + total;
+    }
+
+    static String seconds(long durationMs) {
+        return String.format(Locale.ROOT, "%.2fs", Math.max(0L, durationMs) / 1000.0);
     }
 
     static String dash(String value) {
