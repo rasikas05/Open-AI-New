@@ -107,6 +107,18 @@ public class ComprehendChatService {
     static final String DEFAULT_DOCS_LIVE_STEER_MESSAGE =
             "To retrieve live M3 tenant data, switch to Auto or M3 mode. I can help with M3 documentation here.";
 
+    static final String DEFAULT_M3_CONVERSATIONAL_MESSAGE =
+            "I'm your Infor M3 live assistant. I can retrieve tenant data such as customer and order details. "
+                    + "Try something like \"Show customer Y00111\". For how-to and documentation, switch to Auto or Docs.";
+
+    static final String DEFAULT_AUTO_CONVERSATIONAL_MESSAGE =
+            "I'm your Infor M3 assistant. I can look up live tenant data and help with M3 documentation and how-to questions. "
+                    + "Ask for a customer or order lookup, or a how-to such as creating a customer order.";
+
+    static final String DEFAULT_DOCS_CONVERSATIONAL_MESSAGE =
+            "I'm your Infor M3 documentation assistant. I can explain programs, configuration, and how-to topics from the docs. "
+                    + "For live tenant data, switch to Auto or M3.";
+
     private final ChatPersistenceService chatPersistenceService;
     private final TenantQuotaService tenantQuotaService;
     private final SuggestionEngineService suggestionEngineService;
@@ -148,6 +160,15 @@ public class ComprehendChatService {
 
     @Value("${chat.docs.live-steer-message:" + DEFAULT_DOCS_LIVE_STEER_MESSAGE + "}")
     private String docsLiveSteerMessage;
+
+    @Value("${chat.m3.conversational-message:" + DEFAULT_M3_CONVERSATIONAL_MESSAGE + "}")
+    private String m3ConversationalMessage;
+
+    @Value("${chat.auto.conversational-message:" + DEFAULT_AUTO_CONVERSATIONAL_MESSAGE + "}")
+    private String autoConversationalMessage;
+
+    @Value("${chat.docs.conversational-message:" + DEFAULT_DOCS_CONVERSATIONAL_MESSAGE + "}")
+    private String docsConversationalMessage;
 
     @Value("${rag.partial.gap-fill.enabled:true}")
     private boolean ragPartialGapFillEnabled;
@@ -513,9 +534,7 @@ public class ComprehendChatService {
                     "Comprehend route decision: mode='{}', route='{}', handler='{}', originalLength={}",
                     mode,
                     route,
-                    ROUTE_LIVE.equalsIgnoreCase(route)
-                            ? (lexService.isEnabled() ? "live/lex" : "live/python-chat")
-                            : (routerHandled ? "planner" : "documentation/retrieval"),
+                    routingSummary.getHandler(),
                     originalUserText != null ? originalUserText.length() : 0
             );
 
@@ -1761,11 +1780,16 @@ public class ComprehendChatService {
         return switch (type) {
             case CONVERSATIONAL -> {
                 routingSummary.setRoute("conversational");
-                routingSummary.setHandler("planner");
+                routingSummary.setHandler("policy");
                 yield new PlannerRouteOutcome(
                         true,
                         "conversational",
-                        buildRouterUserResponse(workingRequest, understood, "conversational"),
+                        buildSteerResponse(
+                                workingRequest,
+                                understood,
+                                resolveConversationalMessage(autoConversationalMessage, DEFAULT_AUTO_CONVERSATIONAL_MESSAGE),
+                                "conversational"
+                        ),
                         null
                 );
             }
@@ -1821,11 +1845,16 @@ public class ComprehendChatService {
         return switch (type) {
             case CONVERSATIONAL -> {
                 routingSummary.setRoute("conversational");
-                routingSummary.setHandler("planner");
+                routingSummary.setHandler("policy");
                 yield new PlannerRouteOutcome(
                         true,
                         "conversational",
-                        buildRouterUserResponse(workingRequest, understood, "conversational"),
+                        buildSteerResponse(
+                                workingRequest,
+                                understood,
+                                resolveConversationalMessage(m3ConversationalMessage, DEFAULT_M3_CONVERSATIONAL_MESSAGE),
+                                "conversational"
+                        ),
                         null
                 );
             }
@@ -1868,11 +1897,16 @@ public class ComprehendChatService {
         return switch (type) {
             case CONVERSATIONAL -> {
                 routingSummary.setRoute("conversational");
-                routingSummary.setHandler("planner");
+                routingSummary.setHandler("policy");
                 yield new PlannerRouteOutcome(
                         true,
                         "conversational",
-                        buildRouterUserResponse(workingRequest, understood, "conversational"),
+                        buildSteerResponse(
+                                workingRequest,
+                                understood,
+                                resolveConversationalMessage(docsConversationalMessage, DEFAULT_DOCS_CONVERSATIONAL_MESSAGE),
+                                "conversational"
+                        ),
                         null
                 );
             }
@@ -2002,6 +2036,10 @@ public class ComprehendChatService {
                 ? docsLiveSteerMessage
                 : DEFAULT_DOCS_LIVE_STEER_MESSAGE;
         return buildSteerResponse(request, understood, steer, "docs_live_steer");
+    }
+
+    private static String resolveConversationalMessage(String configured, String defaultMessage) {
+        return configured != null && !configured.isBlank() ? configured : defaultMessage;
     }
 
     private ChatResponse buildSteerResponse(
