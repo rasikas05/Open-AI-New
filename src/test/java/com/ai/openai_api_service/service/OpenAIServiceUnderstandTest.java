@@ -26,8 +26,9 @@ class OpenAIServiceUnderstandTest {
     @Test
     void routerPrompt_distinguishesLiveTenantDataFromRagDocumentation() {
         String prompt = openAIService.routerSystemPrompt();
-        assertTrue(prompt.contains("LIVE_M3: the user wants to retrieve, search, create, update, or execute against actual M3 tenant data"));
-        assertTrue(prompt.contains("RAG: the user wants documentation, explanation, configuration, procedure, definition, or conceptual"));
+        assertTrue(prompt.contains("LIVE_M3: semantic label when the user wants to retrieve, search, create, update, or execute against"));
+        assertTrue(prompt.contains("This label does not authorize Lex on non-live paths."));
+        assertTrue(prompt.contains("RAG: M3 documentation, explanation, configuration, procedure, definition, or conceptual"));
         assertTrue(prompt.contains("Never invent program IDs"));
         assertTrue(prompt.contains("Never identify as ChatGPT"));
         assertTrue(prompt.contains("politely redirect"));
