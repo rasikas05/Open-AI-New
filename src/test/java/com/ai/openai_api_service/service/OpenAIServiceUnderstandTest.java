@@ -1,6 +1,7 @@
 package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.exception.OpenAIException;
+import com.ai.openai_api_service.model.ChatMode;
 import com.ai.openai_api_service.model.OpenAIUsage;
 import com.ai.openai_api_service.model.RequestUnderstandResult;
 import com.ai.openai_api_service.model.RequestUnderstandType;
@@ -29,6 +30,9 @@ class OpenAIServiceUnderstandTest {
         assertTrue(prompt.contains("LIVE_M3: semantic label when the user wants to retrieve, search, create, update, or execute against"));
         assertTrue(prompt.contains("This label does not authorize Lex on non-live paths."));
         assertTrue(prompt.contains("RAG: M3 documentation, explanation, configuration, procedure, definition, or conceptual"));
+        assertTrue(prompt.contains("Mode is response context only"));
+        assertTrue(prompt.contains("M3 = live tenant data only"));
+        assertTrue(prompt.contains("Do not invent sample requests"));
         assertTrue(prompt.contains("Never invent program IDs"));
         assertTrue(prompt.contains("Never identify as ChatGPT"));
         assertTrue(prompt.contains("politely redirect"));
@@ -101,12 +105,21 @@ class OpenAIServiceUnderstandTest {
     }
 
     @Test
+    void buildUnderstandUserContent_includesModeLine() {
+        String content = openAIService.buildUnderstandUserContent("hi", List.of(), ChatMode.M3);
+        assertTrue(content.startsWith("Mode: M3\n"));
+        assertTrue(content.contains("CURRENT QUESTION:\nhi"));
+    }
+
+    @Test
     void buildUnderstandUserContent_prefixesPreviousUserQuestions() {
         String content = openAIService.buildUnderstandUserContent(
                 "hello",
-                List.of(new com.ai.openai_api_service.model.MessageDto("user", "what is your name"))
+                List.of(new com.ai.openai_api_service.model.MessageDto("user", "what is your name")),
+                ChatMode.DOCS
         );
-        assertTrue(content.startsWith("PREVIOUS USER QUESTIONS:"));
+        assertTrue(content.startsWith("Mode: DOCS\n"));
+        assertTrue(content.contains("PREVIOUS USER QUESTIONS:"));
         assertTrue(content.contains("- what is your name"));
         assertTrue(content.contains("CURRENT QUESTION:\nhello"));
     }

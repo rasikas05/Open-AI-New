@@ -2353,7 +2353,7 @@ class ComprehendChatServiceTest {
         stubPythonRoute("hi", "rag");
         when(openAIService.understandRequest(any(), eq("hi"))).thenReturn(new RequestUnderstandResult(
                 RequestUnderstandType.CONVERSATIONAL,
-                "THIS SHOULD NOT BE RETURNED",
+                "Hi! How can I help with live M3 data today?",
                 List.of(),
                 new OpenAIUsage(3, 4, 7, "gpt")
         ));
@@ -2361,9 +2361,8 @@ class ComprehendChatServiceTest {
 
         ChatResponse response = comprehendChatService.chat(baseRequest("hi"));
 
-        assertEquals(ComprehendChatService.DEFAULT_AUTO_CONVERSATIONAL_MESSAGE, response.getReply());
+        assertEquals("Hi! How can I help with live M3 data today?", response.getReply());
         assertEquals("conversational", response.getActionTaken());
-        assertFalse(response.getReply().contains("THIS SHOULD NOT BE RETURNED"));
         verify(openAIService).understandRequest(any(), eq("hi"));
         verify(pythonRagService).route("hi");
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
@@ -2538,26 +2537,18 @@ class ComprehendChatServiceTest {
         verify(openAIService, never()).understandRequest(any(), anyString());
     }
 
-    static Stream<Arguments> conversationalModePolicyCases() {
+    static Stream<Arguments> conversationalNaturalReplyCases() {
         return Stream.of(
-                Arguments.of(ChatMode.M3, "hi", ComprehendChatService.DEFAULT_M3_CONVERSATIONAL_MESSAGE),
-                Arguments.of(ChatMode.M3, "who are you", ComprehendChatService.DEFAULT_M3_CONVERSATIONAL_MESSAGE),
-                Arguments.of(ChatMode.M3, "what can you do", ComprehendChatService.DEFAULT_M3_CONVERSATIONAL_MESSAGE),
-                Arguments.of(ChatMode.M3, "thanks", ComprehendChatService.DEFAULT_M3_CONVERSATIONAL_MESSAGE),
-                Arguments.of(ChatMode.AUTO, "hi", ComprehendChatService.DEFAULT_AUTO_CONVERSATIONAL_MESSAGE),
-                Arguments.of(ChatMode.AUTO, "who are you", ComprehendChatService.DEFAULT_AUTO_CONVERSATIONAL_MESSAGE),
-                Arguments.of(ChatMode.AUTO, "what can you do", ComprehendChatService.DEFAULT_AUTO_CONVERSATIONAL_MESSAGE),
-                Arguments.of(ChatMode.AUTO, "thanks", ComprehendChatService.DEFAULT_AUTO_CONVERSATIONAL_MESSAGE),
-                Arguments.of(ChatMode.DOCS, "hi", ComprehendChatService.DEFAULT_DOCS_CONVERSATIONAL_MESSAGE),
-                Arguments.of(ChatMode.DOCS, "who are you", ComprehendChatService.DEFAULT_DOCS_CONVERSATIONAL_MESSAGE),
-                Arguments.of(ChatMode.DOCS, "what can you do", ComprehendChatService.DEFAULT_DOCS_CONVERSATIONAL_MESSAGE),
-                Arguments.of(ChatMode.DOCS, "thanks", ComprehendChatService.DEFAULT_DOCS_CONVERSATIONAL_MESSAGE)
+                Arguments.of(ChatMode.M3, "hi", "Hi! How can I help with live M3 data?"),
+                Arguments.of(ChatMode.M3, "thanks", "You're welcome!"),
+                Arguments.of(ChatMode.AUTO, "who are you", "I'm your Infor M3 assistant for live data and documentation."),
+                Arguments.of(ChatMode.DOCS, "what can you do", "I can help explain M3 programs and documentation topics.")
         );
     }
 
     @ParameterizedTest
-    @MethodSource("conversationalModePolicyCases")
-    void requestRouter_conversational_usesSpringModePolicy(ChatMode mode, String message, String expectedReply) {
+    @MethodSource("conversationalNaturalReplyCases")
+    void requestRouter_conversational_usesPlannerNaturalResponse(ChatMode mode, String message, String plannerReply) {
         enableRequestRouter();
         stubQuotaAllowed();
         stubSanitize();
@@ -2566,7 +2557,7 @@ class ComprehendChatServiceTest {
         }
         when(openAIService.understandRequest(any(), eq(message))).thenReturn(new RequestUnderstandResult(
                 RequestUnderstandType.CONVERSATIONAL,
-                "THIS SHOULD NOT BE RETURNED",
+                plannerReply,
                 List.of(),
                 new OpenAIUsage(1, 1, 2, "gpt")
         ));
@@ -2576,9 +2567,8 @@ class ComprehendChatServiceTest {
         request.setMode(mode);
         ChatResponse response = comprehendChatService.chat(request);
 
-        assertEquals(expectedReply, response.getReply());
+        assertEquals(plannerReply, response.getReply());
         assertEquals("conversational", response.getActionTaken());
-        assertFalse(response.getReply().contains("THIS SHOULD NOT BE RETURNED"));
         verify(openAIService).understandRequest(any(), eq(message));
         verify(lexService, never()).recognizeText(anyString(), anyString());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
@@ -2587,6 +2577,30 @@ class ComprehendChatServiceTest {
         } else {
             verify(pythonRagService).route(message);
         }
+    }
+
+    @Test
+    void requestRouter_conversational_blankPlannerResponse_usesModeCannedFallback() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        stubPythonRoute("hi", "rag");
+        when(openAIService.understandRequest(any(), eq("hi"))).thenReturn(new RequestUnderstandResult(
+                RequestUnderstandType.CONVERSATIONAL,
+                "",
+                List.of(),
+                new OpenAIUsage(1, 1, 2, "gpt")
+        ));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = baseRequest("hi");
+        request.setMode(ChatMode.M3);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals(ComprehendChatService.DEFAULT_M3_CONVERSATIONAL_MESSAGE, response.getReply());
+        assertEquals("conversational", response.getActionTaken());
+        verify(openAIService).understandRequest(any(), eq("hi"));
+        verify(lexService, never()).recognizeText(anyString(), anyString());
     }
 
     @Test
@@ -2962,16 +2976,15 @@ class ComprehendChatServiceTest {
         stubQuotaAllowed();
         stubSanitize();
         stubPythonRoute("hello", "rag");
-        stubUnderstand("hello", RequestUnderstandType.CONVERSATIONAL, "THIS SHOULD NOT BE RETURNED");
+        stubUnderstand("hello", RequestUnderstandType.CONVERSATIONAL, "Hello! How can I help you today?");
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("hello");
         request.setMode(ChatMode.AUTO);
         ChatResponse response = comprehendChatService.chat(request);
 
-        assertEquals(ComprehendChatService.DEFAULT_AUTO_CONVERSATIONAL_MESSAGE, response.getReply());
+        assertEquals("Hello! How can I help you today?", response.getReply());
         assertEquals("conversational", response.getActionTaken());
-        assertFalse(response.getReply().contains("THIS SHOULD NOT BE RETURNED"));
         verify(openAIService).understandRequest(any(), eq("hello"));
         verify(pythonRagService).route("hello");
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());

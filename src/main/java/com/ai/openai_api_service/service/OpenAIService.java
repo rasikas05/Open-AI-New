@@ -4,6 +4,7 @@ import com.ai.openai_api_service.config.RestTemplateFactory;
 import com.ai.openai_api_service.exception.TenantQuotaExceededException;
 import com.ai.openai_api_service.exception.AiServiceErrors;
 import com.ai.openai_api_service.exception.OpenAIException;
+import com.ai.openai_api_service.model.ChatMode;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.MessageDto;
@@ -143,9 +144,19 @@ public class OpenAIService {
             items; warehouses; how-to, what-is, configuration, and procedure for those products). \
             Classify by this domain test, not by a list of off-topic phrases.
 
+            The user message includes Mode: M3, AUTO, or DOCS. Mode is response context only — never use it to \
+            choose Lex, retrieval, or routing. Spring already owns those decisions.
+
             CONVERSATIONAL: greetings, identity, thanks, how are you, what can you do. \
             If a greeting is mixed with an in-domain how-to or documentation question, use RAG \
             (or LIVE_M3 if they asked to execute tenant data), not CONVERSATIONAL.
+            For CONVERSATIONAL: write a natural user-facing response (1-3 sentences) that matches the exact user act \
+            (greeting, identity, capability, or thanks) and the Mode capability: \
+            M3 = live tenant data only (do not claim documentation or how-to help); \
+            AUTO = live tenant data and M3 documentation/how-to; \
+            DOCS = documentation only (live tenant lookups belong in Auto or M3). \
+            Keep wording generic and mode-appropriate. Do not invent sample requests, identifiers, or "try this" examples. \
+            Never mention ChatGPT. queries [].
             LIVE_M3: semantic label when the user wants to retrieve, search, create, update, or execute against \
             actual M3 tenant data (a tenant identifier such as a customer number is present, or they clearly want a live lookup). \
             This label does not authorize Lex on non-live paths.
@@ -162,8 +173,8 @@ public class OpenAIService {
             For RAG only: 1-3 short keyword search queries. Preserve user identifiers exactly. Never invent program IDs, \
             MI names, or fields. response must be "".
             For LIVE_M3: response "" and queries [].
-            For CONVERSATIONAL and NON_M3: write the user-facing response only. Concise and appropriate to the exact request \
-            (1-3 sentences). Never mention ChatGPT. For NON_M3 never answer the off-topic topic; politely redirect to M3 / \
+            For NON_M3: write the user-facing response only. Concise and appropriate to the exact request \
+            (1-3 sentences). Never mention ChatGPT. Never answer the off-topic topic; politely redirect to M3 / \
             CloudSuite. queries [].
             Never answer documentation questions in response.""";
 
@@ -575,7 +586,8 @@ public class OpenAIService {
 
         String queryForLlm = sanitizedQuery;
         List<MessageDto> userHistory = request == null ? List.of() : resolveHistory(request);
-        String userPrompt = buildUnderstandUserContent(queryForLlm, userHistory);
+        ChatMode mode = request != null && request.getMode() != null ? request.getMode() : ChatMode.AUTO;
+        String userPrompt = buildUnderstandUserContent(queryForLlm, userHistory, mode);
 
         List<Map<String, String>> messages = List.of(
                 Map.of("role", "system", "content", ROUTER_SYSTEM_PROMPT),
@@ -831,9 +843,15 @@ public class OpenAIService {
     }
 
     String buildUnderstandUserContent(String sanitizedQuery, List<MessageDto> userHistory) {
+        return buildUnderstandUserContent(sanitizedQuery, userHistory, ChatMode.AUTO);
+    }
+
+    String buildUnderstandUserContent(String sanitizedQuery, List<MessageDto> userHistory, ChatMode mode) {
+        ChatMode resolved = mode != null ? mode : ChatMode.AUTO;
         String current = sanitizedQuery == null ? "" : sanitizedQuery.trim();
+        String modeLine = "Mode: " + resolved.name() + "\n";
         if (userHistory == null || userHistory.isEmpty()) {
-            return "CURRENT QUESTION:\n" + current;
+            return modeLine + "CURRENT QUESTION:\n" + current;
         }
         StringBuilder previous = new StringBuilder();
         for (MessageDto message : userHistory) {
@@ -844,9 +862,10 @@ public class OpenAIService {
             previous.append("- ").append(content).append('\n');
         }
         if (previous.isEmpty()) {
-            return "CURRENT QUESTION:\n" + current;
+            return modeLine + "CURRENT QUESTION:\n" + current;
         }
-        return "PREVIOUS USER QUESTIONS:\n"
+        return modeLine
+                + "PREVIOUS USER QUESTIONS:\n"
                 + previous
                 + "\nCURRENT QUESTION:\n"
                 + current;
