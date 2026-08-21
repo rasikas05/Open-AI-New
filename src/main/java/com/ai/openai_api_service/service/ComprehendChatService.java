@@ -1780,15 +1780,14 @@ public class ComprehendChatService {
         return switch (type) {
             case CONVERSATIONAL -> {
                 routingSummary.setRoute("conversational");
-                routingSummary.setHandler("policy");
+                routingSummary.setHandler("planner");
                 yield new PlannerRouteOutcome(
                         true,
                         "conversational",
-                        buildSteerResponse(
+                        buildConversationalOutcomeResponse(
                                 workingRequest,
                                 understood,
-                                resolveConversationalMessage(autoConversationalMessage, DEFAULT_AUTO_CONVERSATIONAL_MESSAGE),
-                                "conversational"
+                                resolveConversationalMessage(autoConversationalMessage, DEFAULT_AUTO_CONVERSATIONAL_MESSAGE)
                         ),
                         null
                 );
@@ -1845,15 +1844,14 @@ public class ComprehendChatService {
         return switch (type) {
             case CONVERSATIONAL -> {
                 routingSummary.setRoute("conversational");
-                routingSummary.setHandler("policy");
+                routingSummary.setHandler("planner");
                 yield new PlannerRouteOutcome(
                         true,
                         "conversational",
-                        buildSteerResponse(
+                        buildConversationalOutcomeResponse(
                                 workingRequest,
                                 understood,
-                                resolveConversationalMessage(m3ConversationalMessage, DEFAULT_M3_CONVERSATIONAL_MESSAGE),
-                                "conversational"
+                                resolveConversationalMessage(m3ConversationalMessage, DEFAULT_M3_CONVERSATIONAL_MESSAGE)
                         ),
                         null
                 );
@@ -1897,15 +1895,14 @@ public class ComprehendChatService {
         return switch (type) {
             case CONVERSATIONAL -> {
                 routingSummary.setRoute("conversational");
-                routingSummary.setHandler("policy");
+                routingSummary.setHandler("planner");
                 yield new PlannerRouteOutcome(
                         true,
                         "conversational",
-                        buildSteerResponse(
+                        buildConversationalOutcomeResponse(
                                 workingRequest,
                                 understood,
-                                resolveConversationalMessage(docsConversationalMessage, DEFAULT_DOCS_CONVERSATIONAL_MESSAGE),
-                                "conversational"
+                                resolveConversationalMessage(docsConversationalMessage, DEFAULT_DOCS_CONVERSATIONAL_MESSAGE)
                         ),
                         null
                 );
@@ -2040,6 +2037,18 @@ public class ComprehendChatService {
 
     private static String resolveConversationalMessage(String configured, String defaultMessage) {
         return configured != null && !configured.isBlank() ? configured : defaultMessage;
+    }
+
+    private ChatResponse buildConversationalOutcomeResponse(
+            ChatRequest request,
+            RequestUnderstandResult understood,
+            String fallbackMessage
+    ) {
+        String plannerReply = understood != null ? understood.response() : null;
+        if (plannerReply != null && !plannerReply.isBlank()) {
+            return buildRouterUserResponse(request, understood, "conversational");
+        }
+        return buildSteerResponse(request, understood, fallbackMessage, "conversational");
     }
 
     private ChatResponse buildSteerResponse(
