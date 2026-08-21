@@ -44,4 +44,27 @@ class ChatRequestSummaryLogTest {
         assertTrue(line.contains("suggestions=40"));
         assertTrue(line.contains("total=3840"));
     }
+
+    @Test
+    void formatPiiSplit_nestsUnderPiiTotal() {
+        String line = ChatRequestSummaryLog.formatPiiSplit(200, 1400, 400, 2000);
+        assertTrue(line.startsWith("[PII-SPLIT]"));
+        assertTrue(line.contains("businessProtect=0.20s"));
+        assertTrue(line.contains("comprehend=1.40s"));
+        assertTrue(line.contains("presidio=0.40s"));
+        assertTrue(line.contains("piiTotal=2.00s"));
+    }
+
+    @Test
+    void formatPersistSplit_nestsUnderPersistTotal() {
+        String line = ChatRequestSummaryLog.formatPersistSplit(100, 100, 200, 10, 100, 1100, 1610);
+        assertTrue(line.startsWith("[PERSIST-SPLIT]"));
+        assertTrue(line.contains("tenantLookup=0.10s"));
+        assertTrue(line.contains("userLookup=0.10s"));
+        assertTrue(line.contains("sessionLookup=0.20s"));
+        assertTrue(line.contains("title=0.01s"));
+        assertTrue(line.contains("sessionSave=0.10s"));
+        assertTrue(line.contains("requestLogSave=1.10s"));
+        assertTrue(line.contains("persistTotal=1.61s"));
+    }
 }

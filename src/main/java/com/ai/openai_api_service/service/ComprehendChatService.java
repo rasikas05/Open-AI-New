@@ -45,6 +45,7 @@ import com.ai.openai_api_service.service.query.SearchContextService;
 import com.ai.openai_api_service.service.rag.ProgramIdDetector;
 import com.ai.openai_api_service.service.rag.SearchQueryAssembler;
 import com.ai.openai_api_service.service.timing.ChatRequestSummaryLog;
+import com.ai.openai_api_service.service.timing.ChatStageSplitTracker;
 import com.ai.openai_api_service.service.timing.RoutingCallTracker;
 import com.ai.openai_api_service.service.timing.RoutingSummaryLog;
 import com.ai.openai_api_service.service.timing.RoutingSummaryState;
@@ -292,6 +293,7 @@ public class ComprehendChatService {
         ChatResponse chatResponse = null;
         String route = null;
         RoutingCallTracker.begin();
+        ChatStageSplitTracker.begin();
         try {
         boolean guidedHandled = false;
         List<SourceItem> sourcesForSuggestions = null;
@@ -860,6 +862,21 @@ public class ComprehendChatService {
                     suggestionsMs,
                     wallMs
             ));
+            log.info(ChatRequestSummaryLog.formatPiiSplit(
+                    ChatStageSplitTracker.businessProtectMs(),
+                    ChatStageSplitTracker.comprehendMs(),
+                    ChatStageSplitTracker.presidioMs(),
+                    piiDetectionMs
+            ));
+            log.info(ChatRequestSummaryLog.formatPersistSplit(
+                    ChatStageSplitTracker.tenantLookupMs(),
+                    ChatStageSplitTracker.userLookupMs(),
+                    ChatStageSplitTracker.sessionLookupMs(),
+                    ChatStageSplitTracker.titleMs(),
+                    ChatStageSplitTracker.sessionSaveMs(),
+                    ChatStageSplitTracker.requestLogSaveMs(),
+                    persistenceMs
+            ));
             int suggestionTokens = suggestionPromptTokens + suggestionCompletionTokens;
             int tokenTotal = routerPromptTokens + routerCompletionTokens + groundedTokens + gapFillTokens + suggestionTokens;
             log.info(ChatRequestSummaryLog.formatTokens(
@@ -869,6 +886,7 @@ public class ComprehendChatService {
                     suggestionTokens,
                     tokenTotal
             ));
+            ChatStageSplitTracker.clear();
             RoutingCallTracker.clear();
         }
     }
@@ -1978,10 +1996,16 @@ public class ComprehendChatService {
                 originalUserText,
                 businessInformationProtectionService.isEnabled()
         );
+        Instant businessProtectStart = Instant.now();
         businessInformationProtectionService.protect(
                 session,
                 ProtectionContext.forPurpose(ProtectionPurpose.ANSWER, true)
         );
+        Instant businessProtectEnd = Instant.now();
+        long businessProtectMs = RequestTimingLog.durationMs(businessProtectStart, businessProtectEnd);
+        ChatStageSplitTracker.addBusinessProtectMs(businessProtectMs);
+        RequestTimingLog.logStage("businessProtect", businessProtectStart, businessProtectEnd);
+
         protectPiiSafely(session);
         Instant piiEnd = Instant.now();
         long piiMs = RequestTimingLog.durationMs(understandStart, piiEnd);
