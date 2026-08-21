@@ -26,10 +26,11 @@ class ChatRequestSummaryLogTest {
 
     @Test
     void formatTiming_usesProvidedBucketsOnly() {
-        String line = ChatRequestSummaryLog.formatTiming(655, 2941, 0, 0, 0, 690, 400, 5000);
+        String line = ChatRequestSummaryLog.formatTiming(120, 655, 2941, 0, 0, 0, 690, 400, 5000);
         assertTrue(line.startsWith("[TIMING]"));
+        assertTrue(line.contains("python=0.12s"));
         assertTrue(line.contains("pii=0.66s"));
-        assertTrue(line.contains("router=2.94s"));
+        assertTrue(line.contains("openai=2.94s"));
         assertTrue(line.contains("suggestions=0.40s"));
         assertTrue(line.contains("total=5.00s"));
     }

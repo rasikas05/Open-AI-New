@@ -12,6 +12,7 @@ public class ComprehendChatTimingSnapshot {
     private Instant serviceEnd;
 
     private long piiMs;
+    private long pythonMs;
     private long routeMs;
     private long rewriteMs;
     private long retrievalSpringMs;
@@ -58,10 +59,21 @@ public class ComprehendChatTimingSnapshot {
         this.piiMs = piiMs;
     }
 
+    public long getPythonMs() {
+        return pythonMs;
+    }
+
+    public void setPythonMs(long pythonMs) {
+        this.pythonMs = pythonMs;
+    }
+
     public long getRouteMs() {
         return routeMs;
     }
 
+    /**
+     * Planner OpenAI ms only (excludes PII). Named routeMs for filter snapshot compatibility.
+     */
     public void setRouteMs(long routeMs) {
         this.routeMs = routeMs;
     }
@@ -163,7 +175,8 @@ public class ComprehendChatTimingSnapshot {
     }
 
     public long measuredSumWithoutSerialize() {
-        return piiMs
+        return pythonMs
+                + piiMs
                 + routeMs
                 + rewriteMs
                 + retrievalSpringMs
