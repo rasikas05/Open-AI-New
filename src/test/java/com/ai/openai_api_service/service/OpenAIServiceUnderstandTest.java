@@ -27,13 +27,15 @@ class OpenAIServiceUnderstandTest {
     @Test
     void routerPrompt_distinguishesLiveTenantDataFromRagDocumentation() {
         String prompt = openAIService.routerSystemPrompt();
-        assertTrue(prompt.contains("LIVE_M3: semantic label when the user wants to retrieve, search, create, update, or execute against"));
-        assertTrue(prompt.contains("This label does not authorize Lex on non-live paths."));
-        assertTrue(prompt.contains("RAG: M3 documentation, explanation, configuration, procedure, definition, or conceptual"));
-        assertTrue(prompt.contains("Mode is response context only"));
-        assertTrue(prompt.contains("M3 = live tenant data only"));
-        assertTrue(prompt.contains("Do not invent sample requests"));
-        assertTrue(prompt.contains("Never invent program IDs"));
+        assertTrue(prompt.contains("Mode (HIGH PRIORITY"));
+        assertTrue(prompt.contains("M3: live tenant data/operations ONLY"));
+        assertTrue(prompt.contains("Must not offer documentation, how-to, procedures, or configuration help."));
+        assertTrue(prompt.contains("AUTO: live tenant data AND documentation/how-to."));
+        assertTrue(prompt.contains("DOCS: documentation ONLY"));
+        assertTrue(prompt.contains("LIVE_M3: semantic label"));
+        assertTrue(prompt.contains("Does not authorize Lex"));
+        assertTrue(prompt.contains("RAG: M3 documentation"));
+        assertTrue(prompt.contains("never invent program"));
         assertTrue(prompt.contains("Never identify as ChatGPT"));
         assertTrue(prompt.contains("politely redirect"));
         assertFalse(prompt.contains("You are ChatGPT"));
@@ -42,9 +44,9 @@ class OpenAIServiceUnderstandTest {
     @Test
     void routerPrompt_usesDomainTestForNonM3NotPhraseAllowlist() {
         String prompt = openAIService.routerSystemPrompt();
-        assertTrue(prompt.contains("Classify by this domain test, not by a list of off-topic phrases"));
-        assertTrue(prompt.contains("NON_M3: the request is not about Infor M3 / CloudSuite"));
-        assertTrue(prompt.contains("If a greeting is mixed with an in-domain how-to"));
+        assertTrue(prompt.contains("Classify by this domain test"));
+        assertTrue(prompt.contains("NON_M3: not about Infor M3 / CloudSuite"));
+        assertTrue(prompt.contains("Mixed greeting + in-domain how-to/docs → RAG"));
         assertFalse(prompt.contains("trip planning"));
         assertFalse(prompt.contains("tell me a joke"));
     }
