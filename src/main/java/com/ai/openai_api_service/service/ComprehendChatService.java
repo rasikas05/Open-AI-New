@@ -221,7 +221,7 @@ public class ComprehendChatService {
         Instant serviceStart = Instant.now();
         long requestStartMs = serviceStart.toEpochMilli();
         long piiDetectionMs = 0L;
-        long routeDecisionMs = 0L;
+        long openaiMs = 0L;
         long queryRewriteMs = 0L;
         long retrievalMs = 0L;
         long retrievalPythonMs = 0L;
@@ -359,9 +359,9 @@ public class ComprehendChatService {
                     sanitizedUserText = understandRun.sanitizedUserText();
                     workingRequest = understandRun.workingRequest();
                     piiDetectionMs = understandRun.piiDetectionMs();
-                    routeDecisionMs = understandRun.routeDecisionMs();
+                    openaiMs = understandRun.openaiMs();
                     understood = understandRun.understood();
-                    recordPlannerResult(routingSummary, understood);
+                    recordPlannerResult(routingSummary, understood, openaiMs);
                     if (understood != null && understood.usage() != null) {
                         routerPromptTokens = nullSafeInt(understood.usage().getPromptTokens());
                         routerCompletionTokens = nullSafeInt(understood.usage().getCompletionTokens());
@@ -426,9 +426,9 @@ public class ComprehendChatService {
                         sanitizedUserText = understandRun.sanitizedUserText();
                         workingRequest = understandRun.workingRequest();
                         piiDetectionMs = understandRun.piiDetectionMs();
-                        routeDecisionMs = understandRun.routeDecisionMs();
+                        openaiMs = understandRun.openaiMs();
                         understood = understandRun.understood();
-                        recordPlannerResult(routingSummary, understood);
+                        recordPlannerResult(routingSummary, understood, openaiMs);
                         if (understood != null && understood.usage() != null) {
                             routerPromptTokens = nullSafeInt(understood.usage().getPromptTokens());
                             routerCompletionTokens = nullSafeInt(understood.usage().getCompletionTokens());
@@ -526,9 +526,6 @@ public class ComprehendChatService {
                         : "documentation/retrieval");
             }
             Instant routeEnd = Instant.now();
-            if (routeDecisionMs == 0L) {
-                routeDecisionMs = RequestTimingLog.durationMs(routeStart, routeEnd);
-            }
             RequestTimingLog.logStage("route", routeStart, routeEnd);
             log.info(
                     "Comprehend route decision: mode='{}', route='{}', handler='{}', originalLength={}",
@@ -774,6 +771,7 @@ public class ComprehendChatService {
 
         Instant serviceEnd = Instant.now();
         long totalRequestMs = RequestTimingLog.durationMs(serviceStart, serviceEnd);
+        long pythonRouteMs = RoutingCallTracker.pythonRouteMs();
         long httpTaxMs = Math.max(0L, retrievalMs - retrievalPythonMs);
         log.debug(
                 "Retrieval Clocks | springHttpMs={} | pythonInternalMs={} | httpTaxMs={}",
@@ -782,11 +780,12 @@ public class ComprehendChatService {
                 httpTaxMs
         );
         log.debug(
-                "Request Timing Summary | pii={}ms | route={}ms | rewrite={}ms | retrieval={}ms | grounded={}ms | "
+                "Request Timing Summary | python={}ms | pii={}ms | openai={}ms | rewrite={}ms | retrieval={}ms | grounded={}ms | "
                         + "gapFill={}ms | generalGPT={}ms | persistence={}ms | suggestions={}ms | liveHistory={}ms | "
                         + "restore={}ms | preRetrievalGlue={}ms | total={}ms | totalScope=serviceWall",
+                pythonRouteMs,
                 piiDetectionMs,
-                routeDecisionMs,
+                openaiMs,
                 queryRewriteMs,
                 retrievalMs,
                 groundedMs,
@@ -800,8 +799,9 @@ public class ComprehendChatService {
                 totalRequestMs
         );
 
-        long measuredSumService = piiDetectionMs
-                + routeDecisionMs
+        long measuredSumService = pythonRouteMs
+                + piiDetectionMs
+                + openaiMs
                 + queryRewriteMs
                 + retrievalMs
                 + groundedMs
@@ -818,8 +818,9 @@ public class ComprehendChatService {
         );
 
         if (timingSnapshot != null) {
+            timingSnapshot.setPythonMs(pythonRouteMs);
             timingSnapshot.setPiiMs(piiDetectionMs);
-            timingSnapshot.setRouteMs(routeDecisionMs);
+            timingSnapshot.setRouteMs(openaiMs);
             timingSnapshot.setRewriteMs(queryRewriteMs);
             timingSnapshot.setRetrievalSpringMs(retrievalMs);
             timingSnapshot.setRetrievalPythonMs(retrievalPythonMs);
@@ -849,8 +850,9 @@ public class ComprehendChatService {
             long wallMs = RequestTimingLog.durationMs(serviceStart, Instant.now());
             RoutingSummaryLog.log(routingSummary, wallMs);
             log.info(ChatRequestSummaryLog.formatTiming(
+                    RoutingCallTracker.pythonRouteMs(),
                     piiDetectionMs,
-                    routeDecisionMs,
+                    openaiMs,
                     0L,
                     retrievalMs,
                     groundedMs,
@@ -1737,11 +1739,11 @@ public class ComprehendChatService {
         return new DocAnswerOutcome(general, RETRIEVAL_RAG_NO_ANSWER, 0, generalTimeMs, 0, generalTokens);
     }
 
-    private void recordPlannerResult(RoutingSummaryState summary, RequestUnderstandResult understood) {
+    private void recordPlannerResult(RoutingSummaryState summary, RequestUnderstandResult understood, long openaiMs) {
         if (understood != null) {
             summary.setPlanner(understood.type().name());
             summary.setType(understood.type());
-            logUsage("Planner", understood.usage(), 0L);
+            logUsage("Planner", understood.usage(), openaiMs);
         } else {
             summary.setPlanner("ERROR");
             summary.setTypeRaw("-");
@@ -1987,6 +1989,7 @@ public class ComprehendChatService {
 
         String llmText = session.textForLlm();
         ChatRequest llmRequest = copyRequestWithUserMessage(request, llmText);
+        Instant openaiStart = Instant.now();
         RequestUnderstandResult understood = null;
         try {
             understood = openAIService.understandRequest(llmRequest, llmText);
@@ -2001,10 +2004,10 @@ public class ComprehendChatService {
             }
             log.warn("RAG-path planner failed: {}.", e.getMessage());
         }
-        Instant understandEnd = Instant.now();
-        long understandMs = RequestTimingLog.durationMs(understandStart, understandEnd);
-        RequestTimingLog.logStage("understand", understandStart, understandEnd);
-        return new UnderstandRun(understood, session, llmRequest, llmText, piiMs, understandMs);
+        Instant openaiEnd = Instant.now();
+        long openaiMs = RequestTimingLog.durationMs(openaiStart, openaiEnd);
+        RequestTimingLog.logStage("openai", openaiStart, openaiEnd);
+        return new UnderstandRun(understood, session, llmRequest, llmText, piiMs, openaiMs);
     }
 
     private ChatResponse buildM3DocsSteerResponse(ChatRequest request, RequestUnderstandResult understood) {
@@ -2352,7 +2355,7 @@ public class ComprehendChatService {
             ChatRequest workingRequest,
             String sanitizedUserText,
             long piiDetectionMs,
-            long routeDecisionMs
+            long openaiMs
     ) {
     }
 

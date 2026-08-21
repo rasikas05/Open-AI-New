@@ -362,6 +362,7 @@ public class PythonRagService {
             ResponseEntity<T> responseEntity = restTemplate.postForEntity(url, entity, responseType);
             T response = responseEntity.getBody();
             long responseTime = System.currentTimeMillis() - startTime;
+            recordPythonRouteTiming(operation, responseTime);
 
             if (response == null) {
                 log.error("Python RAG {} API returned null response. url={}, responseTime={}ms", operation, url, responseTime);
@@ -387,6 +388,7 @@ public class PythonRagService {
             throw e;
         } catch (Exception e) {
             long responseTime = System.currentTimeMillis() - startTime;
+            recordPythonRouteTiming(operation, responseTime);
             log.error(
                     "Python RAG {} API unexpected error. url={}, responseTime={}ms, error={}",
                     operation,
@@ -399,6 +401,12 @@ public class PythonRagService {
                     "Unexpected error calling Python RAG API: " + e.getMessage(),
                     500
             );
+        }
+    }
+
+    private void recordPythonRouteTiming(String operation, long responseTimeMs) {
+        if ("route".equals(operation)) {
+            RoutingCallTracker.addPythonRouteMs(responseTimeMs);
         }
     }
 
@@ -461,6 +469,7 @@ public class PythonRagService {
 
     private void handleHttpError(String url, String operation, long startTime, HttpClientErrorException e) {
         long responseTime = System.currentTimeMillis() - startTime;
+        recordPythonRouteTiming(operation, responseTime);
         int code = e.getStatusCode().value();
         String errorBody = e.getResponseBodyAsString();
         log.error(
@@ -481,6 +490,7 @@ public class PythonRagService {
 
     private void handleResourceError(String url, String operation, long startTime, ResourceAccessException e) {
         long responseTime = System.currentTimeMillis() - startTime;
+        recordPythonRouteTiming(operation, responseTime);
         if (e.getCause() instanceof SocketTimeoutException) {
             log.error(
                     "Python RAG {} API timeout. url={}, timeout={}ms, responseTime={}ms",
