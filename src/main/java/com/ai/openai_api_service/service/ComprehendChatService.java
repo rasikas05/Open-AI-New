@@ -233,6 +233,9 @@ public class ComprehendChatService {
         long liveHistoryMs = 0L;
         long suggestionsMs = 0L;
         long persistenceMs = 0L;
+        long quotaMs = 0L;
+        long quotaCheckMs = 0L;
+        long recordUsageMs = 0L;
         long preRetrievalGlueMs = 0L;
         int groundedTokens = 0;
         int gapFillTokens = 0;
@@ -247,17 +250,31 @@ public class ComprehendChatService {
             timingSnapshot.setServiceStart(serviceStart);
         }
 
+        RoutingSummaryState routingSummary = new RoutingSummaryState();
+        ChatResponse chatResponse = null;
+        String route = null;
+        RoutingCallTracker.begin();
+        ChatStageSplitTracker.begin();
+        try {
+        Instant quotaCheckStart = Instant.now();
         TenantQuotaService.QuotaCheckResult quotaCheck = tenantQuotaService.checkBeforeChat(request.getTenantCode());
+        Instant quotaCheckEnd = Instant.now();
+        quotaCheckMs = RequestTimingLog.durationMs(quotaCheckStart, quotaCheckEnd);
+        RequestTimingLog.logStage("quotaCheck", quotaCheckStart, quotaCheckEnd);
+        quotaMs = quotaCheckMs;
         if (!quotaCheck.allowed()) {
             markServiceEnd(timingSnapshot, Instant.now(), requestStartMs);
             return blockedQuotaResponse(quotaCheck);
         }
 
+        Instant sessionLimitStart = Instant.now();
         chatPersistenceService.enforceSessionRequestLimit(
                 request.getTenantCode(),
                 request.getUserId(),
                 request.getSessionId()
         );
+        Instant sessionLimitEnd = Instant.now();
+        RequestTimingLog.logStage("sessionLimit", sessionLimitStart, sessionLimitEnd);
 
         Long editOfRequestLogId = request.getEditOfRequestLogId();
         Long editSessionPk = null;
@@ -287,14 +304,8 @@ public class ComprehendChatService {
                 originalUserText != null ? originalUserText.length() : 0
         );
 
-        RoutingSummaryState routingSummary = new RoutingSummaryState();
         routingSummary.setRequestText(originalUserText);
         routingSummary.setMode(resolvedMode);
-        ChatResponse chatResponse = null;
-        String route = null;
-        RoutingCallTracker.begin();
-        ChatStageSplitTracker.begin();
-        try {
         boolean guidedHandled = false;
         List<SourceItem> sourcesForSuggestions = null;
         List<SourceItem> responseSources = null;
@@ -667,12 +678,21 @@ public class ComprehendChatService {
         String usageReferenceId = request.getSessionId() + ":" + System.currentTimeMillis();
         try {
             if (consumedTokens > 0) {
-                tenantQuotaService.recordUsage(request.getTenantCode(), consumedTokens, usageReferenceId);
+                Instant recordUsageStart = Instant.now();
+                try {
+                    tenantQuotaService.recordUsage(request.getTenantCode(), consumedTokens, usageReferenceId);
+                } finally {
+                    Instant recordUsageEnd = Instant.now();
+                    recordUsageMs = RequestTimingLog.durationMs(recordUsageStart, recordUsageEnd);
+                    RequestTimingLog.logStage("quotaRecordUsage", recordUsageStart, recordUsageEnd);
+                    quotaMs = quotaCheckMs + recordUsageMs;
+                }
             }
         } catch (TenantQuotaExceededException e) {
             markServiceEnd(timingSnapshot, Instant.now(), requestStartMs);
             return blockedQuotaExceptionResponse(e);
         }
+        quotaMs = quotaCheckMs + recordUsageMs;
 
         boolean sanitizedFlag = !Objects.equals(originalUserText, sanitizedUserText);
         Instant liveHistoryStart = Instant.now();
@@ -774,6 +794,7 @@ public class ComprehendChatService {
         Instant serviceEnd = Instant.now();
         long totalRequestMs = RequestTimingLog.durationMs(serviceStart, serviceEnd);
         long pythonRouteMs = RoutingCallTracker.pythonRouteMs();
+        quotaMs = quotaCheckMs + recordUsageMs;
         long httpTaxMs = Math.max(0L, retrievalMs - retrievalPythonMs);
         log.debug(
                 "Retrieval Clocks | springHttpMs={} | pythonInternalMs={} | httpTaxMs={}",
@@ -782,12 +803,13 @@ public class ComprehendChatService {
                 httpTaxMs
         );
         log.debug(
-                "Request Timing Summary | python={}ms | pii={}ms | openai={}ms | rewrite={}ms | retrieval={}ms | grounded={}ms | "
+                "Request Timing Summary | python={}ms | pii={}ms | openai={}ms | quota={}ms | rewrite={}ms | retrieval={}ms | grounded={}ms | "
                         + "gapFill={}ms | generalGPT={}ms | persistence={}ms | suggestions={}ms | liveHistory={}ms | "
                         + "restore={}ms | preRetrievalGlue={}ms | total={}ms | totalScope=serviceWall",
                 pythonRouteMs,
                 piiDetectionMs,
                 openaiMs,
+                quotaMs,
                 queryRewriteMs,
                 retrievalMs,
                 groundedMs,
@@ -804,6 +826,7 @@ public class ComprehendChatService {
         long measuredSumService = pythonRouteMs
                 + piiDetectionMs
                 + openaiMs
+                + quotaMs
                 + queryRewriteMs
                 + retrievalMs
                 + groundedMs
@@ -829,6 +852,7 @@ public class ComprehendChatService {
             timingSnapshot.setGroundedMs(groundedMs);
             timingSnapshot.setGapFillMs(gapFillMs);
             timingSnapshot.setGeneralGptMs(generalGptMs);
+            timingSnapshot.setQuotaMs(quotaMs);
             timingSnapshot.setPersistenceMs(persistenceMs);
             timingSnapshot.setSuggestionsMs(suggestionsMs);
             timingSnapshot.setLiveHistoryMs(liveHistoryMs);
@@ -858,6 +882,7 @@ public class ComprehendChatService {
                     0L,
                     retrievalMs,
                     groundedMs,
+                    quotaMs,
                     persistenceMs,
                     suggestionsMs,
                     wallMs
@@ -876,6 +901,18 @@ public class ComprehendChatService {
                     ChatStageSplitTracker.sessionSaveMs(),
                     ChatStageSplitTracker.requestLogSaveMs(),
                     persistenceMs
+            ));
+            log.info(ChatRequestSummaryLog.formatQuotaSplit(
+                    ChatStageSplitTracker.checkTenantMs(),
+                    ChatStageSplitTracker.checkQuotaMs(),
+                    quotaCheckMs,
+                    ChatStageSplitTracker.usageTenantMs(),
+                    ChatStageSplitTracker.usageQuotaLookupMs(),
+                    ChatStageSplitTracker.usageUpdateMs(),
+                    ChatStageSplitTracker.usageBalanceLookupMs(),
+                    ChatStageSplitTracker.usageTokenTxnMs(),
+                    recordUsageMs,
+                    quotaMs
             ));
             int suggestionTokens = suggestionPromptTokens + suggestionCompletionTokens;
             int tokenTotal = routerPromptTokens + routerCompletionTokens + groundedTokens + gapFillTokens + suggestionTokens;

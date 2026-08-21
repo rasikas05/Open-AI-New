@@ -75,7 +75,7 @@ public class ComprehendChatTimingFilter extends OncePerRequestFilter {
             RequestTimingLog.logResidual(residual, "filterWall");
 
             log.debug(
-                    "Request Timing Summary E2E | python={}ms | pii={}ms | openai={}ms | rewrite={}ms | retrieval={}ms | "
+                    "Request Timing Summary E2E | python={}ms | pii={}ms | openai={}ms | quota={}ms | rewrite={}ms | retrieval={}ms | "
                             + "grounded={}ms | gapFill={}ms | generalGPT={}ms | persistence={}ms | "
                             + "suggestions={}ms | liveHistory={}ms | restore={}ms | preRetrievalGlue={}ms | "
                             + "controllerPreService={}ms | responseSerialize={}ms | "
@@ -83,6 +83,7 @@ public class ComprehendChatTimingFilter extends OncePerRequestFilter {
                     snapshot.getPythonMs(),
                     snapshot.getPiiMs(),
                     snapshot.getRouteMs(),
+                    snapshot.getQuotaMs(),
                     snapshot.getRewriteMs(),
                     snapshot.getRetrievalSpringMs(),
                     snapshot.getGroundedMs(),

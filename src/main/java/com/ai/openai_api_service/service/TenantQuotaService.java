@@ -11,6 +11,8 @@ import com.ai.openai_api_service.model.TopupResponse;
 import com.ai.openai_api_service.repository.TenantQuotaRepository;
 import com.ai.openai_api_service.repository.TenantRepository;
 import com.ai.openai_api_service.repository.TokenTransactionRepository;
+import com.ai.openai_api_service.service.timing.ChatStageSplitTracker;
+import com.ai.openai_api_service.service.timing.RequestTimingLog;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -18,6 +20,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.YearMonth;
 import java.time.ZoneId;
@@ -57,10 +60,19 @@ public class TenantQuotaService {
 
     @Transactional
     public QuotaCheckResult checkBeforeChat(String tenantId) {
+        Instant tenantStart = Instant.now();
         Tenant tenant = tenantRepository.findByTenantCode(tenantId)
                 .orElseThrow(() -> new ResponseStatusException(BAD_REQUEST, "Tenant not found"));
+        Instant tenantEnd = Instant.now();
+        ChatStageSplitTracker.addCheckTenantMs(RequestTimingLog.durationMs(tenantStart, tenantEnd));
+        RequestTimingLog.logStage("quotaCheckTenant", tenantStart, tenantEnd);
 
+        Instant quotaStart = Instant.now();
         TenantQuota quota = tenantQuotaRepository.findByTenant(tenant).orElse(null);
+        Instant quotaEnd = Instant.now();
+        ChatStageSplitTracker.addCheckQuotaMs(RequestTimingLog.durationMs(quotaStart, quotaEnd));
+        RequestTimingLog.logStage("quotaCheckQuota", quotaStart, quotaEnd);
+
         if (quota == null) {
             log.warn("Tenant quota missing. tenantId={}", tenantId);
             return new QuotaCheckResult(false, null, "QUOTA_NOT_CONFIGURED");
@@ -81,19 +93,38 @@ public class TenantQuotaService {
 
     @Transactional
     public TokenUsageDto recordUsage(String tenantId, int consumedTokens, String referenceId) {
+        Instant tenantStart = Instant.now();
         Tenant tenant = tenantRepository.findByTenantCode(tenantId)
                 .orElseThrow(() -> new ResponseStatusException(BAD_REQUEST, "Tenant not found"));
+        Instant tenantEnd = Instant.now();
+        ChatStageSplitTracker.addUsageTenantMs(RequestTimingLog.durationMs(tenantStart, tenantEnd));
+        RequestTimingLog.logStage("quotaUsageTenant", tenantStart, tenantEnd);
 
+        Instant quotaLookupStart = Instant.now();
         TenantQuota quota = tenantQuotaRepository.findByTenant(tenant)
                 .orElseThrow(() -> new ResponseStatusException(BAD_REQUEST, "tenant quota not found"));
+        Instant quotaLookupEnd = Instant.now();
+        ChatStageSplitTracker.addUsageQuotaLookupMs(RequestTimingLog.durationMs(quotaLookupStart, quotaLookupEnd));
+        RequestTimingLog.logStage("quotaUsageQuotaLookup", quotaLookupStart, quotaLookupEnd);
+
         if ("BLOCKED".equalsIgnoreCase(quota.getStatus())) {
             throw new ResponseStatusException(FORBIDDEN, "Tenant is blocked");
         }
         int safeConsumed = Math.max(0, consumedTokens);
         if (safeConsumed > 0) {
+            Instant updateStart = Instant.now();
             int updated = tenantQuotaRepository.incrementUsageIfWithinLimit(tenant.getId(), safeConsumed);
+            Instant updateEnd = Instant.now();
+            ChatStageSplitTracker.addUsageUpdateMs(RequestTimingLog.durationMs(updateStart, updateEnd));
+            RequestTimingLog.logStage("quotaUsageUpdate", updateStart, updateEnd);
+
             if (updated == 0) {
+                Instant balanceStart = Instant.now();
                 TenantQuota latestQuota = tenantQuotaRepository.findByTenant(tenant).orElse(quota);
+                Instant balanceEnd = Instant.now();
+                ChatStageSplitTracker.addUsageBalanceLookupMs(RequestTimingLog.durationMs(balanceStart, balanceEnd));
+                RequestTimingLog.logStage("quotaUsageBalanceLookup", balanceStart, balanceEnd);
+
                 TokenUsageDto latestUsage = toUsage(latestQuota);
                 log.warn("Atomic usage increment rejected. tenantId={}, consumed={}, used={}, total={}",
                         tenantId, safeConsumed, latestUsage.getUsed(), latestUsage.getTotal());
@@ -101,7 +132,12 @@ public class TenantQuotaService {
             }
         }
 
+        Instant balanceStart = Instant.now();
         TenantQuota latestQuota = tenantQuotaRepository.findByTenant(tenant).orElse(quota);
+        Instant balanceEnd = Instant.now();
+        ChatStageSplitTracker.addUsageBalanceLookupMs(RequestTimingLog.durationMs(balanceStart, balanceEnd));
+        RequestTimingLog.logStage("quotaUsageBalanceLookup", balanceStart, balanceEnd);
+
         int remaining = Math.max((safeInt(latestQuota.getBaseLimit()) + safeInt(latestQuota.getExtraTokens())) - safeInt(latestQuota.getTokensUsed()), 0);
 
         TokenTransactionEntity txn = new TokenTransactionEntity();
@@ -111,7 +147,12 @@ public class TenantQuotaService {
         txn.setReferenceId(referenceId);
         txn.setBalanceAfter(remaining);
         txn.setTransactionSource("USAGE_API");
+
+        Instant txnStart = Instant.now();
         tokenTransactionRepository.save(txn);
+        Instant txnEnd = Instant.now();
+        ChatStageSplitTracker.addUsageTokenTxnMs(RequestTimingLog.durationMs(txnStart, txnEnd));
+        RequestTimingLog.logStage("quotaUsageTokenTxn", txnStart, txnEnd);
 
         return toUsage(latestQuota);
     }
