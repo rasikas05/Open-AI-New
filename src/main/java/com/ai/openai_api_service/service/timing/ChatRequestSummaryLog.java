@@ -13,8 +13,9 @@ import java.util.Locale;
  *   <li>LIVE — e.g. {@code Show customer Y00111}: {@code python}, lex path, persistence; planner SKIP so
  *       {@code openai} should be {@code 0.00s}</li>
  * </ul>
- * {@code pii} remains combined (Comprehend + Presidio not split). {@code openai} is planner HTTP only;
- * it must not include PII. Compare majority wall time vs tokens, then pick one later optimization.
+ * {@code pii} and {@code persistence} stay as combined parent buckets. Nested splits are logged via
+ * {@link #formatPiiSplit} / {@link #formatPersistSplit} and must not be added again into total.
+ * {@code openai} is planner HTTP only. Always record {@code suggestions} when explaining wall total.
  */
 public final class ChatRequestSummaryLog {
 
@@ -77,6 +78,42 @@ public final class ChatRequestSummaryLog {
                 + " | gapFill=" + gapFill
                 + " | suggestions=" + suggestions
                 + " | total=" + total;
+    }
+
+    /**
+     * Nested under combined {@code pii=} — do not add these into wall total again.
+     */
+    public static String formatPiiSplit(
+            long businessProtectMs,
+            long comprehendMs,
+            long presidioMs,
+            long piiTotalMs
+    ) {
+        return "[PII-SPLIT] businessProtect=" + seconds(businessProtectMs)
+                + " | comprehend=" + seconds(comprehendMs)
+                + " | presidio=" + seconds(presidioMs)
+                + " | piiTotal=" + seconds(piiTotalMs);
+    }
+
+    /**
+     * Nested under combined {@code persistence=} — do not add these into wall total again.
+     */
+    public static String formatPersistSplit(
+            long tenantLookupMs,
+            long userLookupMs,
+            long sessionLookupMs,
+            long titleMs,
+            long sessionSaveMs,
+            long requestLogSaveMs,
+            long persistTotalMs
+    ) {
+        return "[PERSIST-SPLIT] tenantLookup=" + seconds(tenantLookupMs)
+                + " | userLookup=" + seconds(userLookupMs)
+                + " | sessionLookup=" + seconds(sessionLookupMs)
+                + " | title=" + seconds(titleMs)
+                + " | sessionSave=" + seconds(sessionSaveMs)
+                + " | requestLogSave=" + seconds(requestLogSaveMs)
+                + " | persistTotal=" + seconds(persistTotalMs);
     }
 
     static String seconds(long durationMs) {

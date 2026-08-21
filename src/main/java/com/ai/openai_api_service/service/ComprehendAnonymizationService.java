@@ -2,11 +2,14 @@ package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.entity.PiiEntityDto;
 import com.ai.openai_api_service.model.PresidioAnalyzerResult;
+import com.ai.openai_api_service.service.timing.ChatStageSplitTracker;
+import com.ai.openai_api_service.service.timing.RequestTimingLog;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -59,7 +62,12 @@ public class ComprehendAnonymizationService {
 
         try {
             log.info("Detecting PII using AWS Comprehend");
+            Instant comprehendStart = Instant.now();
             List<PiiEntityDto> comprehendResults = comprehendService.detectPii(text);
+            Instant comprehendEnd = Instant.now();
+            long comprehendMs = RequestTimingLog.durationMs(comprehendStart, comprehendEnd);
+            ChatStageSplitTracker.addComprehendMs(comprehendMs);
+            RequestTimingLog.logStage("comprehend", comprehendStart, comprehendEnd);
             log.info("AWS Comprehend detected {} entities", comprehendResults.size());
             log.debug("Comprehend entities: {}", comprehendResults.stream().map(PiiEntityDto::getType).toList());
 
@@ -67,6 +75,7 @@ public class ComprehendAnonymizationService {
             List<PresidioAnalyzerResult> presidioResults = convertToPresidioFormat(comprehendResults);
             log.debug("Presidio external results count={}", presidioResults.size());
 
+            Instant presidioStart = Instant.now();
             String sanitizedText;
             if (presidioResults.isEmpty()) {
                 log.info("No Presidio external results produced by Comprehend; invoking Presidio raw anonymization fallback");
@@ -79,6 +88,10 @@ public class ComprehendAnonymizationService {
             log.debug("Presidio anonymization result='{}'", sanitizedText);
 
             sanitizedText = applyFallbackSanitization(text, sanitizedText);
+            Instant presidioEnd = Instant.now();
+            long presidioMs = RequestTimingLog.durationMs(presidioStart, presidioEnd);
+            ChatStageSplitTracker.addPresidioMs(presidioMs);
+            RequestTimingLog.logStage("presidio", presidioStart, presidioEnd);
             boolean changed = !text.equals(sanitizedText);
             log.info(
                     "Presidio sanitize complete | comprehendEntities={} | textChanged={}",
@@ -90,7 +103,12 @@ public class ComprehendAnonymizationService {
             log.error("Error in Comprehend-based anonymization: {}", e.getMessage(), e);
             try {
                 log.warn("Comprehend unavailable; falling back to Presidio-only anonymization");
+                Instant presidioStart = Instant.now();
                 String sanitizedText = presidioService.sanitizeTextSafe(text);
+                Instant presidioEnd = Instant.now();
+                long presidioMs = RequestTimingLog.durationMs(presidioStart, presidioEnd);
+                ChatStageSplitTracker.addPresidioMs(presidioMs);
+                RequestTimingLog.logStage("presidio", presidioStart, presidioEnd);
                 return createResponseMap(text, sanitizedText, List.of());
             } catch (Exception presidioError) {
                 log.warn("Presidio fallback failed, using original text: {}", presidioError.getMessage());

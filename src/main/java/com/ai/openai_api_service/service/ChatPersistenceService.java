@@ -14,6 +14,8 @@ import com.ai.openai_api_service.repository.RequestLogRepository;
 import com.ai.openai_api_service.repository.SessionRepository;
 import com.ai.openai_api_service.repository.TenantRepository;
 import com.ai.openai_api_service.repository.UserRepository;
+import com.ai.openai_api_service.service.timing.ChatStageSplitTracker;
+import com.ai.openai_api_service.service.timing.RequestTimingLog;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,6 +27,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -214,28 +217,42 @@ public class ChatPersistenceService {
                     sessionId
             );
 
+            Instant tenantStart = Instant.now();
             Tenant tenant = tenantRepository.findByTenantCode(tenantId)
                     .orElse(null);
+            Instant tenantEnd = Instant.now();
+            ChatStageSplitTracker.addTenantLookupMs(RequestTimingLog.durationMs(tenantStart, tenantEnd));
+            RequestTimingLog.logStage("persistTenantLookup", tenantStart, tenantEnd);
 
             if (tenant == null) {
                 log.warn("Tenant not found for tenantId={}", tenantId);
                 return null;
             }
 
+            Instant userStart = Instant.now();
             User user = userRepository.findByTenantAndUsername(tenant, userId)
                     .orElse(null);
+            Instant userEnd = Instant.now();
+            ChatStageSplitTracker.addUserLookupMs(RequestTimingLog.durationMs(userStart, userEnd));
+            RequestTimingLog.logStage("persistUserLookup", userStart, userEnd);
 
             if (user == null) {
                 log.warn("User not found for tenantId={}, userId={}", tenantId, userId);
                 return null;
             }
 
+            Instant sessionLookupStart = Instant.now();
             Session session = sessionRepository.findByTenantAndUserAndSessionId(
                             tenant,
                             user,
                             sessionId
                     )
                     .orElse(null);
+            Instant sessionLookupEnd = Instant.now();
+            ChatStageSplitTracker.addSessionLookupMs(
+                    RequestTimingLog.durationMs(sessionLookupStart, sessionLookupEnd)
+            );
+            RequestTimingLog.logStage("persistSessionLookup", sessionLookupStart, sessionLookupEnd);
 
             if (session == null) {
                 log.warn(
@@ -268,6 +285,7 @@ public class ChatPersistenceService {
                     session.getTitle()
             );
 
+            Instant titleStart = Instant.now();
             if (hasNoTitle && hasText) {
 
                 String titleSource =
@@ -285,6 +303,9 @@ public class ChatPersistenceService {
                         sessionId
                 );
             }
+            Instant titleEnd = Instant.now();
+            ChatStageSplitTracker.addTitleMs(RequestTimingLog.durationMs(titleStart, titleEnd));
+            RequestTimingLog.logStage("persistTitle", titleStart, titleEnd);
 
             Integer existingTokens = session.getTokensUsed();
 
@@ -296,7 +317,13 @@ public class ChatPersistenceService {
 
             session.setUpdatedAt(LocalDateTime.now());
 
+            Instant sessionSaveStart = Instant.now();
             Session savedSession = sessionRepository.save(session);
+            Instant sessionSaveEnd = Instant.now();
+            ChatStageSplitTracker.addSessionSaveMs(
+                    RequestTimingLog.durationMs(sessionSaveStart, sessionSaveEnd)
+            );
+            RequestTimingLog.logStage("persistSessionSave", sessionSaveStart, sessionSaveEnd);
 
             log.info(
                     "Session saved successfully. sessionId={}, title='{}'",
@@ -336,7 +363,13 @@ public class ChatPersistenceService {
                 message.setBusinessEntitiesJson(protectionAudit.businessEntitiesJson());
             }
 
+            Instant requestLogSaveStart = Instant.now();
             RequestLog savedMessage = requestLogRepository.save(message);
+            Instant requestLogSaveEnd = Instant.now();
+            ChatStageSplitTracker.addRequestLogSaveMs(
+                    RequestTimingLog.durationMs(requestLogSaveStart, requestLogSaveEnd)
+            );
+            RequestTimingLog.logStage("persistRequestLogSave", requestLogSaveStart, requestLogSaveEnd);
 
             log.info(
                     "Message saved successfully. messageId={}, sessionId={}, title='{}'",
