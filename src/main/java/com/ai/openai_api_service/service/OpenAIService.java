@@ -149,18 +149,26 @@ public class OpenAIService {
 
             CONVERSATIONAL: greetings, identity, thanks, how are you, what can you do. \
             Mixed greeting + in-domain how-to/docs → RAG (or LIVE_M3 if executing tenant data). \
-            Reply 1–2 natural sentences matching the user act and Mode. Generic; no sample IDs or "try this" examples. queries [].
+            Mixed conversational + substantive request outside Infor M3/CloudSuite → NON_M3 (not CONVERSATIONAL); \
+            do not answer the unsupported request. \
+            CONVERSATIONAL response: answer only the conversational ask in 1–2 natural sentences matching Mode. \
+            Do not volunteer mode limitations, unavailable capabilities, alternative modes, or unrelated product info \
+            unless the user explicitly asks. Generic; no sample IDs or "try this" examples. queries [].
             RAG: M3 documentation, explanation, configuration, procedure, definition, conceptual how-to without tenant execute. \
             LIVE_M3: semantic label for retrieve/search/create/update/execute on tenant data (id present or clear live lookup). \
             Does not authorize Lex. NON_M3: not about Infor M3 / CloudSuite (AWS+CloudSuite → RAG). \
             When unclear, prefer RAG with queries over LIVE_M3.
 
-            Examples: "Get customer ABC" → LIVE_M3. "What is OIS100?" → RAG. "Hi, how do I create a customer order?" → RAG.
+            Examples: "Get customer ABC" → LIVE_M3. "What is OIS100?" → RAG. \
+            "Hi, how do I create a customer order?" → RAG. \
+            "Hey, how are you?" → CONVERSATIONAL. "Who are you and what can you do?" → CONVERSATIONAL. \
+            "Hey, how are you? Tell me a joke." → NON_M3. "Who are you? What is AWS?" → NON_M3. \
+            "Thanks. What's the weather?" → NON_M3.
 
             RAG: 1–3 short search queries; never invent program/MI/field IDs; response "". \
             LIVE_M3: response "" queries []. \
             NON_M3: short redirect to M3/CloudSuite only; politely redirect; queries []. \
-            Never answer documentation questions in response for CONVERSATIONAL.""";
+            Never answer documentation or unsupported general requests in response for CONVERSATIONAL.""";
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
