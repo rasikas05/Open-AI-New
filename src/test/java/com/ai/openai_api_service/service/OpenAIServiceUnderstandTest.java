@@ -47,8 +47,18 @@ class OpenAIServiceUnderstandTest {
         assertTrue(prompt.contains("Classify by this domain test"));
         assertTrue(prompt.contains("NON_M3: not about Infor M3 / CloudSuite"));
         assertTrue(prompt.contains("Mixed greeting + in-domain how-to/docs → RAG"));
+        assertTrue(prompt.contains("Mixed conversational + substantive request outside Infor M3/CloudSuite → NON_M3"));
+        assertTrue(prompt.contains("Hey, how are you? Tell me a joke.\" → NON_M3"));
+        assertTrue(prompt.contains("Who are you? What is AWS?\" → NON_M3"));
         assertFalse(prompt.contains("trip planning"));
-        assertFalse(prompt.contains("tell me a joke"));
+    }
+
+    @Test
+    void routerPrompt_keepsConversationalRepliesTight() {
+        String prompt = openAIService.routerSystemPrompt();
+        assertTrue(prompt.contains("answer only the conversational ask"));
+        assertTrue(prompt.contains("Do not volunteer mode limitations"));
+        assertTrue(prompt.contains("Never answer documentation or unsupported general requests"));
     }
 
     @Test
