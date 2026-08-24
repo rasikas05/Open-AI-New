@@ -95,8 +95,7 @@ public class ComprehendChatService {
                     + "For M3 documentation or how-to questions, switch to Auto or Docs.";
 
     static final String DEFAULT_M3_DOCS_STEER_MESSAGE =
-            "For M3 documentation and how-to questions, switch to Auto or Docs mode. "
-                    + "I can help retrieve live tenant data here.";
+            "In M3 mode I can help with live tenant data. For documentation and how-to topics, switch to Auto or Docs.";
 
     static final String DEFAULT_M3_NON_M3_MESSAGE =
             "I'm focused on Infor M3 live data in this mode. For general questions outside M3, switch to Auto mode.";
@@ -107,6 +106,9 @@ public class ComprehendChatService {
 
     static final String DEFAULT_DOCS_LIVE_STEER_MESSAGE =
             "To retrieve live M3 tenant data, switch to Auto or M3 mode. I can help with M3 documentation here.";
+
+    static final String DEFAULT_DOCS_NON_M3_MESSAGE =
+            "I'm focused on Infor M3 and CloudSuite topics in Docs mode. For general questions, switch to Auto mode.";
 
     static final String DEFAULT_M3_CONVERSATIONAL_MESSAGE =
             "I'm your Infor M3 live assistant. I can retrieve tenant data such as customer and order details. "
@@ -161,6 +163,9 @@ public class ComprehendChatService {
 
     @Value("${chat.docs.live-steer-message:" + DEFAULT_DOCS_LIVE_STEER_MESSAGE + "}")
     private String docsLiveSteerMessage;
+
+    @Value("${chat.docs.non-m3-message:" + DEFAULT_DOCS_NON_M3_MESSAGE + "}")
+    private String docsNonM3Message;
 
     @Value("${chat.m3.conversational-message:" + DEFAULT_M3_CONVERSATIONAL_MESSAGE + "}")
     private String m3ConversationalMessage;
@@ -1965,18 +1970,14 @@ public class ComprehendChatService {
                 );
             }
             case NON_M3 -> {
-                ChatResponse response;
-                String routeName;
-                if (allowExternalFallback(request)) {
-                    response = buildRouterUserResponse(workingRequest, understood, "general_redirect");
-                    routeName = "general_redirect";
-                } else {
-                    response = buildDocsOnlyInsufficientResponse(workingRequest, understood.usage());
-                    routeName = "rag";
-                }
-                routingSummary.setRoute(routeName);
+                routingSummary.setRoute("docs_non_m3_steer");
                 routingSummary.setHandler("planner");
-                yield new PlannerRouteOutcome(true, routeName, response, null);
+                yield new PlannerRouteOutcome(
+                        true,
+                        "docs_non_m3_steer",
+                        buildDocsNonM3Response(workingRequest, understood),
+                        null
+                );
             }
             case LIVE_M3 -> {
                 log.info("plannerType=LIVE_M3 resolvedByPolicy=docs_live_steer");
@@ -2072,10 +2073,10 @@ public class ComprehendChatService {
     }
 
     private ChatResponse buildM3DocsSteerResponse(ChatRequest request, RequestUnderstandResult understood) {
-        String steer = m3DocsSteerMessage != null && !m3DocsSteerMessage.isBlank()
+        String fallback = m3DocsSteerMessage != null && !m3DocsSteerMessage.isBlank()
                 ? m3DocsSteerMessage
                 : DEFAULT_M3_DOCS_STEER_MESSAGE;
-        return buildSteerResponse(request, understood, steer, "m3_docs_steer");
+        return buildModeSteerOutcome(request, understood, fallback, "m3_docs_steer");
     }
 
     private ChatResponse buildM3NonM3Response(ChatRequest request, RequestUnderstandResult understood) {
@@ -2097,6 +2098,30 @@ public class ComprehendChatService {
                 ? docsLiveSteerMessage
                 : DEFAULT_DOCS_LIVE_STEER_MESSAGE;
         return buildSteerResponse(request, understood, steer, "docs_live_steer");
+    }
+
+    private ChatResponse buildDocsNonM3Response(ChatRequest request, RequestUnderstandResult understood) {
+        String fallback = docsNonM3Message != null && !docsNonM3Message.isBlank()
+                ? docsNonM3Message
+                : DEFAULT_DOCS_NON_M3_MESSAGE;
+        return buildModeSteerOutcome(request, understood, fallback, "docs_non_m3_steer");
+    }
+
+    /**
+     * Prefer planner-authored redirect when present; otherwise configured property / default.
+     * No topic-specific hardcoding.
+     */
+    private ChatResponse buildModeSteerOutcome(
+            ChatRequest request,
+            RequestUnderstandResult understood,
+            String fallbackMessage,
+            String actionTaken
+    ) {
+        String plannerReply = understood != null ? understood.response() : null;
+        if (plannerReply != null && !plannerReply.isBlank()) {
+            return buildRouterUserResponse(request, understood, actionTaken);
+        }
+        return buildSteerResponse(request, understood, fallbackMessage, actionTaken);
     }
 
     private static String resolveConversationalMessage(String configured, String defaultMessage) {
