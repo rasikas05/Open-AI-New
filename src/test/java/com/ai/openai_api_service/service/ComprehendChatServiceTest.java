@@ -146,6 +146,11 @@ class ComprehendChatServiceTest {
         );
         ReflectionTestUtils.setField(
                 comprehendChatService,
+                "docsNonM3Message",
+                ComprehendChatService.DEFAULT_DOCS_NON_M3_MESSAGE
+        );
+        ReflectionTestUtils.setField(
+                comprehendChatService,
                 "m3ConversationalMessage",
                 ComprehendChatService.DEFAULT_M3_CONVERSATIONAL_MESSAGE
         );
@@ -2499,13 +2504,13 @@ class ComprehendChatServiceTest {
     }
 
     @Test
-    void requestRouter_docsExternalOff_nonM3_usesCannedInsufficient() {
+    void requestRouter_docsExternalOff_nonM3_usesDocsNonM3Steer() {
         enableRequestRouter();
         stubQuotaAllowed();
         stubSanitize();
         when(openAIService.understandRequest(any(), eq("what is AWS"))).thenReturn(new RequestUnderstandResult(
                 RequestUnderstandType.NON_M3,
-                "I mainly support Infor M3 and CloudSuite questions.",
+                "",
                 List.of(),
                 new OpenAIUsage(1, 1, 2, "gpt")
         ));
@@ -2516,11 +2521,59 @@ class ComprehendChatServiceTest {
         request.setExternalSourceEnabled(false);
         ChatResponse response = comprehendChatService.chat(request);
 
-        assertEquals(ComprehendChatService.DOCS_INSUFFICIENT_MESSAGE, response.getReply());
-        assertEquals("rag", response.getActionTaken());
+        assertEquals(ComprehendChatService.DEFAULT_DOCS_NON_M3_MESSAGE, response.getReply());
+        assertEquals("docs_non_m3_steer", response.getActionTaken());
         verify(pythonRagService, never()).route(anyString());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
         verify(openAIService, never()).chatWithoutPersistence(any(), any());
+    }
+
+    @Test
+    void requestRouter_docsExternalOn_nonM3_stillUsesDocsNonM3Steer() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        when(openAIService.understandRequest(any(), eq("what is SAP"))).thenReturn(new RequestUnderstandResult(
+                RequestUnderstandType.NON_M3,
+                "",
+                List.of(),
+                new OpenAIUsage(1, 1, 2, "gpt")
+        ));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = baseRequest("what is SAP");
+        request.setMode(ChatMode.DOCS);
+        request.setExternalSourceEnabled(true);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals(ComprehendChatService.DEFAULT_DOCS_NON_M3_MESSAGE, response.getReply());
+        assertEquals("docs_non_m3_steer", response.getActionTaken());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
+    void requestRouter_docsNonM3_prefersPlannerResponse() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        String plannerReply = "Docs mode covers Infor M3 documentation. Switch to Auto for general topics.";
+        when(openAIService.understandRequest(any(), eq("tell me a joke"))).thenReturn(new RequestUnderstandResult(
+                RequestUnderstandType.NON_M3,
+                plannerReply,
+                List.of(),
+                new OpenAIUsage(1, 1, 2, "gpt")
+        ));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = baseRequest("tell me a joke");
+        request.setMode(ChatMode.DOCS);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals(plannerReply, response.getReply());
+        assertEquals("docs_non_m3_steer", response.getActionTaken());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
     }
 
     @Test
@@ -2659,6 +2712,31 @@ class ComprehendChatServiceTest {
     }
 
     @Test
+    void requestRouter_m3Rag_prefersPlannerDocsSteerResponse() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        stubPythonRoute("adhoc reporting", "rag");
+        String plannerReply = "In M3 mode I focus on live tenant data. Switch to Auto or Docs for reporting how-tos.";
+        when(openAIService.understandRequest(any(), eq("adhoc reporting"))).thenReturn(new RequestUnderstandResult(
+                RequestUnderstandType.RAG,
+                plannerReply,
+                List.of("adhoc reporting"),
+                new OpenAIUsage(1, 1, 2, "gpt")
+        ));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+
+        ChatRequest request = baseRequest("adhoc reporting");
+        request.setMode(ChatMode.M3);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals(plannerReply, response.getReply());
+        assertEquals("m3_docs_steer", response.getActionTaken());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString());
+    }
+
+    @Test
     void requestRouter_m3NonM3_returnsNonM3SteerNotGeneralRedirect() {
         enableRequestRouter();
         stubQuotaAllowed();
@@ -2766,8 +2844,7 @@ class ComprehendChatServiceTest {
         enableRequestRouter();
         stubQuotaAllowed();
         stubSanitize();
-        stubUnderstand("tell me about trip planning", RequestUnderstandType.NON_M3,
-                "I mainly support Infor M3 and CloudSuite questions.");
+        stubUnderstand("tell me about trip planning", RequestUnderstandType.NON_M3, "");
         when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("tell me about trip planning");
@@ -2777,7 +2854,8 @@ class ComprehendChatServiceTest {
         verify(pythonRagService, never()).route(anyString());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
         verify(lexService, never()).recognizeText(anyString(), anyString());
-        assertEquals("general_redirect", response.getActionTaken());
+        assertEquals("docs_non_m3_steer", response.getActionTaken());
+        assertEquals(ComprehendChatService.DEFAULT_DOCS_NON_M3_MESSAGE, response.getReply());
     }
 
     @Test

@@ -26,11 +26,12 @@ class ChatRequestSummaryLogTest {
 
     @Test
     void formatTiming_usesProvidedBucketsOnly() {
-        String line = ChatRequestSummaryLog.formatTiming(120, 655, 2941, 0, 0, 0, 690, 400, 5000);
+        String line = ChatRequestSummaryLog.formatTiming(120, 655, 2941, 0, 0, 0, 800, 690, 400, 5000);
         assertTrue(line.startsWith("[TIMING]"));
         assertTrue(line.contains("python=0.12s"));
         assertTrue(line.contains("pii=0.66s"));
         assertTrue(line.contains("openai=2.94s"));
+        assertTrue(line.contains("quota=0.80s"));
         assertTrue(line.contains("suggestions=0.40s"));
         assertTrue(line.contains("total=5.00s"));
     }
@@ -66,5 +67,25 @@ class ChatRequestSummaryLogTest {
         assertTrue(line.contains("sessionSave=0.10s"));
         assertTrue(line.contains("requestLogSave=1.10s"));
         assertTrue(line.contains("persistTotal=1.61s"));
+    }
+
+    @Test
+    void formatQuotaSplit_nestsUnderQuotaTotal() {
+        String line = ChatRequestSummaryLog.formatQuotaSplit(
+                50, 80, 130,
+                40, 60, 200, 70, 300,
+                670, 800
+        );
+        assertTrue(line.startsWith("[QUOTA-SPLIT]"));
+        assertTrue(line.contains("checkTenant=0.05s"));
+        assertTrue(line.contains("checkQuota=0.08s"));
+        assertTrue(line.contains("checkTotal=0.13s"));
+        assertTrue(line.contains("usageTenant=0.04s"));
+        assertTrue(line.contains("usageQuotaLookup=0.06s"));
+        assertTrue(line.contains("usageUpdate=0.20s"));
+        assertTrue(line.contains("usageBalanceLookup=0.07s"));
+        assertTrue(line.contains("usageTokenTxn=0.30s"));
+        assertTrue(line.contains("usageTotal=0.67s"));
+        assertTrue(line.contains("quotaTotal=0.80s"));
     }
 }

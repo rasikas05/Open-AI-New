@@ -21,6 +21,7 @@ public class ComprehendChatTimingSnapshot {
     private long gapFillMs;
     private long generalGptMs;
     private long persistenceMs;
+    private long quotaMs;
     private long suggestionsMs;
     private long liveHistoryMs;
     private long restoreMs;
@@ -134,6 +135,14 @@ public class ComprehendChatTimingSnapshot {
         this.persistenceMs = persistenceMs;
     }
 
+    public long getQuotaMs() {
+        return quotaMs;
+    }
+
+    public void setQuotaMs(long quotaMs) {
+        this.quotaMs = quotaMs;
+    }
+
     public long getSuggestionsMs() {
         return suggestionsMs;
     }
@@ -183,6 +192,7 @@ public class ComprehendChatTimingSnapshot {
                 + groundedMs
                 + gapFillMs
                 + generalGptMs
+                + quotaMs
                 + persistenceMs
                 + suggestionsMs
                 + liveHistoryMs

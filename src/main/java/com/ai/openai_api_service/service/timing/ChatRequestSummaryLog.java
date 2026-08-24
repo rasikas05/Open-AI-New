@@ -13,8 +13,9 @@ import java.util.Locale;
  *   <li>LIVE — e.g. {@code Show customer Y00111}: {@code python}, lex path, persistence; planner SKIP so
  *       {@code openai} should be {@code 0.00s}</li>
  * </ul>
- * {@code pii} and {@code persistence} stay as combined parent buckets. Nested splits are logged via
- * {@link #formatPiiSplit} / {@link #formatPersistSplit} and must not be added again into total.
+ * {@code pii}, {@code persistence}, and {@code quota} stay as combined parent buckets. Nested splits
+ * are logged via {@link #formatPiiSplit} / {@link #formatPersistSplit} / {@link #formatQuotaSplit}
+ * and must not be added again into total.
  * {@code openai} is planner HTTP only. Always record {@code suggestions} when explaining wall total.
  */
 public final class ChatRequestSummaryLog {
@@ -43,6 +44,7 @@ public final class ChatRequestSummaryLog {
     /**
      * Additive stage buckets. {@code openaiMs} is understandRequest only (excludes PII).
      * {@code pythonMs} is Python {@code /route} HTTP responseTime.
+     * {@code quotaMs} is checkBeforeChat + recordUsage walls only (not nested DB sub-ops again).
      */
     public static String formatTiming(
             long pythonMs,
@@ -51,6 +53,7 @@ public final class ChatRequestSummaryLog {
             long lexMs,
             long m3OrQdrantMs,
             long groundingMs,
+            long quotaMs,
             long persistenceMs,
             long suggestionsMs,
             long totalMs
@@ -61,6 +64,7 @@ public final class ChatRequestSummaryLog {
                 + " | lex=" + seconds(lexMs)
                 + " | m3OrQdrant=" + seconds(m3OrQdrantMs)
                 + " | grounding=" + seconds(groundingMs)
+                + " | quota=" + seconds(quotaMs)
                 + " | persistence=" + seconds(persistenceMs)
                 + " | suggestions=" + seconds(suggestionsMs)
                 + " | total=" + seconds(totalMs);
@@ -114,6 +118,33 @@ public final class ChatRequestSummaryLog {
                 + " | sessionSave=" + seconds(sessionSaveMs)
                 + " | requestLogSave=" + seconds(requestLogSaveMs)
                 + " | persistTotal=" + seconds(persistTotalMs);
+    }
+
+    /**
+     * Nested under combined {@code quota=} — do not add these into wall total again.
+     */
+    public static String formatQuotaSplit(
+            long checkTenantMs,
+            long checkQuotaMs,
+            long checkTotalMs,
+            long usageTenantMs,
+            long usageQuotaLookupMs,
+            long usageUpdateMs,
+            long usageBalanceLookupMs,
+            long usageTokenTxnMs,
+            long usageTotalMs,
+            long quotaTotalMs
+    ) {
+        return "[QUOTA-SPLIT] checkTenant=" + seconds(checkTenantMs)
+                + " | checkQuota=" + seconds(checkQuotaMs)
+                + " | checkTotal=" + seconds(checkTotalMs)
+                + " | usageTenant=" + seconds(usageTenantMs)
+                + " | usageQuotaLookup=" + seconds(usageQuotaLookupMs)
+                + " | usageUpdate=" + seconds(usageUpdateMs)
+                + " | usageBalanceLookup=" + seconds(usageBalanceLookupMs)
+                + " | usageTokenTxn=" + seconds(usageTokenTxnMs)
+                + " | usageTotal=" + seconds(usageTotalMs)
+                + " | quotaTotal=" + seconds(quotaTotalMs);
     }
 
     static String seconds(long durationMs) {

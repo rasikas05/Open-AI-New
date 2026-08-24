@@ -95,8 +95,7 @@ public class ComprehendChatService {
                     + "For M3 documentation or how-to questions, switch to Auto or Docs.";
 
     static final String DEFAULT_M3_DOCS_STEER_MESSAGE =
-            "For M3 documentation and how-to questions, switch to Auto or Docs mode. "
-                    + "I can help retrieve live tenant data here.";
+            "In M3 mode I can help with live tenant data. For documentation and how-to topics, switch to Auto or Docs.";
 
     static final String DEFAULT_M3_NON_M3_MESSAGE =
             "I'm focused on Infor M3 live data in this mode. For general questions outside M3, switch to Auto mode.";
@@ -107,6 +106,9 @@ public class ComprehendChatService {
 
     static final String DEFAULT_DOCS_LIVE_STEER_MESSAGE =
             "To retrieve live M3 tenant data, switch to Auto or M3 mode. I can help with M3 documentation here.";
+
+    static final String DEFAULT_DOCS_NON_M3_MESSAGE =
+            "I'm focused on Infor M3 and CloudSuite topics in Docs mode. For general questions, switch to Auto mode.";
 
     static final String DEFAULT_M3_CONVERSATIONAL_MESSAGE =
             "I'm your Infor M3 live assistant. I can retrieve tenant data such as customer and order details. "
@@ -161,6 +163,9 @@ public class ComprehendChatService {
 
     @Value("${chat.docs.live-steer-message:" + DEFAULT_DOCS_LIVE_STEER_MESSAGE + "}")
     private String docsLiveSteerMessage;
+
+    @Value("${chat.docs.non-m3-message:" + DEFAULT_DOCS_NON_M3_MESSAGE + "}")
+    private String docsNonM3Message;
 
     @Value("${chat.m3.conversational-message:" + DEFAULT_M3_CONVERSATIONAL_MESSAGE + "}")
     private String m3ConversationalMessage;
@@ -233,6 +238,9 @@ public class ComprehendChatService {
         long liveHistoryMs = 0L;
         long suggestionsMs = 0L;
         long persistenceMs = 0L;
+        long quotaMs = 0L;
+        long quotaCheckMs = 0L;
+        long recordUsageMs = 0L;
         long preRetrievalGlueMs = 0L;
         int groundedTokens = 0;
         int gapFillTokens = 0;
@@ -247,17 +255,31 @@ public class ComprehendChatService {
             timingSnapshot.setServiceStart(serviceStart);
         }
 
+        RoutingSummaryState routingSummary = new RoutingSummaryState();
+        ChatResponse chatResponse = null;
+        String route = null;
+        RoutingCallTracker.begin();
+        ChatStageSplitTracker.begin();
+        try {
+        Instant quotaCheckStart = Instant.now();
         TenantQuotaService.QuotaCheckResult quotaCheck = tenantQuotaService.checkBeforeChat(request.getTenantCode());
+        Instant quotaCheckEnd = Instant.now();
+        quotaCheckMs = RequestTimingLog.durationMs(quotaCheckStart, quotaCheckEnd);
+        RequestTimingLog.logStage("quotaCheck", quotaCheckStart, quotaCheckEnd);
+        quotaMs = quotaCheckMs;
         if (!quotaCheck.allowed()) {
             markServiceEnd(timingSnapshot, Instant.now(), requestStartMs);
             return blockedQuotaResponse(quotaCheck);
         }
 
+        Instant sessionLimitStart = Instant.now();
         chatPersistenceService.enforceSessionRequestLimit(
                 request.getTenantCode(),
                 request.getUserId(),
                 request.getSessionId()
         );
+        Instant sessionLimitEnd = Instant.now();
+        RequestTimingLog.logStage("sessionLimit", sessionLimitStart, sessionLimitEnd);
 
         Long editOfRequestLogId = request.getEditOfRequestLogId();
         Long editSessionPk = null;
@@ -287,14 +309,8 @@ public class ComprehendChatService {
                 originalUserText != null ? originalUserText.length() : 0
         );
 
-        RoutingSummaryState routingSummary = new RoutingSummaryState();
         routingSummary.setRequestText(originalUserText);
         routingSummary.setMode(resolvedMode);
-        ChatResponse chatResponse = null;
-        String route = null;
-        RoutingCallTracker.begin();
-        ChatStageSplitTracker.begin();
-        try {
         boolean guidedHandled = false;
         List<SourceItem> sourcesForSuggestions = null;
         List<SourceItem> responseSources = null;
@@ -667,12 +683,21 @@ public class ComprehendChatService {
         String usageReferenceId = request.getSessionId() + ":" + System.currentTimeMillis();
         try {
             if (consumedTokens > 0) {
-                tenantQuotaService.recordUsage(request.getTenantCode(), consumedTokens, usageReferenceId);
+                Instant recordUsageStart = Instant.now();
+                try {
+                    tenantQuotaService.recordUsage(request.getTenantCode(), consumedTokens, usageReferenceId);
+                } finally {
+                    Instant recordUsageEnd = Instant.now();
+                    recordUsageMs = RequestTimingLog.durationMs(recordUsageStart, recordUsageEnd);
+                    RequestTimingLog.logStage("quotaRecordUsage", recordUsageStart, recordUsageEnd);
+                    quotaMs = quotaCheckMs + recordUsageMs;
+                }
             }
         } catch (TenantQuotaExceededException e) {
             markServiceEnd(timingSnapshot, Instant.now(), requestStartMs);
             return blockedQuotaExceptionResponse(e);
         }
+        quotaMs = quotaCheckMs + recordUsageMs;
 
         boolean sanitizedFlag = !Objects.equals(originalUserText, sanitizedUserText);
         Instant liveHistoryStart = Instant.now();
@@ -774,6 +799,7 @@ public class ComprehendChatService {
         Instant serviceEnd = Instant.now();
         long totalRequestMs = RequestTimingLog.durationMs(serviceStart, serviceEnd);
         long pythonRouteMs = RoutingCallTracker.pythonRouteMs();
+        quotaMs = quotaCheckMs + recordUsageMs;
         long httpTaxMs = Math.max(0L, retrievalMs - retrievalPythonMs);
         log.debug(
                 "Retrieval Clocks | springHttpMs={} | pythonInternalMs={} | httpTaxMs={}",
@@ -782,12 +808,13 @@ public class ComprehendChatService {
                 httpTaxMs
         );
         log.debug(
-                "Request Timing Summary | python={}ms | pii={}ms | openai={}ms | rewrite={}ms | retrieval={}ms | grounded={}ms | "
+                "Request Timing Summary | python={}ms | pii={}ms | openai={}ms | quota={}ms | rewrite={}ms | retrieval={}ms | grounded={}ms | "
                         + "gapFill={}ms | generalGPT={}ms | persistence={}ms | suggestions={}ms | liveHistory={}ms | "
                         + "restore={}ms | preRetrievalGlue={}ms | total={}ms | totalScope=serviceWall",
                 pythonRouteMs,
                 piiDetectionMs,
                 openaiMs,
+                quotaMs,
                 queryRewriteMs,
                 retrievalMs,
                 groundedMs,
@@ -804,6 +831,7 @@ public class ComprehendChatService {
         long measuredSumService = pythonRouteMs
                 + piiDetectionMs
                 + openaiMs
+                + quotaMs
                 + queryRewriteMs
                 + retrievalMs
                 + groundedMs
@@ -829,6 +857,7 @@ public class ComprehendChatService {
             timingSnapshot.setGroundedMs(groundedMs);
             timingSnapshot.setGapFillMs(gapFillMs);
             timingSnapshot.setGeneralGptMs(generalGptMs);
+            timingSnapshot.setQuotaMs(quotaMs);
             timingSnapshot.setPersistenceMs(persistenceMs);
             timingSnapshot.setSuggestionsMs(suggestionsMs);
             timingSnapshot.setLiveHistoryMs(liveHistoryMs);
@@ -858,6 +887,7 @@ public class ComprehendChatService {
                     0L,
                     retrievalMs,
                     groundedMs,
+                    quotaMs,
                     persistenceMs,
                     suggestionsMs,
                     wallMs
@@ -876,6 +906,18 @@ public class ComprehendChatService {
                     ChatStageSplitTracker.sessionSaveMs(),
                     ChatStageSplitTracker.requestLogSaveMs(),
                     persistenceMs
+            ));
+            log.info(ChatRequestSummaryLog.formatQuotaSplit(
+                    ChatStageSplitTracker.checkTenantMs(),
+                    ChatStageSplitTracker.checkQuotaMs(),
+                    quotaCheckMs,
+                    ChatStageSplitTracker.usageTenantMs(),
+                    ChatStageSplitTracker.usageQuotaLookupMs(),
+                    ChatStageSplitTracker.usageUpdateMs(),
+                    ChatStageSplitTracker.usageBalanceLookupMs(),
+                    ChatStageSplitTracker.usageTokenTxnMs(),
+                    recordUsageMs,
+                    quotaMs
             ));
             int suggestionTokens = suggestionPromptTokens + suggestionCompletionTokens;
             int tokenTotal = routerPromptTokens + routerCompletionTokens + groundedTokens + gapFillTokens + suggestionTokens;
@@ -1928,18 +1970,14 @@ public class ComprehendChatService {
                 );
             }
             case NON_M3 -> {
-                ChatResponse response;
-                String routeName;
-                if (allowExternalFallback(request)) {
-                    response = buildRouterUserResponse(workingRequest, understood, "general_redirect");
-                    routeName = "general_redirect";
-                } else {
-                    response = buildDocsOnlyInsufficientResponse(workingRequest, understood.usage());
-                    routeName = "rag";
-                }
-                routingSummary.setRoute(routeName);
+                routingSummary.setRoute("docs_non_m3_steer");
                 routingSummary.setHandler("planner");
-                yield new PlannerRouteOutcome(true, routeName, response, null);
+                yield new PlannerRouteOutcome(
+                        true,
+                        "docs_non_m3_steer",
+                        buildDocsNonM3Response(workingRequest, understood),
+                        null
+                );
             }
             case LIVE_M3 -> {
                 log.info("plannerType=LIVE_M3 resolvedByPolicy=docs_live_steer");
@@ -2035,10 +2073,10 @@ public class ComprehendChatService {
     }
 
     private ChatResponse buildM3DocsSteerResponse(ChatRequest request, RequestUnderstandResult understood) {
-        String steer = m3DocsSteerMessage != null && !m3DocsSteerMessage.isBlank()
+        String fallback = m3DocsSteerMessage != null && !m3DocsSteerMessage.isBlank()
                 ? m3DocsSteerMessage
                 : DEFAULT_M3_DOCS_STEER_MESSAGE;
-        return buildSteerResponse(request, understood, steer, "m3_docs_steer");
+        return buildModeSteerOutcome(request, understood, fallback, "m3_docs_steer");
     }
 
     private ChatResponse buildM3NonM3Response(ChatRequest request, RequestUnderstandResult understood) {
@@ -2060,6 +2098,30 @@ public class ComprehendChatService {
                 ? docsLiveSteerMessage
                 : DEFAULT_DOCS_LIVE_STEER_MESSAGE;
         return buildSteerResponse(request, understood, steer, "docs_live_steer");
+    }
+
+    private ChatResponse buildDocsNonM3Response(ChatRequest request, RequestUnderstandResult understood) {
+        String fallback = docsNonM3Message != null && !docsNonM3Message.isBlank()
+                ? docsNonM3Message
+                : DEFAULT_DOCS_NON_M3_MESSAGE;
+        return buildModeSteerOutcome(request, understood, fallback, "docs_non_m3_steer");
+    }
+
+    /**
+     * Prefer planner-authored redirect when present; otherwise configured property / default.
+     * No topic-specific hardcoding.
+     */
+    private ChatResponse buildModeSteerOutcome(
+            ChatRequest request,
+            RequestUnderstandResult understood,
+            String fallbackMessage,
+            String actionTaken
+    ) {
+        String plannerReply = understood != null ? understood.response() : null;
+        if (plannerReply != null && !plannerReply.isBlank()) {
+            return buildRouterUserResponse(request, understood, actionTaken);
+        }
+        return buildSteerResponse(request, understood, fallbackMessage, actionTaken);
     }
 
     private static String resolveConversationalMessage(String configured, String defaultMessage) {
