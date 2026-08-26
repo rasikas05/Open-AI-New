@@ -19,9 +19,93 @@ class OpenAiChatRequestBuilderTest {
     @Test
     void isGpt56Family_recognizesGpt56TerraAndGpt5Prefix() {
         assertTrue(OpenAiChatRequestBuilder.isGpt56Family("gpt-5.6-terra"));
+        assertTrue(OpenAiChatRequestBuilder.isGpt56Family("openai.gpt-5.6-terra"));
+        assertTrue(OpenAiChatRequestBuilder.isGpt56Family("global.openai.gpt-5.6-terra"));
+        assertTrue(OpenAiChatRequestBuilder.isGpt56Family("us.openai.gpt-5.6-terra"));
         assertTrue(OpenAiChatRequestBuilder.isGpt56Family("gpt-5-preview"));
         assertFalse(OpenAiChatRequestBuilder.isGpt56Family("gpt-4.1"));
         assertFalse(OpenAiChatRequestBuilder.isGpt56Family(null));
+    }
+
+    @Test
+    void globalCrisGpt56TerraBody_usesMaxCompletionTokensAndReasoningEffort() {
+        Map<String, Object> body = OpenAiChatRequestBuilder.buildChatCompletionBody(
+                "global.openai.gpt-5.6-terra",
+                "none",
+                4096,
+                MESSAGES,
+                null,
+                null
+        );
+
+        assertEquals("global.openai.gpt-5.6-terra", body.get("model"));
+        assertEquals(MESSAGES, body.get("messages"));
+        assertEquals("none", body.get("reasoning_effort"));
+        assertEquals(4096, body.get("max_completion_tokens"));
+        assertFalse(body.containsKey("max_tokens"));
+        assertFalse(body.containsKey("temperature"));
+    }
+
+    @Test
+    void globalCrisGpt56TerraBody_supportsJsonObjectResponseFormat() {
+        Map<String, Object> body = OpenAiChatRequestBuilder.buildChatCompletionBody(
+                "global.openai.gpt-5.6-terra",
+                "none",
+                4096,
+                MESSAGES,
+                0.3,
+                256,
+                true
+        );
+        assertEquals(Map.of("type", "json_object"), body.get("response_format"));
+        assertEquals("none", body.get("reasoning_effort"));
+        assertEquals(256, body.get("max_completion_tokens"));
+        assertEquals(0.3, body.get("temperature"));
+    }
+
+    @Test
+    void bedrockGpt56TerraBody_usesMaxCompletionTokensAndReasoningEffort() {
+        Map<String, Object> body = OpenAiChatRequestBuilder.buildChatCompletionBody(
+                "openai.gpt-5.6-terra",
+                "none",
+                4096,
+                MESSAGES,
+                null,
+                null
+        );
+
+        assertEquals("openai.gpt-5.6-terra", body.get("model"));
+        assertEquals(MESSAGES, body.get("messages"));
+        assertEquals("none", body.get("reasoning_effort"));
+        assertEquals(4096, body.get("max_completion_tokens"));
+        assertFalse(body.containsKey("max_tokens"));
+        assertFalse(body.containsKey("temperature"));
+    }
+
+    @Test
+    void bedrockGpt56TerraBody_supportsJsonObjectResponseFormat() {
+        Map<String, Object> body = OpenAiChatRequestBuilder.buildChatCompletionBody(
+                "openai.gpt-5.6-terra",
+                "none",
+                4096,
+                MESSAGES,
+                0.3,
+                256,
+                true
+        );
+        assertEquals(Map.of("type", "json_object"), body.get("response_format"));
+        assertEquals("none", body.get("reasoning_effort"));
+        assertEquals(256, body.get("max_completion_tokens"));
+        assertEquals(0.3, body.get("temperature"));
+    }
+
+    @Test
+    void effectiveReasoningEffort_defaultsToNoneForGpt56() {
+        assertEquals("none", OpenAiChatRequestBuilder.effectiveReasoningEffort("gpt-5.6-terra", null));
+        assertEquals("none", OpenAiChatRequestBuilder.effectiveReasoningEffort("openai.gpt-5.6-terra", null));
+        assertEquals("none", OpenAiChatRequestBuilder.effectiveReasoningEffort("global.openai.gpt-5.6-terra", null));
+        assertEquals("medium", OpenAiChatRequestBuilder.effectiveReasoningEffort("gpt-5.6-terra", " medium "));
+        assertNull(OpenAiChatRequestBuilder.effectiveReasoningEffort("gpt-4.1", "none"));
     }
 
     @Test
@@ -117,13 +201,6 @@ class OpenAiChatRequestBuilderTest {
         );
         assertEquals("medium", withMedium.get("reasoning_effort"));
         assertFalse(withMedium.containsKey("temperature"));
-    }
-
-    @Test
-    void effectiveReasoningEffort_defaultsToNoneForGpt56() {
-        assertEquals("none", OpenAiChatRequestBuilder.effectiveReasoningEffort("gpt-5.6-terra", null));
-        assertEquals("medium", OpenAiChatRequestBuilder.effectiveReasoningEffort("gpt-5.6-terra", " medium "));
-        assertNull(OpenAiChatRequestBuilder.effectiveReasoningEffort("gpt-4.1", "none"));
     }
 
     @Test

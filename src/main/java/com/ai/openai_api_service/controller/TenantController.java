@@ -36,7 +36,7 @@ public class TenantController {
 
     @PostMapping
     @Operation(summary = "Create tenant", description = "Create a tenant record in the database.")
-    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<TenantResponse> createTenant(@Valid @RequestBody TenantCreateRequest request) {
         logger.info("Creating tenant: {}", request.getTenantCode());
         TenantResponse response = tenantService.createTenant(request);
@@ -45,7 +45,7 @@ public class TenantController {
 
     @GetMapping("/{tenantId}/users")
     @Operation(summary = "List users", description = "List users for a tenant.")
-    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<List<UserResponse>> listUsers(@PathVariable String tenantId) {
         logger.info("Listing users for tenant={}", tenantId);
         return ResponseEntity.ok(tenantService.getUsersForTenant(tenantId));
@@ -53,7 +53,7 @@ public class TenantController {
 
     @GetMapping("/{tenantId}/users/{userId}/sessions")
     @Operation(summary = "List sessions", description = "List sessions for a tenant user.")
-    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<List<SessionResponse>> listUserSessions(
             @PathVariable String tenantId,
             @PathVariable String userId) {
@@ -63,7 +63,7 @@ public class TenantController {
 
     @PostMapping("/{tenantId}/users/{userId}/sessions")
     @Operation(summary = "Register user session", description = "Register a user and session for an existing tenant.")
-    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<Void> registerUserSession(
             @PathVariable String tenantId,
             @PathVariable String userId,

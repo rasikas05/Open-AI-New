@@ -35,7 +35,7 @@ public class ComprehendAnonymizationController {
             summary = "Detect and anonymize text with Comprehend + Presidio",
             description = "Detects PII using AWS Comprehend and anonymizes it using Presidio anonymizer."
     )
-    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<Map<String, Object>> anonymize(@Valid @RequestBody PresidioTextRequest request) {
         logger.info("Comprehend anonymization request received");
         Map<String, Object> result = comprehendAnonymizationService.detectAndAnonymize(request.getText());

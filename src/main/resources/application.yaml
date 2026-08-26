@@ -9,11 +9,11 @@ spring:
     oauth2:
       resourceserver:
         jwt:
-          issuer-uri: https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_8skbXODdf
-          jwk-set-uri: https://cognito-idp.ap-south-1.amazonaws.com/ap-south-1_8skbXODdf/.well-known/jwks.json
+          issuer-uri: https://cognito-idp.eu-central-1.amazonaws.com/eu-central-1_j7SMcRyWv
+          jwk-set-uri: https://cognito-idp.eu-central-1.amazonaws.com/eu-central-1_j7SMcRyWv/.well-known/jwks.json
 aws:
   cognito:
-    userPoolId: ap-south-1_8skbXODdf
-    clientId: 5vando13pthgk6a50d2adpfon4
-    clientSecret: 19pcpha4uvjlsmm78au794au5b64vkbmrhj1nccqhasfep2hd6p
-    region: ap-south-1
+    userPoolId: eu-central-1_j7SMcRyWv
+    clientId: l6p54peadaqdhlfahb2fvega4
+    clientSecret: 1ipc3qs63k7o9f6piieibbm1cdpak6c6gmhshbolc612m5jk1579
+    region: eu-central-1

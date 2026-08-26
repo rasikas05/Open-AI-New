@@ -1,6 +1,5 @@
 package com.ai.openai_api_service.controller;
 
-import com.ai.openai_api_service.config.SecurityConstants;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import io.swagger.v3.oas.annotations.Operation;
@@ -22,7 +21,7 @@ public class SecuredController {
 
     @GetMapping("/client-info")
     @Operation(summary = "Get client information", description = "Returns information about the authenticated client.")
-    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<String> getClientInfo(@AuthenticationPrincipal Jwt jwt) {
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("Client info request from client_id: {}", clientId);
