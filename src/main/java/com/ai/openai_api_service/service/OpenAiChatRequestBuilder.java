@@ -20,7 +20,14 @@ final class OpenAiChatRequestBuilder {
             return false;
         }
         String normalized = model.toLowerCase(Locale.ROOT);
-        return normalized.startsWith("gpt-5.6") || normalized.startsWith("gpt-5");
+        // Strip CRIS geography prefixes (global. / us. / in.), then provider prefix.
+        if (normalized.startsWith("global.") || normalized.startsWith("us.") || normalized.startsWith("in.")) {
+            normalized = normalized.substring(normalized.indexOf('.') + 1);
+        }
+        if (normalized.startsWith("openai.")) {
+            normalized = normalized.substring("openai.".length());
+        }
+        return normalized.startsWith("gpt-5");
     }
 
     static String effectiveReasoningEffort(String model, String configuredEffort) {

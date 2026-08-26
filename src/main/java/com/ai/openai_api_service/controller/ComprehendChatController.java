@@ -78,7 +78,7 @@ public class ComprehendChatController {
             summary = "Send a chat message with Comprehend PII detection",
             description = "Sends user input to OpenAI with AWS Comprehend-based PII detection and anonymization before processing."
     )
-    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<ChatResponse> chat(
             @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody ChatRequest request) {
@@ -99,7 +99,7 @@ public class ComprehendChatController {
             summary = "Submit response feedback",
             description = "Upserts GOOD/BAD feedback (optional comment) for a persisted assistant turn identified by requestLogId."
     )
-    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<ResponseFeedbackResponse> feedback(
             @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody ResponseFeedbackRequest request) {
@@ -120,7 +120,7 @@ public class ComprehendChatController {
             summary = "Get chat history",
             description = "Returns prior session messages for widget display (Comprehend-based)."
     )
-    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<List<HistoryMessageDto>> history(
             @AuthenticationPrincipal Jwt jwt,
             @RequestParam String tenantId,
@@ -141,7 +141,7 @@ public class ComprehendChatController {
             summary = "List user sessions",
             description = "Returns session-wise history for a tenant user (Comprehend-based)."
     )
-    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<List<SessionSummaryDto>> listSessions(
             @AuthenticationPrincipal Jwt jwt,
             @RequestParam String tenantId,
@@ -170,7 +170,7 @@ public class ComprehendChatController {
             summary = "Get session details",
             description = "Returns full session details including all messages (Comprehend-based)."
     )
-    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<SessionSummaryDto> getSession(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable String sessionId) {
@@ -200,7 +200,7 @@ public class ComprehendChatController {
             summary = "Close a session",
             description = "Marks a session as closed (Comprehend-based)."
     )
-    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<SessionSummaryDto> closeSession(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable String sessionId) {

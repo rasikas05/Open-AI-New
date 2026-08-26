@@ -1,6 +1,5 @@
 package com.ai.openai_api_service.controller;
 
-import com.ai.openai_api_service.config.SecurityConstants;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import com.ai.openai_api_service.entity.RequestLog;
@@ -56,7 +55,7 @@ public class ChatController {
 
     @PostMapping
     @Operation(summary = "Send a chat message", description = "Sends user input to OpenAI and returns the response.")
-    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<ChatResponse> chat(
             @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody ChatRequest request) {
@@ -71,7 +70,7 @@ public class ChatController {
 
     @GetMapping("/history")
     @Operation(summary = "Get chat history", description = "Returns prior session messages for widget display.")
-    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<List<MessageDto>> history(
             @AuthenticationPrincipal Jwt jwt,
             @RequestParam String tenantId,
@@ -90,7 +89,7 @@ public class ChatController {
 
     @GetMapping("/sessions")
     @Operation(summary = "List user sessions", description = "Returns session-wise history for a tenant user.")
-    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<List<SessionSummaryDto>> listSessions(
             @AuthenticationPrincipal Jwt jwt,
             @RequestParam String tenantId,
@@ -117,7 +116,7 @@ public class ChatController {
 
     @GetMapping("/sessions/count")
     @Operation(summary = "Count user sessions", description = "Returns number of sessions for a tenant user.")
-    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<SessionCountDto> countSessions(
             @AuthenticationPrincipal Jwt jwt,
             @RequestParam String tenantId,
@@ -139,7 +138,7 @@ public class ChatController {
 
     @GetMapping("/sessions/{sessionId}/messages")
     @Operation(summary = "Get session transcript", description = "Returns all messages for a selected user session.")
-    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<List<SessionMessageDto>> sessionMessages(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable String sessionId,
@@ -182,7 +181,7 @@ public class ChatController {
 
     @PutMapping("/sessions/{sessionId}/title")
     @Operation(summary = "Update session title", description = "Updates the title for an existing chat session.")
-    @PreAuthorize("hasAuthority('SCOPE_default-m2m-resource-server-bhkkzj/read')")
+    @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<SessionTitleUpdateResponse> updateSessionTitle(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable String sessionId,

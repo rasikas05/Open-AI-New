@@ -937,7 +937,7 @@ public class OpenAIService {
     private void validateApiKey() {
         if (apiKey == null || apiKey.isBlank()) {
             throw new OpenAIException(
-                    "OpenAI API key is missing. Set OPENAI_API_KEY env var or openai.api.key property.",
+                    "OpenAI API key is missing. Set BEDROCK_API_KEY env var or openai.api.key property.",
                     401
             );
         }
