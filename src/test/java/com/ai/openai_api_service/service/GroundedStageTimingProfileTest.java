@@ -21,7 +21,7 @@ import java.util.Map;
 
 /**
  * Phase 3: collect ≥20 grounded stage samples (promptBuild / openAiWait / responseParse)
- * with p50/p95/max-ready JSONL. Skips unless BEDROCK_API_KEY (or OPENAI_API_KEY) is set.
+ * with p50/p95/max-ready JSONL. Skips unless OPENAI_API_KEY is set.
  *
  * Run: mvn -pl . -Dtest=GroundedStageTimingProfileTest#profileGroundedStages_writesJsonl test
  * Optional: -Dgrounded.perf.out=path/to/grounded_stage_samples.jsonl
@@ -42,26 +42,16 @@ class GroundedStageTimingProfileTest {
 
     @Test
     void profileGroundedStages_writesJsonl() throws Exception {
-        String apiKey = System.getenv("BEDROCK_API_KEY");
-        if (apiKey == null || apiKey.isBlank()) {
-            apiKey = System.getenv("OPENAI_API_KEY");
-        }
-        Assumptions.assumeTrue(apiKey != null && !apiKey.isBlank(), "BEDROCK_API_KEY (or OPENAI_API_KEY) required");
+        String apiKey = System.getenv("OPENAI_API_KEY");
+        Assumptions.assumeTrue(apiKey != null && !apiKey.isBlank(), "OPENAI_API_KEY required");
 
         OpenAIService service = new OpenAIService(null, null, null);
         ReflectionTestUtils.setField(service, "apiKey", apiKey);
-        ReflectionTestUtils.setField(
-                service,
-                "model",
-                System.getenv().getOrDefault("OPENAI_MODEL", "global.openai.gpt-5.6-terra")
-        );
+        ReflectionTestUtils.setField(service, "model", System.getenv().getOrDefault("OPENAI_MODEL", "gpt-4.1"));
         ReflectionTestUtils.setField(
                 service,
                 "openaiUrl",
-                System.getenv().getOrDefault(
-                        "OPENAI_API_URL",
-                        "https://bedrock-runtime.eu-central-1.amazonaws.com/openai/v1/chat/completions"
-                )
+                System.getenv().getOrDefault("OPENAI_API_URL", "https://api.openai.com/v1/chat/completions")
         );
         ReflectionTestUtils.setField(service, "loadHistoryFromDb", false);
         ReflectionTestUtils.setField(service, "allowClientHistory", false);
