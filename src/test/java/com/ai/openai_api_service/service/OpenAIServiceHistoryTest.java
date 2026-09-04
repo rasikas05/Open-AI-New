@@ -101,6 +101,12 @@ class OpenAIServiceHistoryTest {
     }
 
     @Test
+    void responsesPocDisabledByDefault() {
+        OpenAIService service = new OpenAIService(null, null, null);
+        assertFalse((Boolean) ReflectionTestUtils.getField(service, "responsesPocEnabled"));
+    }
+
+    @Test
     void buildMessages_historyIsUserOnlyThenCurrentPayload() {
         ChatRequest request = new ChatRequest();
         request.setUserMessage("now");

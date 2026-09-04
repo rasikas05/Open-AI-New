@@ -45,6 +45,8 @@ public class ChatResponse {
     private String searchContextId;
     private PaginationMetadataDto pagination;
     private Long requestLogId;
+    /** OpenAI Responses API id when POC path is used. */
+    private String openAiResponseId;
 
     public ChatResponse() {
     }
@@ -348,6 +350,14 @@ public class ChatResponse {
 
     public void setRequestLogId(Long requestLogId) {
         this.requestLogId = requestLogId;
+    }
+
+    public String getOpenAiResponseId() {
+        return openAiResponseId;
+    }
+
+    public void setOpenAiResponseId(String openAiResponseId) {
+        this.openAiResponseId = openAiResponseId;
     }
 }
 

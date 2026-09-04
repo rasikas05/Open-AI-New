@@ -81,4 +81,21 @@ public interface RequestLogRepository extends JpaRepository<RequestLog, Long> {
             @Param("newId") Long newId,
             @Param("sessionPk") Long sessionPk
     );
+
+    @Query("""
+            SELECT r.openaiResponseId FROM RequestLog r
+            WHERE r.session.tenant = :tenant
+              AND r.session.user = :user
+              AND r.session.sessionId = :sessionId
+              AND r.supersededByRequestLogId IS NULL
+              AND r.openaiResponseId IS NOT NULL
+              AND r.openaiResponseId <> ''
+            ORDER BY r.createdAt DESC
+            """)
+    List<String> findLatestOpenAiResponseIds(
+            @Param("tenant") Tenant tenant,
+            @Param("user") User user,
+            @Param("sessionId") String sessionId,
+            Pageable pageable
+    );
 }

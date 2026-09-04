@@ -732,7 +732,8 @@ public class ComprehendChatService {
                         replyForPersistence
                 )
                         : null,
-                resolvedMode
+                resolvedMode,
+                chatResponse.getOpenAiResponseId()
         );
         if (editOfRequestLogId != null && requestLogId != null && editSessionPk != null) {
             boolean superseded = chatPersistenceService.supersedeEditedRequest(

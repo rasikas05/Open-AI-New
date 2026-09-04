@@ -207,6 +207,43 @@ public class ChatPersistenceService {
             com.ai.openai_api_service.service.protection.ProtectionAuditSnapshot protectionAudit,
             ChatMode resolvedMode
     ) {
+        return persistChat(
+                tenantId,
+                userId,
+                sessionId,
+                originalText,
+                sanitizedText,
+                openAiResponse,
+                openAiUsage,
+                actionTaken,
+                sanitizedFlag,
+                retrievalReason,
+                retrievalTimeMs,
+                auditMetadata,
+                protectionAudit,
+                resolvedMode,
+                null
+        );
+    }
+
+    @Transactional
+    public Long persistChat(
+            String tenantId,
+            String userId,
+            String sessionId,
+            String originalText,
+            String sanitizedText,
+            String openAiResponse,
+            OpenAIUsage openAiUsage,
+            String actionTaken,
+            Boolean sanitizedFlag,
+            String retrievalReason,
+            Integer retrievalTimeMs,
+            LiveHistoryAuditMetadata auditMetadata,
+            com.ai.openai_api_service.service.protection.ProtectionAuditSnapshot protectionAudit,
+            ChatMode resolvedMode,
+            String openAiResponseId
+    ) {
         try {
             int consumed = resolveConsumedTokens(openAiUsage, null);
 
@@ -348,6 +385,9 @@ public class ChatPersistenceService {
             }
             message.setRetrievalReason(retrievalReason);
             message.setRetrievalTimeMs(retrievalTimeMs);
+            if (openAiResponseId != null && !openAiResponseId.isBlank()) {
+                message.setOpenaiResponseId(openAiResponseId.trim());
+            }
             if (auditMetadata != null) {
                 message.setLexIntent(auditMetadata.lexIntent());
                 message.setBusinessObject(auditMetadata.businessObject());
@@ -396,6 +436,37 @@ public class ChatPersistenceService {
             return openAiUsage.getTotalTokens();
         }
         return legacyTokens != null ? legacyTokens : 0;
+    }
+
+    /**
+     * Latest OpenAI Responses API id for an active session chain (for {@code previous_response_id}).
+     */
+    @Transactional(readOnly = true)
+    public String findLatestOpenAiResponseId(String tenantId, String userId, String sessionId) {
+        if (tenantId == null || tenantId.isBlank()
+                || userId == null || userId.isBlank()
+                || sessionId == null || sessionId.isBlank()) {
+            return null;
+        }
+        Tenant tenant = tenantRepository.findByTenantCode(tenantId).orElse(null);
+        if (tenant == null) {
+            return null;
+        }
+        User user = userRepository.findByTenantAndUsername(tenant, userId).orElse(null);
+        if (user == null) {
+            return null;
+        }
+        List<String> ids = requestLogRepository.findLatestOpenAiResponseIds(
+                tenant,
+                user,
+                sessionId,
+                PageRequest.of(0, 1)
+        );
+        if (ids == null || ids.isEmpty()) {
+            return null;
+        }
+        String id = ids.get(0);
+        return id != null && !id.isBlank() ? id.trim() : null;
     }
 
     private String generateSessionTitle(String text) {

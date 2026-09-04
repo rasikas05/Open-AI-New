@@ -220,7 +220,11 @@ public class OpenAIService {
     @Value("${openai.api.max-completion-tokens:4096}")
     private int defaultMaxCompletionTokens;
 
+    @Value("${openai.api.responses-poc.enabled:false}")
+    private boolean responsesPocEnabled;
+
     private final BusinessInformationProtectionService businessInformationProtectionService;
+    private final OpenAiResponsesClient openAiResponsesClient;
 
     /** Test-friendly constructor; protection remains inactive when null or flag=false. */
     public OpenAIService(
@@ -228,7 +232,7 @@ public class OpenAIService {
             ChatPersistenceService chatPersistenceService,
             TenantQuotaService tenantQuotaService
     ) {
-        this(presidioService, chatPersistenceService, tenantQuotaService, null);
+        this(presidioService, chatPersistenceService, tenantQuotaService, null, null);
     }
 
     @Autowired
@@ -236,12 +240,14 @@ public class OpenAIService {
             PresidioService presidioService,
             ChatPersistenceService chatPersistenceService,
             TenantQuotaService tenantQuotaService,
-            @Autowired(required = false) BusinessInformationProtectionService businessInformationProtectionService
+            @Autowired(required = false) BusinessInformationProtectionService businessInformationProtectionService,
+            @Autowired(required = false) OpenAiResponsesClient openAiResponsesClient
     ) {
         this.presidioService = presidioService;
         this.chatPersistenceService = chatPersistenceService;
         this.tenantQuotaService = tenantQuotaService;
         this.businessInformationProtectionService = businessInformationProtectionService;
+        this.openAiResponsesClient = openAiResponsesClient;
     }
 
     @PostConstruct
@@ -300,8 +306,42 @@ public class OpenAIService {
         } else {
             modelReadyUserText = protectForLlm(prepareUserContentForOpenAi(request.getUserMessage()), ProtectionPurpose.ANSWER);
         }
-        List<Map<String, String>> messages = buildMessages(request, systemPromptForFallback(), modelReadyUserText, true);
-        OpenAiCallResult result = callOpenAi(messages);
+
+        OpenAiCallResult result;
+        if (responsesPocEnabled && openAiResponsesClient != null) {
+            String previousResponseId = null;
+            if (chatPersistenceService != null) {
+                previousResponseId = chatPersistenceService.findLatestOpenAiResponseId(
+                        request.getTenantCode(),
+                        request.getUserId(),
+                        request.getSessionId()
+                );
+            }
+            OpenAiResponsesClient.ResponsesCallResult responsesResult = openAiResponsesClient.call(
+                    model,
+                    reasoningEffort,
+                    defaultMaxCompletionTokens,
+                    systemPromptForFallback(),
+                    modelReadyUserText,
+                    previousResponseId
+            );
+            result = new OpenAiCallResult(
+                    responsesResult.content(),
+                    responsesResult.truncated(),
+                    responsesResult.usage(),
+                    responsesResult.elapsedMs(),
+                    responsesResult.responseId()
+            );
+            log.info(
+                    "Responses POC chatWithoutPersistence: previousResponseIdPresent={}, newResponseId={}",
+                    previousResponseId != null && !previousResponseId.isBlank(),
+                    responsesResult.responseId() != null ? "set" : "missing"
+            );
+        } else {
+            List<Map<String, String>> messages = buildMessages(request, systemPromptForFallback(), modelReadyUserText, true);
+            result = callOpenAi(messages);
+        }
+
         return toChatResponse(request, result, "gpt_infor", request.getUserMessage(), modelReadyUserText);
     }
 
@@ -698,6 +738,7 @@ public class OpenAIService {
         chatResponse.setHistory(request.getHistory());
         chatResponse.setActionTaken(actionTaken);
         chatResponse.setOpenAiUsage(result.usage());
+        chatResponse.setOpenAiResponseId(result.responseId());
         chatResponse.setSanitizationApplied(!Objects.equals(originalUserText, modelReadyUserText));
         if (includeSanitizationDebug) {
             chatResponse.setSanitizedUserMessage(modelReadyUserText);
@@ -1121,9 +1162,13 @@ public class OpenAIService {
                 && businessInformationProtectionService.isEnabled();
     }
 
-    private record OpenAiCallResult(String content, boolean truncated, OpenAIUsage usage, long elapsedMs) {
+    private record OpenAiCallResult(String content, boolean truncated, OpenAIUsage usage, long elapsedMs, String responseId) {
         OpenAiCallResult(String content, boolean truncated, OpenAIUsage usage) {
-            this(content, truncated, usage, 0L);
+            this(content, truncated, usage, 0L, null);
+        }
+
+        OpenAiCallResult(String content, boolean truncated, OpenAIUsage usage, long elapsedMs) {
+            this(content, truncated, usage, elapsedMs, null);
         }
     }
 }

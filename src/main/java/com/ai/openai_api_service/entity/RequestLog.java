@@ -90,6 +90,10 @@ public class RequestLog {
     @Column(name = "mode", length = 10)
     private String mode;
 
+    /** OpenAI Responses API id for previous_response_id chain (POC). */
+    @Column(name = "openai_response_id", length = 128)
+    private String openaiResponseId;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt = LocalDateTime.now();
     // getters/setters
@@ -299,6 +303,14 @@ public class RequestLog {
 
     public void setMode(String mode) {
         this.mode = mode;
+    }
+
+    public String getOpenaiResponseId() {
+        return openaiResponseId;
+    }
+
+    public void setOpenaiResponseId(String openaiResponseId) {
+        this.openaiResponseId = openaiResponseId;
     }
 
     public LocalDateTime getCreatedAt() {

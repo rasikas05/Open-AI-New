@@ -686,7 +686,7 @@ class ComprehendChatServiceTest {
         verify(tenantQuotaService, never()).recordUsage(anyString(), anyInt(), anyString());
         verify(chatPersistenceService, never()).persistChat(
                 anyString(), anyString(), anyString(), anyString(), anyString(),
-                anyString(), any(), anyString(), anyBoolean(), anyString(), any(), any(), any(), any()
+                anyString(), any(), any(), any(), any(), any(), any(), any(), any(), any()
         );
     }
 
@@ -784,7 +784,8 @@ class ComprehendChatServiceTest {
                 eq(88),
                 isNull(),
                 any(),
-                eq(ChatMode.AUTO)
+                eq(ChatMode.AUTO),
+                isNull()
         );
         assertEquals(100, usageCaptor.getValue().getPromptTokens());
         assertEquals(50, usageCaptor.getValue().getCompletionTokens());
@@ -1095,7 +1096,8 @@ class ComprehendChatServiceTest {
                 isNull(),
                 eq(new LiveHistoryAuditMetadata("GetCustomer", "Customer", "CSU001")),
                 isNull(),
-                eq(ChatMode.AUTO)
+                eq(ChatMode.AUTO),
+                isNull()
         );
     }
 
@@ -1728,7 +1730,7 @@ class ComprehendChatServiceTest {
         stubDocsGroundedPath("how to create customer", "grounded answer");
         when(chatPersistenceService.persistChat(
                 anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
-                any(), any(), any(), any(), any(), any(), any(), any()
+                any(), any(), any(), any(), any(), any(), any(), any(), any()
         )).thenReturn(99L);
 
         ChatRequest request = baseRequest("how to create customer");
@@ -1921,7 +1923,7 @@ class ComprehendChatServiceTest {
         stubDocsGroundedPath("edited question", "edited answer");
         when(chatPersistenceService.persistChat(
                 anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
-                any(), any(), any(), any(), any(), any(), any(), eq(ChatMode.DOCS)
+                any(), any(), any(), any(), any(), any(), any(), eq(ChatMode.DOCS), any()
         )).thenReturn(456L);
         when(chatPersistenceService.supersedeEditedRequest(123L, 456L, 10L)).thenReturn(true);
 
@@ -1948,7 +1950,8 @@ class ComprehendChatServiceTest {
                 any(),
                 any(),
                 any(),
-                eq(ChatMode.DOCS)
+                eq(ChatMode.DOCS),
+                isNull()
         );
     }
 
@@ -1978,7 +1981,7 @@ class ComprehendChatServiceTest {
 
         when(chatPersistenceService.persistChat(
                 anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
-                any(), any(), any(), any(), any(), any(), any(), any()
+                any(), any(), any(), any(), any(), any(), any(), any(), any()
         )).thenReturn(457L);
         when(chatPersistenceService.supersedeEditedRequest(123L, 457L, 10L)).thenReturn(false);
 
@@ -2012,7 +2015,7 @@ class ComprehendChatServiceTest {
         verify(pythonRagService, never()).route(anyString());
         verify(chatPersistenceService, never()).persistChat(
                 anyString(), anyString(), anyString(), anyString(), anyString(),
-                anyString(), any(), any(), any(), any(), any(), any(), any(), any()
+                anyString(), any(), any(), any(), any(), any(), any(), any(), any(), any()
         );
     }
 
@@ -2475,7 +2478,8 @@ class ComprehendChatServiceTest {
                 any(),
                 any(),
                 any(),
-                eq(ChatMode.AUTO)
+                eq(ChatMode.AUTO),
+                isNull()
         );
     }
 
