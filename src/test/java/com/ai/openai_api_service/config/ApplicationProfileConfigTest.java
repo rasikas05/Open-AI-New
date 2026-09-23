@@ -23,18 +23,30 @@ class ApplicationProfileConfigTest {
         assertEqualsEnvPlaceholder(prod.getProperty("spring.datasource.password"), "DB_PASSWORD");
         assertFalse(prod.getProperty("spring.datasource.url").contains("createDatabaseIfNotExists"));
         assertEquals("false", prod.getProperty("spring.jpa.show-sql"));
-        assertFalse(prod.containsKey("presidio.api.key"));
+        assertEquals("${PRESIDIO_API_KEY}", prod.getProperty("presidio.api.key"));
     }
 
     @Test
-    void defaultProperties_keepLocalDevDbSettings() throws IOException {
+    void defaultProperties_useEnvVarsForLocalDb_withoutRootFallback() throws IOException {
         Properties base = loadClasspathProperties("/application.properties");
 
-        assertTrue(base.getProperty("spring.datasource.url").contains("localhost:3306"));
+        assertTrue(base.getProperty("spring.datasource.url").contains("${DB_HOST:localhost}"));
         assertTrue(base.getProperty("spring.datasource.url").contains("createDatabaseIfNotExists=true"));
-        assertEquals("root", base.getProperty("spring.datasource.username"));
-        assertEquals("root", base.getProperty("spring.datasource.password"));
+        assertEqualsEnvPlaceholder(base.getProperty("spring.datasource.username"), "DB_USERNAME");
+        assertEqualsEnvPlaceholder(base.getProperty("spring.datasource.password"), "DB_PASSWORD");
         assertEquals("true", base.getProperty("spring.jpa.show-sql"));
+    }
+
+    @Test
+    void defaultProperties_externalizePresidioKey_andOmitCognitoClientSecret() throws IOException {
+        Properties base = loadClasspathProperties("/application.properties");
+
+        String presidioKey = base.getProperty("presidio.api.key");
+        assertNotNull(presidioKey);
+        assertTrue(presidioKey.contains("${PRESIDIO_API_KEY"), "expected PRESIDIO_API_KEY placeholder, got: " + presidioKey);
+        assertFalse(presidioKey.contains("secret123"), "must not hardcode Presidio key");
+        assertFalse(base.containsKey("aws.cognito.clientSecret"), "Cognito client secret must not be in Spring config");
+        assertTrue(base.containsKey("aws.cognito.clientId"), "public client id may remain as reference");
     }
 
     @Test

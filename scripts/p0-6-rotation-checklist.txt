@@ -1,0 +1,43 @@
+P0 #6 — Ops rotation checklist (after Phase 1 deploy)
+=====================================================
+Do NOT put real secrets in Git. Complete these on EC2 / Cognito console / Postman.
+
+Phase 0 findings (recorded at remediation time)
+----------------------------------------------
+1. Prod profile: No deploy script in repo sets SPRING_PROFILES_ACTIVE=prod.
+   Confirm with ops that production always uses --spring.profiles.active=prod (or equiv).
+2. Cognito client secret: Not used by Spring JWT (issuer/JWKS). Owner = whoever mints
+   tokens (Postman / M3 suite). Confirm before rotating.
+3. Presidio-Service/.env WAS tracked in Git (commit "Python application setup").
+   Untracked via git rm --cached; history still contains the old value until/unless
+   history is cleaned in a later effort (out of scope for this P0).
+
+Rotation order
+--------------
+1. Presidio
+   - Generate new API key.
+   - Set PRESIDIO_API_KEY on Spring (prod env) and API_KEY on Presidio Python (.env or env).
+   - Restart both services; verify analyze/anonymize.
+   - Invalidate old key (secret123 and any Git-exposed value).
+
+2. Cognito client secret (if exposed / used by token clients)
+   - Rotate in Cognito console for the app client.
+   - Update Postman / M3 token clients only (NOT Spring).
+   - Confirm Spring JWT APIs still work (JWKS path unchanged).
+   - Revoke/disable old secret.
+
+3. DB
+   - Rotate prod DB password only if it matched anything ever committed.
+   - Update DB_PASSWORD env; leave local root/root for default profile.
+
+4. OpenAI
+   - Rotate only if key was ever committed or leaked.
+
+Verify complete
+---------------
+- prod fails clearly without PRESIDIO_API_KEY / DB_PASSWORD
+- Presidio works with new key; fails with old key
+- JWT-protected endpoints still work
+- ApplicationProfileConfigTest green
+- Repo scan: no clientSecret, no secret123 in tracked Spring properties
+- Presidio .env not tracked; .env.example placeholders only
