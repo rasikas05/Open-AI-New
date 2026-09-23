@@ -13,6 +13,10 @@ public class TenantCreateRequest {
     @Schema(example = "Infor Tenant")
     private String name;
 
+    @NotBlank(message = "cognitoClientId is required")
+    @Schema(example = "l6p54peadaqdhlfahb2fvega4", description = "Cognito M2M app client id bound to this tenant")
+    private String cognitoClientId;
+
     public TenantCreateRequest() {
     }
 
@@ -30,5 +34,13 @@ public class TenantCreateRequest {
 
     public void setName(String name) {
         this.name = name;
+    }
+
+    public String getCognitoClientId() {
+        return cognitoClientId;
+    }
+
+    public void setCognitoClientId(String cognitoClientId) {
+        this.cognitoClientId = cognitoClientId;
     }
 }

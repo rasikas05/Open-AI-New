@@ -18,4 +18,8 @@ public interface TenantRepository extends JpaRepository<Tenant, Long> {
     Optional<Tenant> findByTenantCodeIgnoreCase(String tenantCode);
 
     boolean existsByTenantCodeIgnoreCase(String tenantCode);
+
+    Optional<Tenant> findByCognitoClientId(String cognitoClientId);
+
+    boolean existsByCognitoClientId(String cognitoClientId);
 }

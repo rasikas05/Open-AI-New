@@ -42,10 +42,14 @@ public class TenantService {
         if (tenantRepository.existsByTenantCode(request.getTenantCode())) {
             throw new ResponseStatusException(BAD_REQUEST, "Tenant already exists");
         }
+        if (tenantRepository.existsByCognitoClientId(request.getCognitoClientId())) {
+            throw new ResponseStatusException(BAD_REQUEST, "Cognito client already mapped to a tenant");
+        }
 
         Tenant tenant = new Tenant();
         tenant.setTenantCode(request.getTenantCode());
         tenant.setName(request.getName());
+        tenant.setCognitoClientId(request.getCognitoClientId());
         tenant.setStatus("ACTIVE");
         tenant.setCreatedAt(LocalDateTime.now());
 

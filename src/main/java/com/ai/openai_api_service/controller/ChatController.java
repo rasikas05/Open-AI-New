@@ -14,6 +14,7 @@ import com.ai.openai_api_service.model.SessionTitleUpdateRequest;
 import com.ai.openai_api_service.model.SessionTitleUpdateResponse;
 import com.ai.openai_api_service.service.ChatService;
 import com.ai.openai_api_service.service.ChatPersistenceService;
+import com.ai.openai_api_service.service.TenantClientBindingService;
 import com.ai.openai_api_service.service.TenantService;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
@@ -46,11 +47,17 @@ public class ChatController {
     private final ChatService chatService;
     private final ChatPersistenceService chatPersistenceService;
     private final TenantService tenantService;
+    private final TenantClientBindingService tenantClientBindingService;
 
-    public ChatController(ChatService chatService, ChatPersistenceService chatPersistenceService, TenantService tenantService) {
+    public ChatController(
+            ChatService chatService,
+            ChatPersistenceService chatPersistenceService,
+            TenantService tenantService,
+            TenantClientBindingService tenantClientBindingService) {
         this.chatService = chatService;
         this.chatPersistenceService = chatPersistenceService;
         this.tenantService = tenantService;
+        this.tenantClientBindingService = tenantClientBindingService;
     }
 
     @PostMapping
@@ -62,6 +69,7 @@ public class ChatController {
 
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("Chat request from client_id: {}", clientId);
+        tenantClientBindingService.assertClientOwnsTenantCode(clientId, request.getTenantCode());
 
         tenantService.registerUserAndSession(request.getTenantCode(), request.getUserId(), request.getSessionId(), 0);
         ChatResponse response = chatService.chat(request);
@@ -80,6 +88,7 @@ public class ChatController {
 
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("History request from client_id: {}", clientId);
+        tenantClientBindingService.assertClientOwnsTenantId(clientId, tenantId);
 
         List<MessageDto> response = chatPersistenceService.loadHistoryForPrompt(
                 tenantId, userId, sessionId, maxExchanges
@@ -97,6 +106,7 @@ public class ChatController {
 
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("List sessions request from client_id: {}", clientId);
+        tenantClientBindingService.assertClientOwnsTenantId(clientId, tenantId);
 
         List<Session> sessions = chatPersistenceService.listSessions(tenantId, userId);
 
@@ -124,6 +134,7 @@ public class ChatController {
 
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("Count sessions request from client_id: {}", clientId);
+        tenantClientBindingService.assertClientOwnsTenantId(clientId, tenantId);
 
         long sessionCount = chatPersistenceService.countSessions(tenantId, userId);
         SessionCountDto response = new SessionCountDto(tenantId, userId, sessionCount);
@@ -148,6 +159,7 @@ public class ChatController {
 
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("Session messages request from client_id: {}, tenantId={}, userId={}, pathSessionId={}, querySessionId={}", clientId, tenantId, userId, sessionId, querySessionId);
+        tenantClientBindingService.assertClientOwnsTenantId(clientId, tenantId);
         logger.info("Using path variable sessionId={}", sessionId);
         if (querySessionId != null && !querySessionId.isBlank() && !querySessionId.equals(sessionId)) {
             logger.warn("Conflicting sessionId values: path='{}' vs query='{}'. Using path variable sessionId. Remove sessionId query parameter.", sessionId, querySessionId);
@@ -190,6 +202,7 @@ public class ChatController {
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("Update session title request from client_id: {}, tenantId={}, userId={}, sessionId={}, title={}",
                 clientId, request.getTenantId(), request.getUserId(), sessionId, request.getTitle());
+        tenantClientBindingService.assertClientOwnsTenantId(clientId, request.getTenantId());
 
         SessionTitleUpdateResponse response = chatPersistenceService.updateSessionTitle(
                 request.getTenantId(),

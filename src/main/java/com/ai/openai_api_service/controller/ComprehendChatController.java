@@ -12,6 +12,7 @@ import com.ai.openai_api_service.service.ComprehendChatService;
 import com.ai.openai_api_service.service.ChatPersistenceService;
 import com.ai.openai_api_service.service.LexService;
 import com.ai.openai_api_service.service.ResponseFeedbackService;
+import com.ai.openai_api_service.service.TenantClientBindingService;
 import com.ai.openai_api_service.service.TenantService;
 import com.ai.openai_api_service.service.guided.InMemoryGuidedSearchSessionService;
 import com.ai.openai_api_service.service.lex.InMemoryPendingLexSessionService;
@@ -47,6 +48,7 @@ public class ComprehendChatController {
     private final ComprehendChatService comprehendChatService;
     private final ChatPersistenceService chatPersistenceService;
     private final TenantService tenantService;
+    private final TenantClientBindingService tenantClientBindingService;
     private final SearchContextService searchContextService;
     private final InMemoryGuidedSearchSessionService guidedSearchSessionService;
     private final InMemoryPendingLexSessionService pendingLexSessionService;
@@ -57,6 +59,7 @@ public class ComprehendChatController {
             ComprehendChatService comprehendChatService,
             ChatPersistenceService chatPersistenceService,
             TenantService tenantService,
+            TenantClientBindingService tenantClientBindingService,
             SearchContextService searchContextService,
             InMemoryGuidedSearchSessionService guidedSearchSessionService,
             InMemoryPendingLexSessionService pendingLexSessionService,
@@ -66,6 +69,7 @@ public class ComprehendChatController {
         this.comprehendChatService = comprehendChatService;
         this.chatPersistenceService = chatPersistenceService;
         this.tenantService = tenantService;
+        this.tenantClientBindingService = tenantClientBindingService;
         this.searchContextService = searchContextService;
         this.guidedSearchSessionService = guidedSearchSessionService;
         this.pendingLexSessionService = pendingLexSessionService;
@@ -85,6 +89,7 @@ public class ComprehendChatController {
 
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("Comprehend Chat request from client_id: {}", clientId);
+        tenantClientBindingService.assertClientOwnsTenantCode(clientId, request.getTenantCode());
         logger.debug("Comprehend chat flow entered for tenantCode={}, userId={}, sessionId={}, message={}",
                 request.getTenantCode(), request.getUserId(), request.getSessionId(), request.getUserMessage());
 
@@ -111,6 +116,7 @@ public class ComprehendChatController {
                 request.getRequestLogId(),
                 request.getFeedback()
         );
+        tenantClientBindingService.assertClientOwnsTenantCode(clientId, request.getTenantCode());
         ResponseFeedbackResponse response = responseFeedbackService.upsert(request);
         return ResponseEntity.ok(response);
     }
@@ -130,12 +136,14 @@ public class ComprehendChatController {
 
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("Comprehend History request from client_id: {}", clientId);
+        tenantClientBindingService.assertClientOwnsTenantId(clientId, tenantId);
 
         List<HistoryMessageDto> response = chatPersistenceService.loadHistoryForDisplay(
                 tenantId, userId, sessionId, maxExchanges
         );
         return ResponseEntity.ok(response);
     }
+
     @GetMapping("/sessions")
     @Operation(
             summary = "List user sessions",
@@ -149,6 +157,7 @@ public class ComprehendChatController {
 
         String clientId = jwt.getClaimAsString("client_id");
         logger.info("Comprehend List sessions request from client_id: {}", clientId);
+        tenantClientBindingService.assertClientOwnsTenantId(clientId, tenantId);
 
         List<Session> sessions = chatPersistenceService.listSessions(tenantId, userId);
 
@@ -168,21 +177,26 @@ public class ComprehendChatController {
     @GetMapping("/sessions/{sessionId}")
     @Operation(
             summary = "Get session details",
-            description = "Returns full session details including all messages (Comprehend-based)."
+            description = "Returns session details for the given tenant and user (Comprehend-based)."
     )
     @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<SessionSummaryDto> getSession(
             @AuthenticationPrincipal Jwt jwt,
-            @PathVariable String sessionId) {
+            @PathVariable String sessionId,
+            @RequestParam String tenantId,
+            @RequestParam String userId) {
 
         String clientId = jwt.getClaimAsString("client_id");
-        logger.info("Comprehend Get session request from client_id: {} sessionId: {}", clientId, sessionId);
+        logger.info(
+                "Comprehend Get session request from client_id: {} tenantId={} userId={} sessionId={}",
+                clientId,
+                tenantId,
+                userId,
+                sessionId
+        );
 
-        Session session = chatPersistenceService.getSessionById(sessionId);
-
-        if (session == null) {
-            return ResponseEntity.notFound().build();
-        }
+        tenantClientBindingService.assertClientOwnsTenantId(clientId, tenantId);
+        Session session = chatPersistenceService.requireSessionForTenantUser(tenantId, userId, sessionId);
 
         SessionSummaryDto response = new SessionSummaryDto(
                 session.getSessionId(),
@@ -198,21 +212,27 @@ public class ComprehendChatController {
     @PostMapping("/sessions/{sessionId}/close")
     @Operation(
             summary = "Close a session",
-            description = "Marks a session as closed (Comprehend-based)."
+            description = "Marks a session as closed for the given tenant and user (Comprehend-based)."
     )
     @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<SessionSummaryDto> closeSession(
             @AuthenticationPrincipal Jwt jwt,
-            @PathVariable String sessionId) {
+            @PathVariable String sessionId,
+            @RequestParam String tenantId,
+            @RequestParam String userId) {
 
         String clientId = jwt.getClaimAsString("client_id");
-        logger.info("Comprehend Close session request from client_id: {} sessionId: {}", clientId, sessionId);
+        logger.info(
+                "Comprehend Close session request from client_id: {} tenantId={} userId={} sessionId={}",
+                clientId,
+                tenantId,
+                userId,
+                sessionId
+        );
 
-        Session session = chatPersistenceService.closeSessionById(sessionId);
-
-        if (session == null) {
-            return ResponseEntity.notFound().build();
-        }
+        tenantClientBindingService.assertClientOwnsTenantId(clientId, tenantId);
+        Session authorized = chatPersistenceService.requireSessionForTenantUser(tenantId, userId, sessionId);
+        Session session = chatPersistenceService.closeAuthorizedSession(authorized);
 
         searchContextService.clearSession(LexFulfillmentSession.of(
                 session.getTenant().getTenantCode(),

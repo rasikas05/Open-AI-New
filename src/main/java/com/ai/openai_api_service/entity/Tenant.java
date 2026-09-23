@@ -17,6 +17,13 @@ public class Tenant {
 
     private String status; // ACTIVE / DISABLED
 
+    /**
+     * Cognito M2M app client id allowed to access this tenant.
+     * Nullable until backfill; binding treats null/unmapped as unauthorized (403).
+     */
+    @Column(name = "cognito_client_id", unique = true)
+    private String cognitoClientId;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt = LocalDateTime.now();
 
@@ -50,6 +57,14 @@ public class Tenant {
 
     public void setStatus(String status) {
         this.status = status;
+    }
+
+    public String getCognitoClientId() {
+        return cognitoClientId;
+    }
+
+    public void setCognitoClientId(String cognitoClientId) {
+        this.cognitoClientId = cognitoClientId;
     }
 
     public LocalDateTime getCreatedAt() {
