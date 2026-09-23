@@ -741,38 +741,9 @@ public class ChatPersistenceService {
             String sessionId,
             String title
     ) {
-
-        Tenant tenant = tenantRepository.findByTenantCode(tenantId)
-                .orElseThrow(() ->
-                        new ResponseStatusException(
-                                HttpStatus.NOT_FOUND,
-                                "Tenant not found: " + tenantId
-                        )
-                );
-
-        User user = userRepository.findByTenantAndUsername(tenant, userId)
-                .orElseThrow(() ->
-                        new ResponseStatusException(
-                                HttpStatus.NOT_FOUND,
-                                "User not found: " + userId
-                        )
-                );
-
-        Session session =
-                sessionRepository.findByTenantAndUserAndSessionId(
-                                tenant,
-                                user,
-                                sessionId
-                        )
-                        .orElseThrow(() ->
-                                new ResponseStatusException(
-                                        HttpStatus.NOT_FOUND,
-                                        "Session not found: " + sessionId
-                                )
-                        );
+        Session session = requireSessionForTenantUser(tenantId, userId, sessionId);
 
         session.setTitle(title);
-
         session.setUpdatedAt(LocalDateTime.now());
 
         Session savedSession = sessionRepository.save(session);
@@ -788,6 +759,59 @@ public class ChatPersistenceService {
                 savedSession.getTitle(),
                 "Session title updated successfully"
         );
+    }
+
+    /**
+     * P0 #4: load session only if it belongs to the given tenant + user.
+     * Ownership miss + same-tenant other owner → 403; otherwise missing → 404.
+     */
+    @Transactional(readOnly = true)
+    public Session requireSessionForTenantUser(String tenantCode, String userId, String sessionId) {
+        if (tenantCode == null || tenantCode.isBlank()
+                || userId == null || userId.isBlank()
+                || sessionId == null || sessionId.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Session not found");
+        }
+
+        Tenant tenant = tenantRepository.findByTenantCode(tenantCode)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Session not found"));
+
+        User user = userRepository.findByTenantAndUsername(tenant, userId).orElse(null);
+        if (user != null) {
+            Session owned = sessionRepository.findByTenantAndUserAndSessionId(tenant, user, sessionId)
+                    .orElse(null);
+            if (owned != null) {
+                return owned;
+            }
+        }
+
+        Session existing = sessionRepository.findBySessionId(sessionId).orElse(null);
+        if (existing != null
+                && existing.getTenant() != null
+                && tenantCode.equals(existing.getTenant().getTenantCode())
+                && existing.getUser() != null
+                && !userId.equals(existing.getUser().getUsername())) {
+            throw new ResponseStatusException(
+                    HttpStatus.FORBIDDEN,
+                    "Session does not belong to this user"
+            );
+        }
+
+        throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Session not found");
+    }
+
+    /**
+     * Closes an already-authorized session entity (P0 #4 — do not re-load by sessionId alone).
+     */
+    @Transactional
+    public Session closeAuthorizedSession(Session session) {
+        if (session == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Session not found");
+        }
+        session.setStatus("CLOSED");
+        session.setEndTime(LocalDateTime.now());
+        session.setUpdatedAt(LocalDateTime.now());
+        return sessionRepository.save(session);
     }
 
     @Transactional(readOnly = true)
