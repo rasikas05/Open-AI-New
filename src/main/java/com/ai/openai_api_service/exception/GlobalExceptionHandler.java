@@ -13,9 +13,13 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.UUID;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
+
+    static final String UNEXPECTED_ERROR = "An unexpected error occurred.";
+    static final String UPSTREAM_ERROR = "An upstream service is temporarily unavailable.";
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
 
@@ -63,13 +67,11 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(RestClientException.class)
     public ResponseEntity<Map<String, Object>> handleRestClientException(RestClientException e) {
-        int status = HttpStatus.BAD_GATEWAY.value();
+        String traceId = newTraceId();
+        log.error("Upstream service error. traceId={}", traceId, e);
         return ResponseEntity
-                .status(status)
-                .body(Map.of(
-                        "error", "Upstream service error: " + e.getMessage(),
-                        "status", status
-                ));
+                .status(HttpStatus.BAD_GATEWAY)
+                .body(safeBody(HttpStatus.BAD_GATEWAY.value(), UPSTREAM_ERROR, traceId));
     }
 
     @ExceptionHandler(ResponseStatusException.class)
@@ -86,12 +88,22 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<Map<String, Object>> handleUnexpectedException(Exception e) {
-        int status = HttpStatus.INTERNAL_SERVER_ERROR.value();
+        String traceId = newTraceId();
+        log.error("Unexpected error. traceId={}", traceId, e);
         return ResponseEntity
-                .status(status)
-                .body(Map.of(
-                        "error", "Internal error: " + e.getMessage(),
-                        "status", status
-                ));
+                .status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(safeBody(HttpStatus.INTERNAL_SERVER_ERROR.value(), UNEXPECTED_ERROR, traceId));
+    }
+
+    private static String newTraceId() {
+        return UUID.randomUUID().toString();
+    }
+
+    private static Map<String, Object> safeBody(int status, String error, String traceId) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("error", error);
+        body.put("status", status);
+        body.put("traceId", traceId);
+        return body;
     }
 }
