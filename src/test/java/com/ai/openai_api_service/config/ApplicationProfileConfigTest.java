@@ -24,6 +24,9 @@ class ApplicationProfileConfigTest {
         assertFalse(prod.getProperty("spring.datasource.url").contains("createDatabaseIfNotExists"));
         assertEquals("false", prod.getProperty("spring.jpa.show-sql"));
         assertEquals("${PRESIDIO_API_KEY}", prod.getProperty("presidio.api.key"));
+        assertEquals("${RAG_INTERNAL_API_KEY}", prod.getProperty("python-rag.api.key"));
+        assertEquals("x-api-key", prod.getProperty("python-rag.api.key.header"));
+        assertEquals("health", prod.getProperty("management.endpoints.web.exposure.include"));
     }
 
     @Test
@@ -35,6 +38,7 @@ class ApplicationProfileConfigTest {
         assertEqualsEnvPlaceholder(base.getProperty("spring.datasource.username"), "DB_USERNAME");
         assertEqualsEnvPlaceholder(base.getProperty("spring.datasource.password"), "DB_PASSWORD");
         assertEquals("true", base.getProperty("spring.jpa.show-sql"));
+        assertEquals("health", base.getProperty("management.endpoints.web.exposure.include"));
     }
 
     @Test
@@ -45,6 +49,12 @@ class ApplicationProfileConfigTest {
         assertNotNull(presidioKey);
         assertTrue(presidioKey.contains("${PRESIDIO_API_KEY"), "expected PRESIDIO_API_KEY placeholder, got: " + presidioKey);
         assertFalse(presidioKey.contains("secret123"), "must not hardcode Presidio key");
+
+        String ragKey = base.getProperty("python-rag.api.key");
+        assertNotNull(ragKey);
+        assertTrue(ragKey.contains("${RAG_INTERNAL_API_KEY"), "expected RAG_INTERNAL_API_KEY placeholder, got: " + ragKey);
+        assertEquals("x-api-key", base.getProperty("python-rag.api.key.header"));
+
         assertFalse(base.containsKey("aws.cognito.clientSecret"), "Cognito client secret must not be in Spring config");
         assertTrue(base.containsKey("aws.cognito.clientId"), "public client id may remain as reference");
     }

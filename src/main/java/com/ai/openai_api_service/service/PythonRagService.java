@@ -65,6 +65,12 @@ public class PythonRagService {
     @Value("${python-rag.api.enabled:true}")
     private boolean ragApiEnabled;
 
+    @Value("${python-rag.api.key:}")
+    private String apiKey;
+
+    @Value("${python-rag.api.key.header:x-api-key}")
+    private String apiKeyHeader;
+
     @Value("${rag.program.boost:0.08}")
     private double programBoost;
 
@@ -350,9 +356,17 @@ public class PythonRagService {
     }
 
     private <T> T postForEntity(String url, Object body, Class<T> responseType, String operation) {
+        if (apiKey == null || apiKey.isBlank()) {
+            throw new OpenAIException(
+                    "Python RAG API is enabled but python-rag.api.key is empty. Set RAG_INTERNAL_API_KEY.",
+                    503
+            );
+        }
+
         long startTime = System.currentTimeMillis();
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set(apiKeyHeader, apiKey);
         HttpEntity<Object> entity = new HttpEntity<>(body, headers);
 
         try {
