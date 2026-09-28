@@ -18,6 +18,8 @@ public final class RestTemplateFactory {
         factory.setReadTimeout(timeoutMs);
         RestTemplate restTemplate = new RestTemplate(factory);
         List<ClientHttpRequestInterceptor> interceptors = new ArrayList<>(restTemplate.getInterceptors());
+        // Correlation first so outbound HTTP logs run after the header is set.
+        interceptors.add(new CorrelationIdInterceptor());
         interceptors.add(new OutboundHttpLoggingInterceptor());
         restTemplate.setInterceptors(interceptors);
         return restTemplate;

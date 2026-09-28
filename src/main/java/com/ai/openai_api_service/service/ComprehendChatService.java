@@ -3,6 +3,7 @@ package com.ai.openai_api_service.service;
 import com.ai.openai_api_service.exception.TenantQuotaExceededException;
 import com.ai.openai_api_service.exception.AiServiceErrors;
 import com.ai.openai_api_service.exception.OpenAIException;
+import com.ai.openai_api_service.config.CorrelationIdSupport;
 import com.ai.openai_api_service.model.BusinessProtectedEntityDto;
 import com.ai.openai_api_service.model.ChatMode;
 import com.ai.openai_api_service.model.ChatRequest;
@@ -1426,7 +1427,7 @@ public class ComprehendChatService {
         PythonRetrievalResponse retrieval;
         try {
             Instant retrievalStart = Instant.now();
-            String retrievalRequestId = java.util.UUID.randomUUID().toString();
+            String retrievalRequestId = CorrelationIdSupport.current();
             String conversationId = request.getSessionId();
             retrieval = pythonRagService.retrieve(
                     llmText,

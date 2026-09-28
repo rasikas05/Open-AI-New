@@ -10,6 +10,7 @@ import org.springframework.test.context.TestPropertySource;
 import org.springframework.test.web.servlet.MockMvc;
 
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
@@ -41,7 +42,16 @@ class ActuatorSecurityTest {
     @Test
     void actuatorHealth_withoutJwt_isOk() throws Exception {
         mockMvc.perform(get("/actuator/health"))
-                .andExpect(status().isOk());
+                .andExpect(status().isOk())
+                .andExpect(header().exists(CorrelationIdSupport.HEADER));
+    }
+
+    @Test
+    void actuatorHealth_reusesInboundCorrelationId() throws Exception {
+        mockMvc.perform(get("/actuator/health")
+                        .header(CorrelationIdSupport.HEADER, "e2e-corr-fixed-id"))
+                .andExpect(status().isOk())
+                .andExpect(header().string(CorrelationIdSupport.HEADER, "e2e-corr-fixed-id"));
     }
 
     @Test
