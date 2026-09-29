@@ -30,6 +30,12 @@ class ApplicationProfileConfigTest {
         assertEquals("true", prod.getProperty("management.endpoint.health.probes.enabled"));
         assertEquals("true", prod.getProperty("management.endpoint.prometheus.enabled"));
         assertEquals("never", prod.getProperty("management.endpoint.health.show-details"));
+        assertEquals("15000", prod.getProperty("aws.comprehend.api-call-timeout-ms"));
+        assertEquals("10000", prod.getProperty("aws.comprehend.api-call-attempt-timeout-ms"));
+        assertEquals("5000", prod.getProperty("aws.comprehend.connection-timeout-ms"));
+        assertEquals("15000", prod.getProperty("aws.lex.api-call-timeout-ms"));
+        assertEquals("10000", prod.getProperty("aws.lex.api-call-attempt-timeout-ms"));
+        assertEquals("5000", prod.getProperty("aws.lex.connection-timeout-ms"));
     }
 
     @Test
@@ -45,6 +51,12 @@ class ApplicationProfileConfigTest {
         assertEquals("true", base.getProperty("management.endpoint.health.probes.enabled"));
         assertEquals("true", base.getProperty("management.endpoint.prometheus.enabled"));
         assertEquals("never", base.getProperty("management.endpoint.health.show-details"));
+        assertEquals("15000", base.getProperty("aws.comprehend.api-call-timeout-ms"));
+        assertEquals("10000", base.getProperty("aws.comprehend.api-call-attempt-timeout-ms"));
+        assertEquals("5000", base.getProperty("aws.comprehend.connection-timeout-ms"));
+        assertEquals("15000", base.getProperty("aws.lex.api-call-timeout-ms"));
+        assertEquals("10000", base.getProperty("aws.lex.api-call-attempt-timeout-ms"));
+        assertEquals("5000", base.getProperty("aws.lex.connection-timeout-ms"));
     }
 
     @Test

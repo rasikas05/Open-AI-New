@@ -48,6 +48,12 @@
             <artifactId>lexruntimev2</artifactId>
             <version>2.25.8</version>
         </dependency>
+        <!-- Compile-scoped: AwsConfig uses ApacheHttpClient (transitive is runtime-only) -->
+        <dependency>
+            <groupId>software.amazon.awssdk</groupId>
+            <artifactId>apache-client</artifactId>
+            <version>2.25.8</version>
+        </dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-data-jpa</artifactId>

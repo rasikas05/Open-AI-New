@@ -7,9 +7,13 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
+import software.amazon.awssdk.core.client.config.ClientOverrideConfiguration;
+import software.amazon.awssdk.http.apache.ApacheHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.comprehend.ComprehendClient;
 import software.amazon.awssdk.services.lexruntimev2.LexRuntimeV2Client;
+
+import java.time.Duration;
 
 @Configuration
 public class AwsConfig {
@@ -18,6 +22,24 @@ public class AwsConfig {
 
     @Value("${aws.region:ap-south-1}")
     private String awsRegion;
+
+    @Value("${aws.comprehend.api-call-timeout-ms:15000}")
+    private long comprehendApiCallTimeoutMs;
+
+    @Value("${aws.comprehend.api-call-attempt-timeout-ms:10000}")
+    private long comprehendApiCallAttemptTimeoutMs;
+
+    @Value("${aws.comprehend.connection-timeout-ms:5000}")
+    private long comprehendConnectionTimeoutMs;
+
+    @Value("${aws.lex.api-call-timeout-ms:15000}")
+    private long lexApiCallTimeoutMs;
+
+    @Value("${aws.lex.api-call-attempt-timeout-ms:10000}")
+    private long lexApiCallAttemptTimeoutMs;
+
+    @Value("${aws.lex.connection-timeout-ms:5000}")
+    private long lexConnectionTimeoutMs;
 
     @Bean
     public AwsCredentialsProvider awsCredentialsProvider() {
@@ -33,9 +55,21 @@ public class AwsConfig {
 
     @Bean
     public ComprehendClient comprehendClient(AwsCredentialsProvider awsCredentialsProvider) {
+        log.info(
+                "Comprehend client timeouts: apiCall={}ms apiCallAttempt={}ms connection={}ms",
+                comprehendApiCallTimeoutMs,
+                comprehendApiCallAttemptTimeoutMs,
+                comprehendConnectionTimeoutMs
+        );
         return ComprehendClient.builder()
                 .region(Region.of(awsRegion))
                 .credentialsProvider(awsCredentialsProvider)
+                .overrideConfiguration(overrideConfiguration(
+                        comprehendApiCallTimeoutMs,
+                        comprehendApiCallAttemptTimeoutMs
+                ))
+                .httpClientBuilder(ApacheHttpClient.builder()
+                        .connectionTimeout(Duration.ofMillis(comprehendConnectionTimeoutMs)))
                 .build();
     }
 
@@ -49,16 +83,39 @@ public class AwsConfig {
             lexRegion = awsRegion;
         }
         log.info(
-                "Lex Runtime V2 client: region={}, enabled={}, botId={}, botAliasId={}, locale={}",
+                "Lex Runtime V2 client: region={}, enabled={}, botId={}, botAliasId={}, locale={}, "
+                        + "apiCall={}ms apiCallAttempt={}ms connection={}ms",
                 lexRegion,
                 lexProperties.isEnabled(),
                 maskId(lexProperties.getBotId()),
                 maskId(lexProperties.getBotAliasId()),
-                lexProperties.getLocaleId()
+                lexProperties.getLocaleId(),
+                lexApiCallTimeoutMs,
+                lexApiCallAttemptTimeoutMs,
+                lexConnectionTimeoutMs
         );
         return LexRuntimeV2Client.builder()
                 .region(Region.of(lexRegion))
                 .credentialsProvider(awsCredentialsProvider)
+                .overrideConfiguration(overrideConfiguration(
+                        lexApiCallTimeoutMs,
+                        lexApiCallAttemptTimeoutMs
+                ))
+                .httpClientBuilder(ApacheHttpClient.builder()
+                        .connectionTimeout(Duration.ofMillis(lexConnectionTimeoutMs)))
+                .build();
+    }
+
+    static ClientOverrideConfiguration overrideConfiguration(long apiCallTimeoutMs, long apiCallAttemptTimeoutMs) {
+        if (apiCallAttemptTimeoutMs >= apiCallTimeoutMs) {
+            throw new IllegalArgumentException(
+                    "api-call-attempt-timeout-ms (" + apiCallAttemptTimeoutMs
+                            + ") must be strictly less than api-call-timeout-ms (" + apiCallTimeoutMs + ")"
+            );
+        }
+        return ClientOverrideConfiguration.builder()
+                .apiCallTimeout(Duration.ofMillis(apiCallTimeoutMs))
+                .apiCallAttemptTimeout(Duration.ofMillis(apiCallAttemptTimeoutMs))
                 .build();
     }
 
