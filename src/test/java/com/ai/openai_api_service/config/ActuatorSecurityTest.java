@@ -14,13 +14,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
- * P0 #14 — health remains anonymous for GFT/ALB; other Actuator paths are not permitAll
- * (Security returns 401 before MVC 404 when the path requires authentication).
+ * P0 #14 / #21 — health + liveness/readiness anonymous for ALB;
+ * P0 #20 — prometheus exposed but authenticated (not permitAll).
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK)
 @AutoConfigureMockMvc
 @TestPropertySource(properties = {
-        "management.endpoints.web.exposure.include=health",
+        "management.endpoints.web.exposure.include=health,prometheus",
+        "management.endpoint.health.probes.enabled=true",
+        "management.endpoint.prometheus.enabled=true",
         "spring.main.allow-bean-definition-overriding=true",
         "spring.datasource.url=jdbc:mysql://localhost:3306/openaichatprocessdb?createDatabaseIfNotExists=true",
         "spring.datasource.username=root",
@@ -52,6 +54,24 @@ class ActuatorSecurityTest {
                         .header(CorrelationIdSupport.HEADER, "e2e-corr-fixed-id"))
                 .andExpect(status().isOk())
                 .andExpect(header().string(CorrelationIdSupport.HEADER, "e2e-corr-fixed-id"));
+    }
+
+    @Test
+    void actuatorLiveness_withoutJwt_isOk() throws Exception {
+        mockMvc.perform(get("/actuator/health/liveness"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void actuatorReadiness_withoutJwt_isOk() throws Exception {
+        mockMvc.perform(get("/actuator/health/readiness"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void actuatorPrometheus_withoutJwt_isUnauthorized() throws Exception {
+        mockMvc.perform(get("/actuator/prometheus"))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test

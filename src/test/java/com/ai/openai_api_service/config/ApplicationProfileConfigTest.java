@@ -26,7 +26,10 @@ class ApplicationProfileConfigTest {
         assertEquals("${PRESIDIO_API_KEY}", prod.getProperty("presidio.api.key"));
         assertEquals("${RAG_INTERNAL_API_KEY}", prod.getProperty("python-rag.api.key"));
         assertEquals("x-api-key", prod.getProperty("python-rag.api.key.header"));
-        assertEquals("health", prod.getProperty("management.endpoints.web.exposure.include"));
+        assertEquals("health,prometheus", prod.getProperty("management.endpoints.web.exposure.include"));
+        assertEquals("true", prod.getProperty("management.endpoint.health.probes.enabled"));
+        assertEquals("true", prod.getProperty("management.endpoint.prometheus.enabled"));
+        assertEquals("never", prod.getProperty("management.endpoint.health.show-details"));
     }
 
     @Test
@@ -38,7 +41,10 @@ class ApplicationProfileConfigTest {
         assertEqualsEnvPlaceholder(base.getProperty("spring.datasource.username"), "DB_USERNAME");
         assertEqualsEnvPlaceholder(base.getProperty("spring.datasource.password"), "DB_PASSWORD");
         assertEquals("true", base.getProperty("spring.jpa.show-sql"));
-        assertEquals("health", base.getProperty("management.endpoints.web.exposure.include"));
+        assertEquals("health,prometheus", base.getProperty("management.endpoints.web.exposure.include"));
+        assertEquals("true", base.getProperty("management.endpoint.health.probes.enabled"));
+        assertEquals("true", base.getProperty("management.endpoint.prometheus.enabled"));
+        assertEquals("never", base.getProperty("management.endpoint.health.show-details"));
     }
 
     @Test
