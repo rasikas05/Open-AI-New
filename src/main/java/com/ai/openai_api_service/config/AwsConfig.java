@@ -20,7 +20,7 @@ public class AwsConfig {
 
     private static final Logger log = LoggerFactory.getLogger(AwsConfig.class);
 
-    @Value("${aws.region:ap-south-1}")
+    @Value("${aws.region:eu-west-1}")
     private String awsRegion;
 
     @Value("${aws.comprehend.api-call-timeout-ms:15000}")

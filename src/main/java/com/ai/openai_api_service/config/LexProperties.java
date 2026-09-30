@@ -8,7 +8,7 @@ import org.springframework.stereotype.Component;
 public class LexProperties {
 
     private boolean enabled = false;
-    private String region = "eu-central-1";
+    private String region = "eu-west-1";
     private String botId = "";
     private String botAliasId = "";
     private String localeId = "en_US";
