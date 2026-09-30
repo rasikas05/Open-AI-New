@@ -14,7 +14,7 @@ public class TenantCreateRequest {
     private String name;
 
     @NotBlank(message = "cognitoClientId is required")
-    @Schema(example = "l6p54peadaqdhlfahb2fvega4", description = "Cognito M2M app client id bound to this tenant")
+    @Schema(example = "fghq7tes9bemu9v57tu44407m", description = "Cognito M2M app client id bound to this tenant")
     private String cognitoClientId;
 
     public TenantCreateRequest() {
