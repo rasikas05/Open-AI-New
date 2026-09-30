@@ -18,10 +18,12 @@ class ApplicationProfileConfigTest {
     void prodProperties_useEnvVarsForDb_withoutRootFallback() throws IOException {
         Properties prod = loadClasspathProperties("/application-prod.properties");
 
-        assertTrue(prod.getProperty("spring.datasource.url").contains("${DB_HOST:localhost}"));
+        String prodUrl = prod.getProperty("spring.datasource.url");
+        assertTrue(prodUrl.contains("${DB_HOST:10.0.130.125}"), "expected DB_HOST default for GFT DB, got: " + prodUrl);
+        assertTrue(prodUrl.contains("m3bot_prod"), "expected prod database name m3bot_prod, got: " + prodUrl);
         assertEqualsEnvPlaceholder(prod.getProperty("spring.datasource.username"), "DB_USERNAME");
         assertEqualsEnvPlaceholder(prod.getProperty("spring.datasource.password"), "DB_PASSWORD");
-        assertFalse(prod.getProperty("spring.datasource.url").contains("createDatabaseIfNotExists"));
+        assertFalse(prodUrl.contains("createDatabaseIfNotExists"));
         assertEquals("false", prod.getProperty("spring.jpa.show-sql"));
         assertEquals("${PRESIDIO_API_KEY}", prod.getProperty("presidio.api.key"));
         assertEquals("${RAG_INTERNAL_API_KEY}", prod.getProperty("python-rag.api.key"));
@@ -42,8 +44,10 @@ class ApplicationProfileConfigTest {
     void defaultProperties_useEnvVarsForLocalDb_withoutRootFallback() throws IOException {
         Properties base = loadClasspathProperties("/application.properties");
 
-        assertTrue(base.getProperty("spring.datasource.url").contains("${DB_HOST:localhost}"));
-        assertTrue(base.getProperty("spring.datasource.url").contains("createDatabaseIfNotExists=true"));
+        String baseUrl = base.getProperty("spring.datasource.url");
+        assertTrue(baseUrl.contains("${DB_HOST:10.0.130.125}"), "expected DB_HOST default for GFT DB, got: " + baseUrl);
+        assertTrue(baseUrl.contains("m3bot_prod"), "expected database name m3bot_prod, got: " + baseUrl);
+        assertTrue(baseUrl.contains("createDatabaseIfNotExists=true"));
         assertEqualsEnvPlaceholder(base.getProperty("spring.datasource.username"), "DB_USERNAME");
         assertEqualsEnvPlaceholder(base.getProperty("spring.datasource.password"), "DB_PASSWORD");
         assertEquals("true", base.getProperty("spring.jpa.show-sql"));
