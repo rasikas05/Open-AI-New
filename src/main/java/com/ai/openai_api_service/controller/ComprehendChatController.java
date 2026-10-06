@@ -12,6 +12,7 @@ import com.ai.openai_api_service.service.ComprehendChatService;
 import com.ai.openai_api_service.service.ChatPersistenceService;
 import com.ai.openai_api_service.service.LexService;
 import com.ai.openai_api_service.service.ResponseFeedbackService;
+import com.ai.openai_api_service.security.AuthPrincipalLabels;
 import com.ai.openai_api_service.service.TenantClientBindingService;
 import com.ai.openai_api_service.service.TenantService;
 import com.ai.openai_api_service.service.guided.InMemoryGuidedSearchSessionService;
@@ -87,9 +88,8 @@ public class ComprehendChatController {
             @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody ChatRequest request) {
 
-        String clientId = jwt.getClaimAsString("client_id");
-        logger.info("Comprehend Chat request from client_id: {}", clientId);
-        tenantClientBindingService.assertClientOwnsTenantCode(clientId, request.getTenantCode());
+        logger.info("Comprehend Chat request from auth: {}", AuthPrincipalLabels.forLog(jwt));
+        tenantClientBindingService.assertAuthorizedForTenant(jwt, request.getTenantCode());
         logger.debug("Comprehend chat flow entered for tenantCode={}, userId={}, sessionId={}, message={}",
                 request.getTenantCode(), request.getUserId(), request.getSessionId(), request.getUserMessage());
 
@@ -109,14 +109,13 @@ public class ComprehendChatController {
             @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody ResponseFeedbackRequest request) {
 
-        String clientId = jwt.getClaimAsString("client_id");
         logger.info(
-                "Comprehend Feedback request from client_id: {} requestLogId={} feedback={}",
-                clientId,
+                "Comprehend Feedback request from auth: {} requestLogId={} feedback={}",
+                AuthPrincipalLabels.forLog(jwt),
                 request.getRequestLogId(),
                 request.getFeedback()
         );
-        tenantClientBindingService.assertClientOwnsTenantCode(clientId, request.getTenantCode());
+        tenantClientBindingService.assertAuthorizedForTenant(jwt, request.getTenantCode());
         ResponseFeedbackResponse response = responseFeedbackService.upsert(request);
         return ResponseEntity.ok(response);
     }
@@ -134,9 +133,8 @@ public class ComprehendChatController {
             @RequestParam String sessionId,
             @RequestParam(defaultValue = "10") int maxExchanges) {
 
-        String clientId = jwt.getClaimAsString("client_id");
-        logger.info("Comprehend History request from client_id: {}", clientId);
-        tenantClientBindingService.assertClientOwnsTenantId(clientId, tenantId);
+        logger.info("Comprehend History request from auth: {}", AuthPrincipalLabels.forLog(jwt));
+        tenantClientBindingService.assertAuthorizedForTenant(jwt, tenantId);
 
         List<HistoryMessageDto> response = chatPersistenceService.loadHistoryForDisplay(
                 tenantId, userId, sessionId, maxExchanges
@@ -155,9 +153,8 @@ public class ComprehendChatController {
             @RequestParam String tenantId,
             @RequestParam String userId) {
 
-        String clientId = jwt.getClaimAsString("client_id");
-        logger.info("Comprehend List sessions request from client_id: {}", clientId);
-        tenantClientBindingService.assertClientOwnsTenantId(clientId, tenantId);
+        logger.info("Comprehend List sessions request from auth: {}", AuthPrincipalLabels.forLog(jwt));
+        tenantClientBindingService.assertAuthorizedForTenant(jwt, tenantId);
 
         List<Session> sessions = chatPersistenceService.listSessions(tenantId, userId);
 
@@ -186,16 +183,15 @@ public class ComprehendChatController {
             @RequestParam String tenantId,
             @RequestParam String userId) {
 
-        String clientId = jwt.getClaimAsString("client_id");
         logger.info(
-                "Comprehend Get session request from client_id: {} tenantId={} userId={} sessionId={}",
-                clientId,
+                "Comprehend Get session request from auth: {} tenantId={} userId={} sessionId={}",
+                AuthPrincipalLabels.forLog(jwt),
                 tenantId,
                 userId,
                 sessionId
         );
 
-        tenantClientBindingService.assertClientOwnsTenantId(clientId, tenantId);
+        tenantClientBindingService.assertAuthorizedForTenant(jwt, tenantId);
         Session session = chatPersistenceService.requireSessionForTenantUser(tenantId, userId, sessionId);
 
         SessionSummaryDto response = new SessionSummaryDto(
@@ -221,16 +217,15 @@ public class ComprehendChatController {
             @RequestParam String tenantId,
             @RequestParam String userId) {
 
-        String clientId = jwt.getClaimAsString("client_id");
         logger.info(
-                "Comprehend Close session request from client_id: {} tenantId={} userId={} sessionId={}",
-                clientId,
+                "Comprehend Close session request from auth: {} tenantId={} userId={} sessionId={}",
+                AuthPrincipalLabels.forLog(jwt),
                 tenantId,
                 userId,
                 sessionId
         );
 
-        tenantClientBindingService.assertClientOwnsTenantId(clientId, tenantId);
+        tenantClientBindingService.assertAuthorizedForTenant(jwt, tenantId);
         Session authorized = chatPersistenceService.requireSessionForTenantUser(tenantId, userId, sessionId);
         Session session = chatPersistenceService.closeAuthorizedSession(authorized);
 

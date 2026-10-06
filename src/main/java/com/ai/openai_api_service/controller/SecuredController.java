@@ -1,5 +1,7 @@
 package com.ai.openai_api_service.controller;
 
+import com.ai.openai_api_service.security.AuthPrincipalLabels;
+import com.ai.openai_api_service.security.TenantAuthBypassSupport;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import io.swagger.v3.oas.annotations.Operation;
@@ -23,8 +25,14 @@ public class SecuredController {
     @Operation(summary = "Get client information", description = "Returns information about the authenticated client.")
     @PreAuthorize("hasAuthority(@requiredM2mScope.authority)")
     public ResponseEntity<String> getClientInfo(@AuthenticationPrincipal Jwt jwt) {
-        String clientId = jwt.getClaimAsString("client_id");
-        logger.info("Client info request from client_id: {}", clientId);
-        return ResponseEntity.ok("Authenticated client: " + clientId);
+        String authLabel = AuthPrincipalLabels.forLog(jwt);
+        logger.info("Client info request from auth: {}", authLabel);
+        if (jwt == null && TenantAuthBypassSupport.isBypassActive()) {
+            return ResponseEntity.ok(
+                    "Authenticated principal: " + TenantAuthBypassSupport.PRINCIPAL_NAME
+                            + ", tenant=" + TenantAuthBypassSupport.bypassTenantCode()
+            );
+        }
+        return ResponseEntity.ok("Authenticated client: " + authLabel);
     }
 }

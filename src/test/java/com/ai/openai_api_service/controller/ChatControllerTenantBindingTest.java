@@ -30,7 +30,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @WebMvcTest(ChatController.class)
 class ChatControllerTenantBindingTest {
 
-    private static final String SCOPE_AUTHORITY = "SCOPE_default-m2m-resource-server-5kguh6/read";
+    private static final String SCOPE_AUTHORITY = "SCOPE_default-m2m-resource-server-mawkw5/read";
     private static final String CLIENT_A = "client-a";
     private static final String TENANT_A = "tenant-a";
     private static final String TENANT_B = "tenant-b";
@@ -52,7 +52,7 @@ class ChatControllerTenantBindingTest {
 
     @Test
     void chat_clientA_tenantA_allowed() throws Exception {
-        doNothing().when(tenantClientBindingService).assertClientOwnsTenantCode(CLIENT_A, TENANT_A);
+        doNothing().when(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_A));
         when(chatService.chat(any())).thenReturn(new ChatResponse("ok", false));
 
         mockMvc.perform(post("/api/chat")
@@ -61,13 +61,13 @@ class ChatControllerTenantBindingTest {
                         .content(chatBody(TENANT_A)))
                 .andExpect(status().isOk());
 
-        verify(tenantClientBindingService).assertClientOwnsTenantCode(CLIENT_A, TENANT_A);
+        verify(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_A));
     }
 
     @Test
     void chat_clientA_tenantB_forbidden() throws Exception {
         doThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, TenantClientBindingService.FORBIDDEN_MESSAGE))
-                .when(tenantClientBindingService).assertClientOwnsTenantCode(CLIENT_A, TENANT_B);
+                .when(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_B));
 
         mockMvc.perform(post("/api/chat")
                         .with(jwtWithClient(CLIENT_A))
@@ -81,7 +81,7 @@ class ChatControllerTenantBindingTest {
     @Test
     void history_wrongTenantId_forbidden() throws Exception {
         doThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, TenantClientBindingService.FORBIDDEN_MESSAGE))
-                .when(tenantClientBindingService).assertClientOwnsTenantId(CLIENT_A, TENANT_B);
+                .when(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_B));
 
         mockMvc.perform(get("/api/chat/history")
                         .param("tenantId", TENANT_B)
@@ -94,7 +94,7 @@ class ChatControllerTenantBindingTest {
     @Test
     void chat_missingClientId_forbidden() throws Exception {
         doThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, TenantClientBindingService.FORBIDDEN_MESSAGE))
-                .when(tenantClientBindingService).assertClientOwnsTenantCode(eq(null), eq(TENANT_A));
+                .when(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_A));
 
         mockMvc.perform(post("/api/chat")
                         .with(jwt().authorities(new SimpleGrantedAuthority(SCOPE_AUTHORITY)))

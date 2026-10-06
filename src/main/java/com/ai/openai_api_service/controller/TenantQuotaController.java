@@ -6,6 +6,7 @@ import com.ai.openai_api_service.model.TenantQuotaUpdateRequest;
 import com.ai.openai_api_service.model.TokenUsageDto;
 import com.ai.openai_api_service.model.TopupRequest;
 import com.ai.openai_api_service.model.TopupResponse;
+import com.ai.openai_api_service.security.AuthPrincipalLabels;
 import com.ai.openai_api_service.service.TenantClientBindingService;
 import com.ai.openai_api_service.service.TenantQuotaService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -50,9 +51,8 @@ public class TenantQuotaController {
     public ResponseEntity<TenantQuotaResponse> assignQuota(
             @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody TenantQuotaRequest request) {
-        String clientId = jwt.getClaimAsString("client_id");
-        logger.info("Assign quota request from client_id={} tenantCode={}", clientId, request.getTenantCode());
-        tenantClientBindingService.assertClientOwnsTenantCode(clientId, request.getTenantCode());
+        logger.info("Assign quota request from auth={} tenantCode={}", AuthPrincipalLabels.forLog(jwt), request.getTenantCode());
+        tenantClientBindingService.assertAuthorizedForTenant(jwt, request.getTenantCode());
         TenantQuotaResponse response = tenantQuotaService.assignQuota(request.getTenantCode(), request.getBaseLimit());
         return ResponseEntity.ok(response);
     }
@@ -63,9 +63,8 @@ public class TenantQuotaController {
     public ResponseEntity<TenantQuotaResponse> updateQuota(
             @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody TenantQuotaUpdateRequest request) {
-        String clientId = jwt.getClaimAsString("client_id");
-        logger.info("Update quota request from client_id={} tenantCode={}", clientId, request.getTenantCode());
-        tenantClientBindingService.assertClientOwnsTenantCode(clientId, request.getTenantCode());
+        logger.info("Update quota request from auth={} tenantCode={}", AuthPrincipalLabels.forLog(jwt), request.getTenantCode());
+        tenantClientBindingService.assertAuthorizedForTenant(jwt, request.getTenantCode());
         TenantQuotaResponse response = tenantQuotaService.updateQuota(
                 request.getTenantCode(),
                 request.getBaseLimit(),
@@ -80,9 +79,8 @@ public class TenantQuotaController {
     public ResponseEntity<TopupResponse> topup(
             @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody TopupRequest request) {
-        String clientId = jwt.getClaimAsString("client_id");
-        logger.info("Topup request from client_id={} tenantCode={}", clientId, request.getTenantCode());
-        tenantClientBindingService.assertClientOwnsTenantCode(clientId, request.getTenantCode());
+        logger.info("Topup request from auth={} tenantCode={}", AuthPrincipalLabels.forLog(jwt), request.getTenantCode());
+        tenantClientBindingService.assertAuthorizedForTenant(jwt, request.getTenantCode());
         TopupResponse response = tenantQuotaService.topup(request.getTenantCode(), request.getTokens());
         return ResponseEntity.ok(response);
     }
@@ -93,9 +91,8 @@ public class TenantQuotaController {
     public ResponseEntity<TokenUsageDto> getTokenUsage(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable String tenantCode) {
-        String clientId = jwt.getClaimAsString("client_id");
-        logger.info("Get token usage from client_id={} tenantCode={}", clientId, tenantCode);
-        tenantClientBindingService.assertClientOwnsTenantCode(clientId, tenantCode);
+        logger.info("Get token usage from auth={} tenantCode={}", AuthPrincipalLabels.forLog(jwt), tenantCode);
+        tenantClientBindingService.assertAuthorizedForTenant(jwt, tenantCode);
         TokenUsageDto usage = tenantQuotaService.getTokenUsage(tenantCode);
         return ResponseEntity.ok(usage);
     }

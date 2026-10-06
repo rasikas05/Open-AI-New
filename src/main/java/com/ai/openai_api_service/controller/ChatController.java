@@ -12,6 +12,7 @@ import com.ai.openai_api_service.model.SessionMessageDto;
 import com.ai.openai_api_service.model.SessionSummaryDto;
 import com.ai.openai_api_service.model.SessionTitleUpdateRequest;
 import com.ai.openai_api_service.model.SessionTitleUpdateResponse;
+import com.ai.openai_api_service.security.AuthPrincipalLabels;
 import com.ai.openai_api_service.service.ChatService;
 import com.ai.openai_api_service.service.ChatPersistenceService;
 import com.ai.openai_api_service.service.TenantClientBindingService;
@@ -67,9 +68,8 @@ public class ChatController {
             @AuthenticationPrincipal Jwt jwt,
             @Valid @RequestBody ChatRequest request) {
 
-        String clientId = jwt.getClaimAsString("client_id");
-        logger.info("Chat request from client_id: {}", clientId);
-        tenantClientBindingService.assertClientOwnsTenantCode(clientId, request.getTenantCode());
+        logger.info("Chat request from auth: {}", AuthPrincipalLabels.forLog(jwt));
+        tenantClientBindingService.assertAuthorizedForTenant(jwt, request.getTenantCode());
 
         tenantService.registerUserAndSession(request.getTenantCode(), request.getUserId(), request.getSessionId(), 0);
         ChatResponse response = chatService.chat(request);
@@ -86,9 +86,8 @@ public class ChatController {
             @RequestParam String sessionId,
             @RequestParam(defaultValue = "10") int maxExchanges) {
 
-        String clientId = jwt.getClaimAsString("client_id");
-        logger.info("History request from client_id: {}", clientId);
-        tenantClientBindingService.assertClientOwnsTenantId(clientId, tenantId);
+        logger.info("History request from auth: {}", AuthPrincipalLabels.forLog(jwt));
+        tenantClientBindingService.assertAuthorizedForTenant(jwt, tenantId);
 
         List<MessageDto> response = chatPersistenceService.loadHistoryForPrompt(
                 tenantId, userId, sessionId, maxExchanges
@@ -104,9 +103,8 @@ public class ChatController {
             @RequestParam String tenantId,
             @RequestParam String userId) {
 
-        String clientId = jwt.getClaimAsString("client_id");
-        logger.info("List sessions request from client_id: {}", clientId);
-        tenantClientBindingService.assertClientOwnsTenantId(clientId, tenantId);
+        logger.info("List sessions request from auth: {}", AuthPrincipalLabels.forLog(jwt));
+        tenantClientBindingService.assertAuthorizedForTenant(jwt, tenantId);
 
         List<Session> sessions = chatPersistenceService.listSessions(tenantId, userId);
 
@@ -132,9 +130,8 @@ public class ChatController {
             @RequestParam String tenantId,
             @RequestParam String userId) {
 
-        String clientId = jwt.getClaimAsString("client_id");
-        logger.info("Count sessions request from client_id: {}", clientId);
-        tenantClientBindingService.assertClientOwnsTenantId(clientId, tenantId);
+        logger.info("Count sessions request from auth: {}", AuthPrincipalLabels.forLog(jwt));
+        tenantClientBindingService.assertAuthorizedForTenant(jwt, tenantId);
 
         long sessionCount = chatPersistenceService.countSessions(tenantId, userId);
         SessionCountDto response = new SessionCountDto(tenantId, userId, sessionCount);
@@ -157,9 +154,9 @@ public class ChatController {
             @RequestParam String userId,
             @RequestParam(name = "sessionId", required = false) String querySessionId) {
 
-        String clientId = jwt.getClaimAsString("client_id");
-        logger.info("Session messages request from client_id: {}, tenantId={}, userId={}, pathSessionId={}, querySessionId={}", clientId, tenantId, userId, sessionId, querySessionId);
-        tenantClientBindingService.assertClientOwnsTenantId(clientId, tenantId);
+        logger.info("Session messages request from auth: {}, tenantId={}, userId={}, pathSessionId={}, querySessionId={}",
+                AuthPrincipalLabels.forLog(jwt), tenantId, userId, sessionId, querySessionId);
+        tenantClientBindingService.assertAuthorizedForTenant(jwt, tenantId);
         logger.info("Using path variable sessionId={}", sessionId);
         if (querySessionId != null && !querySessionId.isBlank() && !querySessionId.equals(sessionId)) {
             logger.warn("Conflicting sessionId values: path='{}' vs query='{}'. Using path variable sessionId. Remove sessionId query parameter.", sessionId, querySessionId);
@@ -199,10 +196,9 @@ public class ChatController {
             @PathVariable String sessionId,
             @Valid @RequestBody SessionTitleUpdateRequest request) {
 
-        String clientId = jwt.getClaimAsString("client_id");
-        logger.info("Update session title request from client_id: {}, tenantId={}, userId={}, sessionId={}, title={}",
-                clientId, request.getTenantId(), request.getUserId(), sessionId, request.getTitle());
-        tenantClientBindingService.assertClientOwnsTenantId(clientId, request.getTenantId());
+        logger.info("Update session title request from auth: {}, tenantId={}, userId={}, sessionId={}, title={}",
+                AuthPrincipalLabels.forLog(jwt), request.getTenantId(), request.getUserId(), sessionId, request.getTitle());
+        tenantClientBindingService.assertAuthorizedForTenant(jwt, request.getTenantId());
 
         SessionTitleUpdateResponse response = chatPersistenceService.updateSessionTitle(
                 request.getTenantId(),

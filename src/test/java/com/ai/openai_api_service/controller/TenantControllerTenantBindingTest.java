@@ -15,6 +15,8 @@ import org.springframework.web.server.ResponseStatusException;
 import java.time.LocalDateTime;
 import java.util.List;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.when;
@@ -25,7 +27,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @WebMvcTest(TenantController.class)
 class TenantControllerTenantBindingTest {
 
-    private static final String SCOPE_AUTHORITY = "SCOPE_default-m2m-resource-server-5kguh6/read";
+    private static final String SCOPE_AUTHORITY = "SCOPE_default-m2m-resource-server-mawkw5/read";
     private static final String CLIENT_A = "client-a";
     private static final String TENANT_A = "tenant-a";
     private static final String TENANT_B = "tenant-b";
@@ -41,7 +43,7 @@ class TenantControllerTenantBindingTest {
 
     @Test
     void listUsers_matchingTenant_allowed() throws Exception {
-        doNothing().when(tenantClientBindingService).assertClientOwnsTenantId(CLIENT_A, TENANT_A);
+        doNothing().when(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_A));
         when(tenantService.getUsersForTenant(TENANT_A)).thenReturn(List.of(
                 new UserResponse(1L, TENANT_A, "u1", LocalDateTime.now())
         ));
@@ -54,7 +56,7 @@ class TenantControllerTenantBindingTest {
     @Test
     void listUsers_wrongTenant_forbidden() throws Exception {
         doThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, TenantClientBindingService.FORBIDDEN_MESSAGE))
-                .when(tenantClientBindingService).assertClientOwnsTenantId(CLIENT_A, TENANT_B);
+                .when(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_B));
 
         mockMvc.perform(get("/api/tenant/" + TENANT_B + "/users")
                         .with(jwtWithClient(CLIENT_A)))

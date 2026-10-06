@@ -5,6 +5,7 @@ import com.ai.openai_api_service.model.TenantCreateRequest;
 import com.ai.openai_api_service.model.TenantResponse;
 import com.ai.openai_api_service.model.UserResponse;
 import com.ai.openai_api_service.model.UserSessionRequest;
+import com.ai.openai_api_service.security.AuthPrincipalLabels;
 import com.ai.openai_api_service.service.TenantClientBindingService;
 import com.ai.openai_api_service.service.TenantService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -55,9 +56,8 @@ public class TenantController {
     public ResponseEntity<List<UserResponse>> listUsers(
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable String tenantId) {
-        String clientId = jwt.getClaimAsString("client_id");
-        logger.info("Listing users for tenant={} client_id={}", tenantId, clientId);
-        tenantClientBindingService.assertClientOwnsTenantId(clientId, tenantId);
+        logger.info("Listing users for tenant={} auth={}", tenantId, AuthPrincipalLabels.forLog(jwt));
+        tenantClientBindingService.assertAuthorizedForTenant(jwt, tenantId);
         return ResponseEntity.ok(tenantService.getUsersForTenant(tenantId));
     }
 
@@ -68,9 +68,8 @@ public class TenantController {
             @AuthenticationPrincipal Jwt jwt,
             @PathVariable String tenantId,
             @PathVariable String userId) {
-        String clientId = jwt.getClaimAsString("client_id");
-        logger.info("Listing sessions for tenant={} user={} client_id={}", tenantId, userId, clientId);
-        tenantClientBindingService.assertClientOwnsTenantId(clientId, tenantId);
+        logger.info("Listing sessions for tenant={} user={} auth={}", tenantId, userId, AuthPrincipalLabels.forLog(jwt));
+        tenantClientBindingService.assertAuthorizedForTenant(jwt, tenantId);
         return ResponseEntity.ok(tenantService.getSessionsForUser(tenantId, userId));
     }
 
@@ -82,9 +81,9 @@ public class TenantController {
             @PathVariable String tenantId,
             @PathVariable String userId,
             @Valid @RequestBody UserSessionRequest request) {
-        String clientId = jwt.getClaimAsString("client_id");
-        logger.info("Registering session {} for tenant={} user={} client_id={}", request.getSessionId(), tenantId, userId, clientId);
-        tenantClientBindingService.assertClientOwnsTenantId(clientId, tenantId);
+        logger.info("Registering session {} for tenant={} user={} auth={}",
+                request.getSessionId(), tenantId, userId, AuthPrincipalLabels.forLog(jwt));
+        tenantClientBindingService.assertAuthorizedForTenant(jwt, tenantId);
         tenantService.registerUserAndSession(tenantId, userId, request.getSessionId(), request.getTokenLimit());
         return ResponseEntity.ok().build();
     }

@@ -22,6 +22,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.server.ResponseStatusException;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
@@ -35,7 +36,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @WebMvcTest(ComprehendChatController.class)
 class ComprehendChatControllerSessionOwnershipTest {
 
-    private static final String SCOPE_AUTHORITY = "SCOPE_default-m2m-resource-server-5kguh6/read";
+    private static final String SCOPE_AUTHORITY = "SCOPE_default-m2m-resource-server-mawkw5/read";
     private static final String CLIENT_A = "client-a";
     private static final String TENANT_A = "tenant-a";
     private static final String USER_A = "user-a";
@@ -66,7 +67,7 @@ class ComprehendChatControllerSessionOwnershipTest {
 
     @Test
     void getSession_correctUser_ok() throws Exception {
-        doNothing().when(tenantClientBindingService).assertClientOwnsTenantId(CLIENT_A, TENANT_A);
+        doNothing().when(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_A));
         Session session = ownedSession();
         when(chatPersistenceService.requireSessionForTenantUser(TENANT_A, USER_A, SESSION_A))
                 .thenReturn(session);
@@ -81,7 +82,7 @@ class ComprehendChatControllerSessionOwnershipTest {
 
     @Test
     void getSession_wrongUser_forbidden() throws Exception {
-        doNothing().when(tenantClientBindingService).assertClientOwnsTenantId(CLIENT_A, TENANT_A);
+        doNothing().when(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_A));
         when(chatPersistenceService.requireSessionForTenantUser(TENANT_A, USER_B, SESSION_A))
                 .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "Session does not belong to this user"));
 
@@ -95,7 +96,7 @@ class ComprehendChatControllerSessionOwnershipTest {
 
     @Test
     void getSession_unknown_notFound() throws Exception {
-        doNothing().when(tenantClientBindingService).assertClientOwnsTenantId(CLIENT_A, TENANT_A);
+        doNothing().when(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_A));
         when(chatPersistenceService.requireSessionForTenantUser(TENANT_A, USER_A, "missing"))
                 .thenThrow(new ResponseStatusException(HttpStatus.NOT_FOUND, "Session not found"));
 
@@ -108,7 +109,7 @@ class ComprehendChatControllerSessionOwnershipTest {
 
     @Test
     void closeSession_wrongUser_forbidden() throws Exception {
-        doNothing().when(tenantClientBindingService).assertClientOwnsTenantId(CLIENT_A, TENANT_A);
+        doNothing().when(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_A));
         when(chatPersistenceService.requireSessionForTenantUser(TENANT_A, USER_B, SESSION_A))
                 .thenThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, "Session does not belong to this user"));
 
@@ -121,7 +122,7 @@ class ComprehendChatControllerSessionOwnershipTest {
 
     @Test
     void closeSession_correctUser_closesAuthorizedSession() throws Exception {
-        doNothing().when(tenantClientBindingService).assertClientOwnsTenantId(CLIENT_A, TENANT_A);
+        doNothing().when(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_A));
         Session authorized = ownedSession();
         Session closed = ownedSession();
         closed.setStatus("CLOSED");

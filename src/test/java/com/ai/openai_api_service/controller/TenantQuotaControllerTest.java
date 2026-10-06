@@ -15,7 +15,9 @@ import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.server.ResponseStatusException;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.never;
@@ -30,7 +32,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @WebMvcTest(TenantQuotaController.class)
 class TenantQuotaControllerTest {
 
-    private static final String SCOPE_AUTHORITY = "SCOPE_default-m2m-resource-server-5kguh6/read";
+    private static final String SCOPE_AUTHORITY = "SCOPE_default-m2m-resource-server-mawkw5/read";
     private static final String CLIENT_A = "client-a";
     private static final String TENANT_A = "tenant-a";
     private static final String TENANT_B = "tenant-b";
@@ -46,7 +48,7 @@ class TenantQuotaControllerTest {
 
     @Test
     void assignQuota_sameTenant_ok() throws Exception {
-        doNothing().when(tenantClientBindingService).assertClientOwnsTenantCode(CLIENT_A, TENANT_A);
+        doNothing().when(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_A));
         TenantQuotaResponse response = new TenantQuotaResponse(
                 TENANT_A,
                 10000,
@@ -66,12 +68,12 @@ class TenantQuotaControllerTest {
                 .andExpect(jsonPath("$.baseLimit").value(10000))
                 .andExpect(jsonPath("$.usage.remaining").value(10000));
 
-        verify(tenantClientBindingService).assertClientOwnsTenantCode(CLIENT_A, TENANT_A);
+        verify(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_A));
     }
 
     @Test
     void topup_sameTenant_ok() throws Exception {
-        doNothing().when(tenantClientBindingService).assertClientOwnsTenantCode(CLIENT_A, TENANT_A);
+        doNothing().when(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_A));
         TopupResponse response = new TopupResponse(
                 "Top-up successful",
                 TENANT_A,
@@ -94,7 +96,7 @@ class TenantQuotaControllerTest {
     @Test
     void getTokenUsage_crossTenant_forbidden() throws Exception {
         doThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, TenantClientBindingService.FORBIDDEN_MESSAGE))
-                .when(tenantClientBindingService).assertClientOwnsTenantCode(CLIENT_A, TENANT_B);
+                .when(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_B));
 
         mockMvc.perform(get("/tenant/quota/" + TENANT_B)
                         .with(jwtWithClient(CLIENT_A)))
@@ -107,7 +109,7 @@ class TenantQuotaControllerTest {
     @Test
     void assignQuota_crossTenant_forbidden() throws Exception {
         doThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, TenantClientBindingService.FORBIDDEN_MESSAGE))
-                .when(tenantClientBindingService).assertClientOwnsTenantCode(CLIENT_A, TENANT_B);
+                .when(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_B));
 
         mockMvc.perform(post("/tenant/quota")
                         .with(jwtWithClient(CLIENT_A))
@@ -120,7 +122,7 @@ class TenantQuotaControllerTest {
 
     @Test
     void getTokenUsage_sameTenant_ok() throws Exception {
-        doNothing().when(tenantClientBindingService).assertClientOwnsTenantCode(CLIENT_A, TENANT_A);
+        doNothing().when(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_A));
         when(tenantQuotaService.getTokenUsage(TENANT_A)).thenReturn(new TokenUsageDto(10, 100, 90));
 
         mockMvc.perform(get("/tenant/quota/" + TENANT_A)

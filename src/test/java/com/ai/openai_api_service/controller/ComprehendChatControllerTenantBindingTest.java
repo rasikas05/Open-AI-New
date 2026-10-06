@@ -21,6 +21,7 @@ import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.web.server.ResponseStatusException;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
@@ -33,7 +34,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 @WebMvcTest(ComprehendChatController.class)
 class ComprehendChatControllerTenantBindingTest {
 
-    private static final String SCOPE_AUTHORITY = "SCOPE_default-m2m-resource-server-5kguh6/read";
+    private static final String SCOPE_AUTHORITY = "SCOPE_default-m2m-resource-server-mawkw5/read";
     private static final String CLIENT_A = "client-a";
     private static final String TENANT_A = "tenant-a";
     private static final String TENANT_B = "tenant-b";
@@ -63,7 +64,7 @@ class ComprehendChatControllerTenantBindingTest {
     @Test
     void feedback_wrongTenant_forbidden() throws Exception {
         doThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, TenantClientBindingService.FORBIDDEN_MESSAGE))
-                .when(tenantClientBindingService).assertClientOwnsTenantCode(CLIENT_A, TENANT_B);
+                .when(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_B));
 
         mockMvc.perform(post("/api/chat/comprehend/feedback")
                         .with(jwtWithClient(CLIENT_A))
@@ -75,7 +76,7 @@ class ComprehendChatControllerTenantBindingTest {
     @Test
     void getSession_wrongClient_forbidden() throws Exception {
         doThrow(new ResponseStatusException(HttpStatus.FORBIDDEN, TenantClientBindingService.FORBIDDEN_MESSAGE))
-                .when(tenantClientBindingService).assertClientOwnsTenantId(CLIENT_A, TENANT_B);
+                .when(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_B));
 
         mockMvc.perform(get("/api/chat/comprehend/sessions/s1")
                         .param("tenantId", TENANT_B)
@@ -83,12 +84,12 @@ class ComprehendChatControllerTenantBindingTest {
                         .with(jwtWithClient(CLIENT_A)))
                 .andExpect(status().isForbidden());
 
-        verify(tenantClientBindingService).assertClientOwnsTenantId(CLIENT_A, TENANT_B);
+        verify(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_B));
     }
 
     @Test
     void feedback_matchingTenant_allowed() throws Exception {
-        doNothing().when(tenantClientBindingService).assertClientOwnsTenantCode(CLIENT_A, TENANT_A);
+        doNothing().when(tenantClientBindingService).assertAuthorizedForTenant(any(), eq(TENANT_A));
         when(responseFeedbackService.upsert(any())).thenReturn(new ResponseFeedbackResponse());
 
         mockMvc.perform(post("/api/chat/comprehend/feedback")

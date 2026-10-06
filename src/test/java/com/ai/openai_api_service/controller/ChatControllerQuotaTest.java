@@ -28,7 +28,7 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 @WebMvcTest(ChatController.class)
 class ChatControllerQuotaTest {
 
-    private static final String SCOPE_AUTHORITY = "SCOPE_default-m2m-resource-server-5kguh6/read";
+    private static final String SCOPE_AUTHORITY = "SCOPE_default-m2m-resource-server-mawkw5/read";
 
     @Autowired
     private MockMvc mockMvc;
@@ -47,7 +47,7 @@ class ChatControllerQuotaTest {
 
     @Test
     void chatShouldReturn429WhenLimitExceeded() throws Exception {
-        doNothing().when(tenantClientBindingService).assertClientOwnsTenantCode(anyString(), anyString());
+        doNothing().when(tenantClientBindingService).assertAuthorizedForTenant(any(), anyString());
 
         ChatResponse response = new ChatResponse(
                 "Token limit reached for this tenant. Please top up to continue.", false);

@@ -1,5 +1,8 @@
 package com.ai.openai_api_service.config;
 
+import com.ai.openai_api_service.security.TenantAuthBypassFilter;
+import com.ai.openai_api_service.service.TenantAuthBypassService;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
@@ -12,18 +15,34 @@ import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
+import org.springframework.security.oauth2.server.resource.web.BearerTokenAuthenticationFilter;
+import org.springframework.security.oauth2.server.resource.web.DefaultBearerTokenResolver;
 import org.springframework.security.web.SecurityFilterChain;
 
 @Configuration
 @EnableWebSecurity
 @EnableMethodSecurity
+@EnableConfigurationProperties(TenantAuthBypassProperties.class)
 public class SecurityConfig {
 
     @Value("${spring.security.oauth2.resourceserver.jwt.issuer-uri}")
     private String issuerUri;
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    public TenantAuthBypassFilter tenantAuthBypassFilter(
+            TenantAuthBypassService tenantAuthBypassService,
+            RequiredM2mScope requiredM2mScope
+    ) {
+        return new TenantAuthBypassFilter(tenantAuthBypassService, requiredM2mScope);
+    }
+
+    @Bean
+    public SecurityFilterChain securityFilterChain(
+            HttpSecurity http,
+            TenantAuthBypassFilter tenantAuthBypassFilter
+    ) throws Exception {
+        DefaultBearerTokenResolver bearerTokenResolver = new DefaultBearerTokenResolver();
+
         http
             .csrf(csrf -> csrf.disable())
             .authorizeHttpRequests(auth -> auth
@@ -37,7 +56,11 @@ public class SecurityConfig {
                 ).permitAll()
                 .anyRequest().authenticated()
             )
-            .oauth2ResourceServer(oauth -> oauth.jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter())));
+            .oauth2ResourceServer(oauth -> oauth
+                .bearerTokenResolver(bearerTokenResolver)
+                .jwt(jwt -> jwt.jwtAuthenticationConverter(jwtAuthenticationConverter()))
+            )
+            .addFilterBefore(tenantAuthBypassFilter, BearerTokenAuthenticationFilter.class);
 
         return http.build();
     }

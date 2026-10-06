@@ -2,13 +2,18 @@ package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.entity.Tenant;
 import com.ai.openai_api_service.repository.TenantRepository;
+import com.ai.openai_api_service.security.TenantAuthBypassSupport;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
+import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.security.oauth2.jwt.Jwt;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.Instant;
@@ -36,6 +41,12 @@ class TenantClientBindingServiceTest {
     @BeforeEach
     void setUp() {
         service = new TenantClientBindingService(tenantRepository);
+        RequestContextHolder.resetRequestAttributes();
+    }
+
+    @AfterEach
+    void tearDown() {
+        RequestContextHolder.resetRequestAttributes();
     }
 
     @Test
@@ -101,9 +112,31 @@ class TenantClientBindingServiceTest {
 
         ResponseStatusException ex = assertThrows(
                 ResponseStatusException.class,
-                () -> service.assertClientOwnsTenant(jwt, TENANT_A)
+                () -> service.assertAuthorizedForTenant(jwt, TENANT_A)
         );
         assertEquals(HttpStatus.FORBIDDEN, ex.getStatusCode());
+    }
+
+    @Test
+    void bypass_matchingTenant_allowed() {
+        markBypass(TENANT_A);
+        assertDoesNotThrow(() -> service.assertAuthorizedForTenant(null, TENANT_A));
+    }
+
+    @Test
+    void bypass_crossTenant_forbidden() {
+        markBypass(TENANT_A);
+        ResponseStatusException ex = assertThrows(
+                ResponseStatusException.class,
+                () -> service.assertAuthorizedForTenant(null, TENANT_B)
+        );
+        assertEquals(HttpStatus.FORBIDDEN, ex.getStatusCode());
+    }
+
+    private static void markBypass(String tenantCode) {
+        MockHttpServletRequest request = new MockHttpServletRequest();
+        TenantAuthBypassSupport.markActive(request, tenantCode);
+        RequestContextHolder.setRequestAttributes(new ServletRequestAttributes(request));
     }
 
     private static Tenant tenant(String code, String clientId) {
