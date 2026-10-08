@@ -177,6 +177,9 @@ class ComprehendChatServiceTest {
         ReflectionTestUtils.setField(comprehendChatService, "openAiModel", "gpt-5.6-terra");
         pendingLexSessionService = new InMemoryPendingLexSessionService(3600);
         ReflectionTestUtils.setField(comprehendChatService, "pendingLexSessionService", pendingLexSessionService);
+        // Step 1/2: suggestions only on docs RAG with chunks; most routes never call this.
+        lenient().when(suggestionEngineService.generateSuggestions(any()))
+                .thenReturn(new SuggestionResult(List.of(), List.of()));
         lenient().when(guidedSearchSessionService.find(any())).thenReturn(Optional.empty());
         lenient().when(businessInformationProtectionService.isEnabled()).thenReturn(false);
         lenient().when(businessInformationProtectionService.protect(any(ProtectionSession.class), any())).thenAnswer(inv -> inv.getArgument(0));
@@ -220,7 +223,6 @@ class ComprehendChatServiceTest {
         GroundedRagResult grounded = new GroundedRagResult(RagStatus.FULL, "grounded answer", List.of());
         when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any()))
                 .thenReturn(new GroundedRagCallResult(grounded, usage, "{\"status\":\"FULL\"}"));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("how to create customer");
         ChatResponse response = comprehendChatService.chat(request);
@@ -258,7 +260,6 @@ class ComprehendChatServiceTest {
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(usage);
         when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("weak docs"));
 
@@ -293,7 +294,6 @@ class ComprehendChatServiceTest {
                         "{}"
                 )
         );
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("pricing issue"));
 
@@ -318,7 +318,6 @@ class ComprehendChatServiceTest {
             response.setActionTaken("read");
             return response;
         });
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest(original));
 
@@ -373,7 +372,6 @@ class ComprehendChatServiceTest {
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(new OpenAIUsage(1, 1, 2, "gpt-4.1"));
         when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest(original));
 
@@ -407,7 +405,6 @@ class ComprehendChatServiceTest {
             response.setActionTaken("read");
             return response;
         });
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("show customer C001"));
 
@@ -447,7 +444,6 @@ class ComprehendChatServiceTest {
         fallbackResponse.setActionTaken("gpt_infor");
         fallbackResponse.setOpenAiUsage(fallbackUsage);
         when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallbackResponse);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("how to add KIT"));
 
@@ -490,7 +486,6 @@ class ComprehendChatServiceTest {
         ChatResponse gapResponse = new ChatResponse("Functional purpose: ...", false);
         gapResponse.setOpenAiUsage(gapUsage);
         when(openAIService.chatGapFill(any(), anyString(), anyList(), any())).thenReturn(gapResponse);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("What is MNS204 used for?"));
 
@@ -538,7 +533,6 @@ class ComprehendChatServiceTest {
                         "{}"
                 )
         );
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("What is MNS204 used for?"));
 
@@ -565,7 +559,6 @@ class ComprehendChatServiceTest {
         fallback.setActionTaken("gpt_infor");
         fallback.setOpenAiUsage(new OpenAIUsage(5, 5, 10, "gpt-4.1"));
         when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallback);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("how to create customer"));
 
@@ -588,7 +581,6 @@ class ComprehendChatServiceTest {
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(usage);
         when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("how to create customer"));
 
@@ -614,7 +606,6 @@ class ComprehendChatServiceTest {
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(usage);
         when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("unknown topic"));
 
@@ -643,7 +634,6 @@ class ComprehendChatServiceTest {
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(usage);
         when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("how to configure CRS900"));
 
@@ -668,7 +658,6 @@ class ComprehendChatServiceTest {
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(usage);
         when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("how to create customer"));
 
@@ -717,7 +706,6 @@ class ComprehendChatServiceTest {
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(new OpenAIUsage(1, 1, 2, "gpt-4.1"));
         when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest(original));
 
@@ -744,7 +732,6 @@ class ComprehendChatServiceTest {
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(new OpenAIUsage(3, 3, 6, "gpt-4.1"));
         when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest(original));
 
@@ -775,7 +762,6 @@ class ComprehendChatServiceTest {
                         "{}"
                 )
         );
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         comprehendChatService.chat(baseRequest("purchase settings"));
 
@@ -833,7 +819,6 @@ class ComprehendChatServiceTest {
         ChatResponse fallback = new ChatResponse("fallback", false);
         fallback.setActionTaken("gpt_infor");
         when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallback);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         comprehendChatService.chat(baseRequest("pricing issue"));
 
@@ -862,7 +847,6 @@ class ComprehendChatServiceTest {
         fallback.setActionTaken("gpt_infor");
         fallback.setOpenAiUsage(answerUsage);
         when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallback);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("pricing issue"));
 
@@ -893,7 +877,6 @@ class ComprehendChatServiceTest {
         ChatResponse fallback = new ChatResponse("doc answer", false);
         fallback.setActionTaken("gpt_infor");
         when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallback);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         comprehendChatService.chat(baseRequest("how to configure dispatch policy"));
 
@@ -913,7 +896,6 @@ class ComprehendChatServiceTest {
             response.setActionTaken("read");
             return response;
         });
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("show customer C001"));
 
@@ -939,7 +921,6 @@ class ComprehendChatServiceTest {
                 List.of("What is the customer number?")
         );
         when(lexService.recognizeText("tenant1:user1:session1", "show customer details")).thenReturn(lexResult);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("show customer details"));
 
@@ -970,7 +951,6 @@ class ComprehendChatServiceTest {
                 List.of("What is the customer number?")
         );
         when(lexService.recognizeText("tenant1:user1:session1", "Show address of customer")).thenReturn(lexResult);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("Show address of customer"));
 
@@ -1003,7 +983,6 @@ class ComprehendChatServiceTest {
         );
         when(lexService.recognizeText("tenant1:user1:session1", "give me orders having order type F10"))
                 .thenReturn(lexResult);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("give me orders having order type F10"));
 
@@ -1036,7 +1015,6 @@ class ComprehendChatServiceTest {
         );
         when(lexService.recognizeText("tenant1:user1:session1", "Search Purchase Order"))
                 .thenReturn(lexResult);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("Search Purchase Order"));
 
@@ -1073,7 +1051,6 @@ class ComprehendChatServiceTest {
         fulfillResponse.setM3Request(m3Request);
         when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq("show customer CSU001"), any()))
                 .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("show customer CSU001"));
 
@@ -1134,7 +1111,6 @@ class ComprehendChatServiceTest {
         fulfillResponse.setM3Request(m3Request);
         when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq("Y11100"), any()))
                 .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("Y11100"));
 
@@ -1169,7 +1145,6 @@ class ComprehendChatServiceTest {
         fulfillResponse.setM3Request(m3Request);
         when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq("Show address of customer Y11100"), any()))
                 .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("Show address of customer Y11100"));
 
@@ -1193,7 +1168,6 @@ class ComprehendChatServiceTest {
                 List.of()
         );
         when(lexService.recognizeText("tenant1:user1:session1", "show customer")).thenReturn(lexResult);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("show customer"));
 
@@ -1226,7 +1200,6 @@ class ComprehendChatServiceTest {
                 List.of()
         );
         when(lexService.recognizeText("tenant1:user1:session1", "show customer Y00111")).thenReturn(lexResult);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("show customer Y00111"));
 
@@ -1269,7 +1242,6 @@ class ComprehendChatServiceTest {
         menu.setLexIntent("SearchCustomerOrder");
         menu.setCollectingTool("SearchCustomerOrder");
         when(guidedSearchService.start(eq("SearchCustomerOrder"), any())).thenReturn(menu);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("Show customer orders"));
 
@@ -1308,7 +1280,6 @@ class ComprehendChatServiceTest {
                         search,
                         List.of(new SearchCriterion("ORST", "77"))
                 ));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(
                 baseRequest("Show customer orders with highest status 77"));
@@ -1329,7 +1300,6 @@ class ComprehendChatServiceTest {
         collect.setActionTaken(GuidedSearchService.ACTION_COLLECT_VALUE);
         when(guidedSearchService.handleTurn(any(), eq(state), eq("order 1000001234")))
                 .thenReturn(new GuidedSearchService.GuidedTurnResult(collect, false));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("order 1000001234"));
 
@@ -1352,7 +1322,6 @@ class ComprehendChatServiceTest {
         cancelled.setActionTaken(GuidedSearchService.ACTION_CANCELLED);
         when(guidedSearchService.handleTurn(any(), eq(state), eq("cancel")))
                 .thenReturn(new GuidedSearchService.GuidedTurnResult(cancelled, false));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("cancel"));
 
@@ -1376,7 +1345,6 @@ class ComprehendChatServiceTest {
         retry.setActionTaken(GuidedSearchService.ACTION_SELECT_FIELD);
         when(guidedSearchService.handleTurn(any(), eq(state), eq("something")))
                 .thenReturn(new GuidedSearchService.GuidedTurnResult(retry, false));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("something"));
 
@@ -1415,7 +1383,6 @@ class ComprehendChatServiceTest {
         GroundedRagResult grounded = new GroundedRagResult(RagStatus.FULL, "OIS100 is used for customer order entry.", List.of());
         when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any()))
                 .thenReturn(new GroundedRagCallResult(grounded, usage, "{\"status\":\"FULL\"}"));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("What is OIS100?"));
 
@@ -1460,7 +1427,6 @@ class ComprehendChatServiceTest {
                         fulfilled,
                         List.of(new SearchCriterion("SUNO", "S00001"))
                 ));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("actually search purchase orders"));
 
@@ -1487,7 +1453,6 @@ class ComprehendChatServiceTest {
                 List.of("Please provide the customer number.")
         );
         when(lexService.recognizeText("tenant1:user1:session1", "Show customer credit limit")).thenReturn(lexResult);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("Show customer credit limit"));
 
@@ -1521,7 +1486,6 @@ class ComprehendChatServiceTest {
         fulfillResponse.setM3Request(m3Request);
         when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq("Y11100"), any()))
                 .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("Y11100"));
 
@@ -1553,7 +1517,6 @@ class ComprehendChatServiceTest {
         fulfillResponse.setM3Request(new M3RequestDto(true, "CRS610MI", "GetFinancial", Map.of("CUNO", "Y11100")));
         when(lexFulfillmentService.fulfillOutcome(eq(fulfillLex), eq("Y11100"), any()))
                 .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         comprehendChatService.chat(baseRequest("Y11100"));
         assertTrue(pendingLexSessionService.get("tenant1:user1:session1").isEmpty());
@@ -1594,7 +1557,6 @@ class ComprehendChatServiceTest {
                         new OpenAIUsage(1, 1, 2, "gpt"),
                         "{}"
                 ));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("Explain CRS610"));
 
@@ -1626,7 +1588,6 @@ class ComprehendChatServiceTest {
                         new OpenAIUsage(1, 1, 2, "gpt"),
                         "{}"
                 ));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("Y11100"));
 
@@ -1652,7 +1613,6 @@ class ComprehendChatServiceTest {
                 List.of("Sorry")
         );
         when(lexService.recognizeText("tenant1:user1:session1", "nonsense")).thenReturn(lexResult);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("nonsense"));
 
@@ -1682,7 +1642,6 @@ class ComprehendChatServiceTest {
                         new OpenAIUsage(1, 1, 2, "gpt"),
                         "{}"
                 ));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("Explain CRS610"));
 
@@ -1719,7 +1678,6 @@ class ComprehendChatServiceTest {
         when(lexFulfillmentService.fulfillOutcome(
                 eq(lexResult), eq("Show customer Y11100 credit limit"), any()
         )).thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("Show customer Y11100 credit limit"));
 
@@ -1769,7 +1727,6 @@ class ComprehendChatServiceTest {
                 List.of("What is the customer number?")
         );
         when(lexService.recognizeText("tenant1:user1:session1", "show customer details")).thenReturn(lexResult);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("show customer details");
         request.setMode(ChatMode.AUTO);
@@ -1835,7 +1792,6 @@ class ComprehendChatServiceTest {
                 List.of("What is the customer number?")
         );
         when(lexService.recognizeText("tenant1:user1:session1", "show customer Y00111")).thenReturn(lexResult);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("show customer Y00111");
         request.setMode(ChatMode.M3);
@@ -1852,7 +1808,6 @@ class ComprehendChatServiceTest {
         stubQuotaAllowed();
         stubSanitize();
         when(pythonRagService.route("how to create customer")).thenReturn(new PythonRouteResponse("rag"));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("how to create customer");
         request.setMode(ChatMode.M3);
@@ -1908,7 +1863,6 @@ class ComprehendChatServiceTest {
         fulfillResponse.setM3Request(m3Request);
         when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq("Y11100"), any()))
                 .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("Y11100");
         request.setMode(ChatMode.DOCS);
@@ -2001,7 +1955,7 @@ class ComprehendChatServiceTest {
         );
         assertEquals(HttpStatus.CONFLICT, ex.getStatusCode());
         verify(chatPersistenceService).supersedeEditedRequest(123L, 457L, 10L);
-        verify(suggestionEngineService, never()).generateSuggestions(any());
+        // Parallel chunk suggestions may already have run before supersede conflict.
     }
 
     @Test
@@ -2058,7 +2012,6 @@ class ComprehendChatServiceTest {
         if (allowExternal) {
             when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallbackResponse);
         }
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(docsRequest("how to add KIT", externalSourceEnabled));
 
@@ -2093,7 +2046,6 @@ class ComprehendChatServiceTest {
         fallbackResponse.setActionTaken("gpt_infor");
         fallbackResponse.setOpenAiUsage(fallbackUsage);
         when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallbackResponse);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(docsRequest("how to add KIT", true));
 
@@ -2112,7 +2064,6 @@ class ComprehendChatServiceTest {
         ChatResponse fallbackResponse = new ChatResponse("General GPT answer", false);
         fallbackResponse.setActionTaken("gpt_infor");
         when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallbackResponse);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = docsRequest("how to add KIT", null);
         ChatResponse response = comprehendChatService.chat(request);
@@ -2233,7 +2184,6 @@ class ComprehendChatServiceTest {
                 "MNS204 appears in user settings documentation.",
                 List.of("Functional purpose", "Business usage")
         );
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(docsRequest("What is MNS204 used for?", false));
 
@@ -2249,7 +2199,6 @@ class ComprehendChatServiceTest {
         stubQuotaAllowed();
         stubSanitize();
         stubDocsRetrievalGrounded(RagStatus.INSUFFICIENT, "", List.of());
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(docsRequest("how to add KIT", false));
 
@@ -2269,7 +2218,6 @@ class ComprehendChatServiceTest {
         retrieval.setMaxScore(0.2f);
         retrieval.setPromptChunks(List.of());
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(docsRequest("unknown topic", false));
 
@@ -2285,7 +2233,6 @@ class ComprehendChatServiceTest {
         stubSanitize();
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any()))
                 .thenThrow(new OpenAIException("retrieval failed", 500));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(docsRequest("purchase settings", false));
 
@@ -2305,7 +2252,6 @@ class ComprehendChatServiceTest {
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
         when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any()))
                 .thenThrow(new OpenAIException("parse failed", 500));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(docsRequest("purchase settings", false));
 
@@ -2336,7 +2282,6 @@ class ComprehendChatServiceTest {
         ChatResponse fallbackResponse = new ChatResponse("Auto general GPT", false);
         fallbackResponse.setActionTaken("gpt_infor");
         when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallbackResponse);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("how to add KIT");
         request.setExternalSourceEnabled(false);
@@ -2358,7 +2303,6 @@ class ComprehendChatServiceTest {
         ChatResponse gapResponse = new ChatResponse("Functional purpose: ...", false);
         gapResponse.setOpenAiUsage(new OpenAIUsage(1, 1, 2, "gpt"));
         when(openAIService.chatGapFill(any(), anyString(), anyList(), any())).thenReturn(gapResponse);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(docsRequest("What is MNS204 used for?", true));
 
@@ -2408,7 +2352,6 @@ class ComprehendChatServiceTest {
                         new OpenAIUsage(1, 1, 2, "gpt"),
                         "{}"
                 ));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
     }
 
     private void stubQuotaAllowed() {
@@ -2460,7 +2403,6 @@ class ComprehendChatServiceTest {
                 List.of(),
                 new OpenAIUsage(3, 4, 7, "gpt")
         ));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("hi"));
 
@@ -2517,7 +2459,6 @@ class ComprehendChatServiceTest {
                 List.of("What is the customer number?")
         );
         when(lexService.recognizeText("tenant1:user1:session1", "get customer ABC")).thenReturn(lexResult);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("get customer ABC"));
 
@@ -2551,7 +2492,6 @@ class ComprehendChatServiceTest {
         fulfillResponse.setM3Request(new M3RequestDto(true, "CRS610MI", "GetBasicData", Map.of("CUNO", "Y11100")));
         when(lexFulfillmentService.fulfillOutcome(any(), eq(original), any()))
                 .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest(original));
 
@@ -2588,7 +2528,6 @@ class ComprehendChatServiceTest {
                 List.of(),
                 new OpenAIUsage(1, 1, 2, "gpt")
         ));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("get customer ABC");
         request.setMode(ChatMode.DOCS);
@@ -2612,7 +2551,6 @@ class ComprehendChatServiceTest {
                 List.of(),
                 new OpenAIUsage(1, 1, 2, "gpt")
         ));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("what is AWS");
         request.setMode(ChatMode.DOCS);
@@ -2638,7 +2576,6 @@ class ComprehendChatServiceTest {
                 List.of(),
                 new OpenAIUsage(1, 1, 2, "gpt")
         ));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("what is SAP");
         request.setMode(ChatMode.DOCS);
@@ -2663,7 +2600,6 @@ class ComprehendChatServiceTest {
                 List.of(),
                 new OpenAIUsage(1, 1, 2, "gpt")
         ));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("tell me a joke");
         request.setMode(ChatMode.DOCS);
@@ -2712,7 +2648,6 @@ class ComprehendChatServiceTest {
                 List.of(),
                 new OpenAIUsage(1, 1, 2, "gpt")
         ));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest(message);
         request.setMode(mode);
@@ -2742,7 +2677,6 @@ class ComprehendChatServiceTest {
                 List.of(),
                 new OpenAIUsage(1, 1, 2, "gpt")
         ));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("hi");
         request.setMode(ChatMode.M3);
@@ -2771,7 +2705,6 @@ class ComprehendChatServiceTest {
                 List.of("Here are the customer details.")
         );
         when(lexService.recognizeText("tenant1:user1:session1", "Show customer Y00111")).thenReturn(lexResult);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("Show customer Y00111");
         request.setMode(ChatMode.M3);
@@ -2822,7 +2755,6 @@ class ComprehendChatServiceTest {
                 List.of("adhoc reporting"),
                 new OpenAIUsage(1, 1, 2, "gpt")
         ));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("adhoc reporting");
         request.setMode(ChatMode.M3);
@@ -2846,7 +2778,6 @@ class ComprehendChatServiceTest {
                 List.of(),
                 new OpenAIUsage(1, 1, 2, "gpt")
         ));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("tell me a joke");
         request.setMode(ChatMode.M3);
@@ -2865,7 +2796,6 @@ class ComprehendChatServiceTest {
         stubQuotaAllowed();
         stubSanitize();
         when(pythonRagService.route("Show customer Y00111")).thenThrow(new RuntimeException("route down"));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("Show customer Y00111");
         request.setMode(ChatMode.M3);
@@ -2903,7 +2833,6 @@ class ComprehendChatServiceTest {
         fulfillResponse.setM3Request(m3Request);
         when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq("Y00111"), any()))
                 .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("Y00111");
         request.setMode(ChatMode.M3);
@@ -2925,7 +2854,6 @@ class ComprehendChatServiceTest {
         stubPythonRoute("tell me about trip planning", "rag");
         stubUnderstand("tell me about trip planning", RequestUnderstandType.NON_M3,
                 "I mainly support Infor M3 and CloudSuite questions.");
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("tell me about trip planning");
         request.setMode(ChatMode.AUTO);
@@ -2943,7 +2871,6 @@ class ComprehendChatServiceTest {
         stubQuotaAllowed();
         stubSanitize();
         stubUnderstand("tell me about trip planning", RequestUnderstandType.NON_M3, "");
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("tell me about trip planning");
         request.setMode(ChatMode.DOCS);
@@ -2964,7 +2891,6 @@ class ComprehendChatServiceTest {
         stubPythonRoute("what is the weather", "rag");
         stubUnderstand("what is the weather", RequestUnderstandType.NON_M3,
                 "I mainly support Infor M3 and CloudSuite questions.");
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("what is the weather"));
 
@@ -3035,7 +2961,6 @@ class ComprehendChatServiceTest {
         stubQuotaAllowed();
         stubSanitize();
         stubUnderstandLive("fetch customer Y11100");
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("fetch customer Y11100");
         request.setMode(ChatMode.DOCS);
@@ -3095,7 +3020,6 @@ class ComprehendChatServiceTest {
         String message = "Hi, how do I create a custom MI?";
         stubPythonRoute(message, "rag");
         stubUnderstandRag(message, List.of("create custom MI"));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest(message);
         request.setMode(ChatMode.M3);
@@ -3251,7 +3175,6 @@ class ComprehendChatServiceTest {
         fulfillResponse.setM3Request(new M3RequestDto(true, "CRS610MI", "GetBasicData", Map.of("CUNO", "Y11100")));
         when(lexFulfillmentService.fulfillOutcome(any(), eq("fetch customer Y11100"), any()))
                 .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("fetch customer Y11100"));
 
@@ -3280,7 +3203,6 @@ class ComprehendChatServiceTest {
                 List.of("What is the order number?")
         );
         when(lexService.recognizeText("tenant1:user1:session1", "show customer Y11100")).thenReturn(confused);
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("show customer Y11100"));
 
@@ -3313,7 +3235,6 @@ class ComprehendChatServiceTest {
         fulfillResponse.setM3Request(new M3RequestDto(true, "OIS100MI", "SearchHead", Map.of("CUNO", "Y11100")));
         when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq("fetch customer orders for Y11100"), any()))
                 .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         comprehendChatService.chat(baseRequest("fetch customer orders for Y11100"));
 
@@ -3366,6 +3287,5 @@ class ComprehendChatServiceTest {
         fulfillResponse.setM3Request(new M3RequestDto(true, "CRS610MI", "GetBasicData", Map.of("CUNO", cuno)));
         when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq(message), any()))
                 .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
     }
 }
