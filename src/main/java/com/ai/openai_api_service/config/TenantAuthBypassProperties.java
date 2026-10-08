@@ -19,7 +19,6 @@ public class TenantAuthBypassProperties {
 
     /**
      * Comma-separated tenant codes. Empty = feature off.
-     * Phase-2 demo example: EM47JBNURMACJZ8F_DEM
      */
     private String codes = "";
 
