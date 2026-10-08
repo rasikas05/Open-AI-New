@@ -38,10 +38,20 @@ public class TenantAuthBypassService {
      * Allowlisted in config and present in DB with ACTIVE status.
      */
     public boolean isBypassAllowed(String tenantCode) {
+        return evaluate(tenantCode) == TenantAuthBypassDecision.ALLOWED;
+    }
+
+    /**
+     * Distinct reasons for diagnostics (config vs DB).
+     */
+    public TenantAuthBypassDecision evaluate(String tenantCode) {
         if (!properties.isAllowlisted(tenantCode)) {
-            return false;
+            return TenantAuthBypassDecision.NOT_ALLOWLISTED;
         }
         Optional<Tenant> tenant = tenantRepository.findByTenantCode(tenantCode.trim());
-        return tenant.isPresent() && ACTIVE_STATUS.equalsIgnoreCase(tenant.get().getStatus());
+        if (tenant.isEmpty() || !ACTIVE_STATUS.equalsIgnoreCase(tenant.get().getStatus())) {
+            return TenantAuthBypassDecision.TENANT_MISSING_OR_INACTIVE;
+        }
+        return TenantAuthBypassDecision.ALLOWED;
     }
 }

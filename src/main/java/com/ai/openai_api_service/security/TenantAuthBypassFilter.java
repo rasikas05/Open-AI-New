@@ -1,6 +1,7 @@
 package com.ai.openai_api_service.security;
 
 import com.ai.openai_api_service.config.RequiredM2mScope;
+import com.ai.openai_api_service.service.TenantAuthBypassDecision;
 import com.ai.openai_api_service.service.TenantAuthBypassService;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -19,6 +20,9 @@ import java.util.List;
 /**
  * TEMPORARY DEMO: when no Bearer JWT is present, allowlisted ACTIVE tenants may authenticate
  * via {@code X-Tenant-Code} with a synthetic principal {@code tenant-auth-bypass}.
+ * <p>
+ * Success: {@code TENANT_AUTH_BYPASS_USED}. Skip reasons: {@code TENANT_AUTH_BYPASS_SKIP}
+ * (never logs Authorization tokens).
  */
 public class TenantAuthBypassFilter extends OncePerRequestFilter {
 
@@ -38,7 +42,25 @@ public class TenantAuthBypassFilter extends OncePerRequestFilter {
             HttpServletResponse response,
             FilterChain filterChain
     ) throws ServletException, IOException {
-        if (hasBearerToken(request) || !bypassService.isFeatureEnabled()) {
+        String path = request.getRequestURI();
+        String method = request.getMethod();
+
+        if (hasBearerToken(request)) {
+            log.debug(
+                    "TENANT_AUTH_BYPASS_SKIP reason=bearer_present path={} method={}",
+                    path,
+                    method
+            );
+            filterChain.doFilter(request, response);
+            return;
+        }
+
+        if (!bypassService.isFeatureEnabled()) {
+            log.debug(
+                    "TENANT_AUTH_BYPASS_SKIP reason=feature_disabled path={} method={}",
+                    path,
+                    method
+            );
             filterChain.doFilter(request, response);
             return;
         }
@@ -46,12 +68,18 @@ public class TenantAuthBypassFilter extends OncePerRequestFilter {
         String headerName = bypassService.headerName();
         String tenantCode = request.getHeader(headerName);
         if (tenantCode == null || tenantCode.isBlank()) {
+            logSkip("missing_header", path, method, headerName, null);
             filterChain.doFilter(request, response);
             return;
         }
 
         String trimmed = tenantCode.trim();
-        if (!bypassService.isBypassAllowed(trimmed)) {
+        TenantAuthBypassDecision decision = bypassService.evaluate(trimmed);
+        if (decision != TenantAuthBypassDecision.ALLOWED) {
+            String reason = decision == TenantAuthBypassDecision.NOT_ALLOWLISTED
+                    ? "not_allowlisted"
+                    : "tenant_missing_or_inactive";
+            logSkip(reason, path, method, null, trimmed);
             filterChain.doFilter(request, response);
             return;
         }
@@ -66,12 +94,45 @@ public class TenantAuthBypassFilter extends OncePerRequestFilter {
             log.info(
                     "TENANT_AUTH_BYPASS_USED tenant={} path={} method={}",
                     trimmed,
-                    request.getRequestURI(),
-                    request.getMethod()
+                    path,
+                    method
             );
         }
 
         filterChain.doFilter(request, response);
+    }
+
+    private static void logSkip(
+            String reason,
+            String path,
+            String method,
+            String header,
+            String tenant
+    ) {
+        if (header != null) {
+            log.info(
+                    "TENANT_AUTH_BYPASS_SKIP reason={} header={} path={} method={}",
+                    reason,
+                    header,
+                    path,
+                    method
+            );
+        } else if (tenant != null) {
+            log.info(
+                    "TENANT_AUTH_BYPASS_SKIP reason={} tenant={} path={} method={}",
+                    reason,
+                    tenant,
+                    path,
+                    method
+            );
+        } else {
+            log.info(
+                    "TENANT_AUTH_BYPASS_SKIP reason={} path={} method={}",
+                    reason,
+                    path,
+                    method
+            );
+        }
     }
 
     private static boolean hasBearerToken(HttpServletRequest request) {

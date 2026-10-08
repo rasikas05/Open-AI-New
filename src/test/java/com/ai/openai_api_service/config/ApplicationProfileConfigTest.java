@@ -80,14 +80,14 @@ class ApplicationProfileConfigTest {
         assertFalse(base.containsKey("aws.cognito.clientSecret"), "Cognito client secret must not be in Spring config");
         assertTrue(base.containsKey("aws.cognito.clientId"), "public client id may remain as reference");
 
-        assertEquals("", base.getProperty("security.tenant-auth-bypass.codes"));
+        assertEquals("EM47JBNURMACJZ8F_DEM", base.getProperty("security.tenant-auth-bypass.codes"));
         assertEquals("X-Tenant-Code", base.getProperty("security.tenant-auth-bypass.header"));
     }
 
     @Test
-    void prodProperties_tenantAuthBypassEmptyByDefault() throws IOException {
+    void prodProperties_tenantAuthBypassDemoTenantConfigured() throws IOException {
         Properties prod = loadClasspathProperties("/application-prod.properties");
-        assertEquals("", prod.getProperty("security.tenant-auth-bypass.codes"));
+        assertEquals("EM47JBNURMACJZ8F_DEM", prod.getProperty("security.tenant-auth-bypass.codes"));
         assertEquals("X-Tenant-Code", prod.getProperty("security.tenant-auth-bypass.header"));
     }
 

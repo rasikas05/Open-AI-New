@@ -1,6 +1,7 @@
 package com.ai.openai_api_service.security;
 
 import com.ai.openai_api_service.config.RequiredM2mScope;
+import com.ai.openai_api_service.service.TenantAuthBypassDecision;
 import com.ai.openai_api_service.service.TenantAuthBypassService;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -46,13 +47,12 @@ class TenantAuthBypassFilterTest {
     void bypassAllowed_setsSyntheticAuthentication() throws Exception {
         when(bypassService.isFeatureEnabled()).thenReturn(true);
         when(bypassService.headerName()).thenReturn("X-Tenant-Code");
-        when(bypassService.isBypassAllowed(DEMO)).thenReturn(true);
+        when(bypassService.evaluate(DEMO)).thenReturn(TenantAuthBypassDecision.ALLOWED);
 
-        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/api/chat/comprehend");
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/tenant/quota");
         request.addHeader("X-Tenant-Code", DEMO);
-        MockHttpServletResponse response = new MockHttpServletResponse();
 
-        filter.doFilter(request, response, new MockFilterChain());
+        filter.doFilter(request, new MockHttpServletResponse(), new MockFilterChain());
 
         assertInstanceOf(TenantAuthBypassAuthentication.class, SecurityContextHolder.getContext().getAuthentication());
         TenantAuthBypassAuthentication auth =
@@ -61,6 +61,46 @@ class TenantAuthBypassFilterTest {
         assertEquals(DEMO, auth.getTenantCode());
         assertTrue(auth.getAuthorities().stream().anyMatch(a -> SCOPE.equals(a.getAuthority())));
         assertTrue(Boolean.TRUE.equals(request.getAttribute(TenantAuthBypassSupport.ATTR_ACTIVE)));
+    }
+
+    @Test
+    void missingHeader_noAuthentication() throws Exception {
+        when(bypassService.isFeatureEnabled()).thenReturn(true);
+        when(bypassService.headerName()).thenReturn("X-Tenant-Code");
+
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/tenant/quota");
+
+        filter.doFilter(request, new MockHttpServletResponse(), new MockFilterChain());
+
+        assertNull(SecurityContextHolder.getContext().getAuthentication());
+    }
+
+    @Test
+    void notAllowlisted_noAuthentication() throws Exception {
+        when(bypassService.isFeatureEnabled()).thenReturn(true);
+        when(bypassService.headerName()).thenReturn("X-Tenant-Code");
+        when(bypassService.evaluate(DEMO)).thenReturn(TenantAuthBypassDecision.NOT_ALLOWLISTED);
+
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/tenant/quota");
+        request.addHeader("X-Tenant-Code", DEMO);
+
+        filter.doFilter(request, new MockHttpServletResponse(), new MockFilterChain());
+
+        assertNull(SecurityContextHolder.getContext().getAuthentication());
+    }
+
+    @Test
+    void tenantMissingOrInactive_noAuthentication() throws Exception {
+        when(bypassService.isFeatureEnabled()).thenReturn(true);
+        when(bypassService.headerName()).thenReturn("X-Tenant-Code");
+        when(bypassService.evaluate(DEMO)).thenReturn(TenantAuthBypassDecision.TENANT_MISSING_OR_INACTIVE);
+
+        MockHttpServletRequest request = new MockHttpServletRequest("POST", "/tenant/quota");
+        request.addHeader("X-Tenant-Code", DEMO);
+
+        filter.doFilter(request, new MockHttpServletResponse(), new MockFilterChain());
+
+        assertNull(SecurityContextHolder.getContext().getAuthentication());
     }
 
     @Test

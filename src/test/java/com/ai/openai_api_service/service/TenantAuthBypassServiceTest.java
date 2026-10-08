@@ -11,6 +11,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.Optional;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.when;
@@ -38,6 +39,7 @@ class TenantAuthBypassServiceTest {
         properties.setCodes("");
         assertFalse(service.isFeatureEnabled());
         assertFalse(service.isBypassAllowed(DEMO));
+        assertEquals(TenantAuthBypassDecision.NOT_ALLOWLISTED, service.evaluate(DEMO));
     }
 
     @Test
@@ -45,23 +47,27 @@ class TenantAuthBypassServiceTest {
         when(tenantRepository.findByTenantCode(DEMO)).thenReturn(Optional.of(tenant(DEMO, "ACTIVE")));
         assertTrue(service.isFeatureEnabled());
         assertTrue(service.isBypassAllowed(DEMO));
+        assertEquals(TenantAuthBypassDecision.ALLOWED, service.evaluate(DEMO));
     }
 
     @Test
     void allowlistedInactive_notAllowed() {
         when(tenantRepository.findByTenantCode(DEMO)).thenReturn(Optional.of(tenant(DEMO, "DISABLED")));
         assertFalse(service.isBypassAllowed(DEMO));
+        assertEquals(TenantAuthBypassDecision.TENANT_MISSING_OR_INACTIVE, service.evaluate(DEMO));
     }
 
     @Test
     void allowlistedMissing_notAllowed() {
         when(tenantRepository.findByTenantCode(DEMO)).thenReturn(Optional.empty());
         assertFalse(service.isBypassAllowed(DEMO));
+        assertEquals(TenantAuthBypassDecision.TENANT_MISSING_OR_INACTIVE, service.evaluate(DEMO));
     }
 
     @Test
     void notAllowlisted_notAllowed() {
         assertFalse(service.isBypassAllowed("OTHER"));
+        assertEquals(TenantAuthBypassDecision.NOT_ALLOWLISTED, service.evaluate("OTHER"));
     }
 
     private static Tenant tenant(String code, String status) {
