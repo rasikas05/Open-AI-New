@@ -42,6 +42,26 @@ class SuggestionLLMServiceTest {
     }
 
     @Test
+    void prompt_chunkGrounded_usesQuestionAndExcerptsNotAnswer() {
+        SuggestionContext context = new SuggestionContext();
+        context.setUserMessage("How does the purchase order process work in M3?");
+        context.setAnswer("should not appear");
+        context.setDocumentationExcerpts(List.of("PO creation and approval", "PO receipt and matching"));
+
+        String user = service.buildUserPrompt(context);
+
+        assertTrue(user.contains("User question:"));
+        assertTrue(user.contains("How does the purchase order process work in M3?"));
+        assertTrue(user.contains("[Chunk 1]"));
+        assertTrue(user.contains("PO creation and approval"));
+        assertTrue(user.contains("[Chunk 2]"));
+        assertTrue(user.contains("PO receipt and matching"));
+        assertTrue(user.contains("exactly 2 useful follow-up"));
+        assertFalse(user.contains("should not appear"));
+        assertFalse(user.contains("Assistant answer:"));
+    }
+
+    @Test
     void prompt_truncatesLongAssistantAnswer() {
         SuggestionContext context = new SuggestionContext();
         context.setUserMessage("want details of adhoc reporting");

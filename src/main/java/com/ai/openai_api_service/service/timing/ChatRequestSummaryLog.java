@@ -17,6 +17,8 @@ import java.util.Locale;
  * are logged via {@link #formatPiiSplit} / {@link #formatPersistSplit} / {@link #formatQuotaSplit}
  * and must not be added again into total.
  * {@code openai} is planner HTTP only. Always record {@code suggestions} when explaining wall total.
+ * After Step 2 RAG parallelization, {@code suggestions} overlaps {@code grounding}; also read
+ * {@code Parallel LLM Stage | parallelLlmMs=} — do not sum grounding+suggestions into wall total.
  */
 public final class ChatRequestSummaryLog {
 

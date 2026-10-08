@@ -10,6 +10,7 @@ import com.ai.openai_api_service.model.M3RequestDto;
 import com.ai.openai_api_service.model.SearchCriterion;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.OpenAIUsage;
+import com.ai.openai_api_service.model.SuggestionContext;
 import com.ai.openai_api_service.model.SuggestionResult;
 import com.ai.openai_api_service.model.TokenUsageDto;
 import com.ai.openai_api_service.model.lex.LexRecognizeResult;
@@ -51,6 +52,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.ExecutorService;
 import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -102,6 +104,8 @@ class ComprehendChatServiceTest {
     private PiiProtectionService piiProtectionService;
     @Mock
     private BusinessPlaceholderRestorer businessPlaceholderRestorer;
+    @Mock
+    private ExecutorService suggestionExecutor;
     @Spy
     private InMemoryPendingLexSessionService pendingLexSessionService = new InMemoryPendingLexSessionService(3600);
     @Spy
@@ -117,8 +121,14 @@ class ComprehendChatServiceTest {
 
     @BeforeEach
     void setUp() {
+        lenient().doAnswer(invocation -> {
+            Runnable task = invocation.getArgument(0);
+            task.run();
+            return null;
+        }).when(suggestionExecutor).execute(any(Runnable.class));
         ReflectionTestUtils.setField(comprehendChatService, "ragPartialGapFillEnabled", true);
         ReflectionTestUtils.setField(comprehendChatService, "queryRewriteEnabled", false);
+        ReflectionTestUtils.setField(comprehendChatService, "suggestionRagChunkCount", 2);
         ReflectionTestUtils.setField(
                 comprehendChatService,
                 "m3LiveSteerMessage",
@@ -2116,14 +2126,102 @@ class ComprehendChatServiceTest {
         stubQuotaAllowed();
         stubSanitize();
         stubDocsRetrievalGrounded(RagStatus.FULL, "Document answer from CRS780", List.of());
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(
+                new SuggestionResult(List.of("Follow up A", "Follow up B"), List.of())
+        );
 
         ChatResponse response = comprehendChatService.chat(docsRequest("purchase settings", false));
 
         assertEquals("Document answer from CRS780", response.getReply());
         assertEquals("rag", response.getActionTaken());
+        assertEquals(List.of("Follow up A", "Follow up B"), response.getSuggestions());
         verify(openAIService, never()).chatWithoutPersistence(any(), any());
         verify(openAIService, never()).chatGapFill(any(), any(), any(), any());
+        verify(suggestionEngineService).generateSuggestions(any());
+    }
+
+    @Test
+    void docsRag_parallelSuggestions_usesTop2ChunksAndFullGroundingList_noSecondCall() {
+        stubQuotaAllowed();
+        stubSanitize();
+        List<ChunkItem> eightChunks = new java.util.ArrayList<>();
+        for (int i = 1; i <= 8; i++) {
+            eightChunks.add(new ChunkItem(
+                    "chunk-text-" + i, 0.9f - (i * 0.01f), "T" + i, "http://ex/" + i,
+                    List.of(), null, null, null, null
+            ));
+        }
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        retrieval.setRetrievalTimeMs(10);
+        retrieval.setMaxScore(0.9f);
+        retrieval.setPromptChunks(eightChunks);
+        retrieval.setPromptChunkCount(8);
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
+        when(openAIService.chatWithRagContext(any(), anyList(), any()))
+                .thenReturn(new GroundedRagCallResult(
+                        new GroundedRagResult(RagStatus.FULL, "Grounded from eight chunks", List.of()),
+                        new OpenAIUsage(1, 1, 2, "gpt"),
+                        "{}"
+                ));
+        when(suggestionEngineService.generateSuggestions(any())).thenReturn(
+                new SuggestionResult(List.of("Ask about chunk1", "Ask about chunk2"), List.of())
+        );
+
+        ChatResponse response = comprehendChatService.chat(docsRequest("How does PO process work?", false));
+
+        assertEquals("Grounded from eight chunks", response.getReply());
+        assertEquals(List.of("Ask about chunk1", "Ask about chunk2"), response.getSuggestions());
+
+        @SuppressWarnings("unchecked")
+        ArgumentCaptor<List<ChunkItem>> groundingChunks = ArgumentCaptor.forClass(List.class);
+        verify(openAIService).chatWithRagContext(any(), groundingChunks.capture(), any());
+        assertEquals(8, groundingChunks.getValue().size());
+
+        ArgumentCaptor<SuggestionContext> suggestionCtx = ArgumentCaptor.forClass(SuggestionContext.class);
+        verify(suggestionEngineService, org.mockito.Mockito.times(1)).generateSuggestions(suggestionCtx.capture());
+        SuggestionContext ctx = suggestionCtx.getValue();
+        assertEquals("How does PO process work?", ctx.getUserMessage());
+        assertNotNull(ctx.getDocumentationExcerpts());
+        assertEquals(2, ctx.getDocumentationExcerpts().size());
+        assertEquals("chunk-text-1", ctx.getDocumentationExcerpts().get(0));
+        assertEquals("chunk-text-2", ctx.getDocumentationExcerpts().get(1));
+        assertNull(ctx.getAnswer());
+    }
+
+    @Test
+    void docsRag_suggestionFailure_returnsAnswerWithEmptySuggestions() {
+        stubQuotaAllowed();
+        stubSanitize();
+        stubDocsRetrievalGrounded(RagStatus.FULL, "Answer still ok", List.of());
+        when(suggestionEngineService.generateSuggestions(any())).thenThrow(new RuntimeException("suggestion boom"));
+
+        ChatResponse response = comprehendChatService.chat(docsRequest("purchase settings", false));
+
+        assertEquals("Answer still ok", response.getReply());
+        assertNotNull(response.getSuggestions());
+        assertTrue(response.getSuggestions().isEmpty());
+        verify(suggestionEngineService, org.mockito.Mockito.times(1)).generateSuggestions(any());
+    }
+
+    @Test
+    void docsRag_belowPromptThreshold_noSuggestionCall() {
+        stubQuotaAllowed();
+        stubSanitize();
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("below_prompt_threshold");
+        retrieval.setRetrievalTimeMs(5);
+        retrieval.setMaxScore(0.2f);
+        retrieval.setPromptChunks(List.of());
+        retrieval.setPromptChunkCount(0);
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
+
+        ChatResponse response = comprehendChatService.chat(docsRequest("obscure topic", false));
+
+        assertNotNull(response.getReply());
+        assertTrue(response.getSuggestions() == null || response.getSuggestions().isEmpty());
+        verify(suggestionEngineService, never()).generateSuggestions(any());
+        verify(openAIService, never()).chatWithRagContext(any(), anyList(), any());
     }
 
     @Test
@@ -2698,7 +2796,6 @@ class ComprehendChatServiceTest {
                 List.of("OIS100"),
                 new OpenAIUsage(1, 1, 2, "gpt")
         ));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("what is OIS100?");
         request.setMode(ChatMode.M3);
@@ -2709,6 +2806,7 @@ class ComprehendChatServiceTest {
         verify(lexService, never()).recognizeText(anyString(), anyString());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
         verify(pythonRagService).route("what is OIS100?");
+        verify(suggestionEngineService, never()).generateSuggestions(any());
     }
 
     @Test
@@ -3048,6 +3146,30 @@ class ComprehendChatServiceTest {
         verify(lexService, never()).recognizeText(anyString(), anyString());
     }
 
+    @ParameterizedTest(name = "route={0} handler={1} allow={2}")
+    @MethodSource("suggestionGateCases")
+    void shouldGenerateSuggestions_onlyForDocumentationRag(String route, String handler, boolean allow) {
+        assertEquals(allow, ComprehendChatService.shouldGenerateSuggestions(route, handler));
+    }
+
+    static Stream<Arguments> suggestionGateCases() {
+        return Stream.of(
+                Arguments.of("rag", "documentation/retrieval", true),
+                Arguments.of("RAG", "Documentation/Retrieval", true),
+                Arguments.of("conversational", "planner", false),
+                Arguments.of("live", "lex", false),
+                Arguments.of("live", "lex-pending", false),
+                Arguments.of("guided", "guided-search", false),
+                Arguments.of("m3_docs_steer", "planner", false),
+                Arguments.of("docs_live_steer", "planner", false),
+                Arguments.of("docs_non_m3_steer", "planner", false),
+                Arguments.of("rag", "planner", false),
+                Arguments.of("live", "documentation/retrieval", false),
+                Arguments.of(null, "documentation/retrieval", false),
+                Arguments.of("rag", null, false)
+        );
+    }
+
     @Test
     void requestRouter_helloAuto_conversationalWithoutRetrieveOrLex() {
         enableRequestRouter();
@@ -3055,7 +3177,6 @@ class ComprehendChatServiceTest {
         stubSanitize();
         stubPythonRoute("hello", "rag");
         stubUnderstand("hello", RequestUnderstandType.CONVERSATIONAL, "Hello! How can I help you today?");
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("hello");
         request.setMode(ChatMode.AUTO);
@@ -3067,6 +3188,7 @@ class ComprehendChatServiceTest {
         verify(pythonRagService).route("hello");
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
         verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(suggestionEngineService, never()).generateSuggestions(any());
     }
 
     @Test
@@ -3092,7 +3214,6 @@ class ComprehendChatServiceTest {
         fulfillResponse.setM3Request(new M3RequestDto(true, "OIS100MI", "SearchHead", Map.of("CUNO", "Y11100")));
         when(lexFulfillmentService.fulfillOutcome(eq(lexResult), eq("show customer orders for Y11100"), any()))
                 .thenReturn(new LexFulfillmentOutcome(fulfillResponse, List.of()));
-        when(suggestionEngineService.generateSuggestions(any())).thenReturn(new SuggestionResult(List.of(), List.of()));
 
         ChatRequest request = baseRequest("show customer orders for Y11100");
         request.setMode(ChatMode.AUTO);
@@ -3105,6 +3226,7 @@ class ComprehendChatServiceTest {
         ArgumentCaptor<LexRecognizeResult> lexCaptor = ArgumentCaptor.forClass(LexRecognizeResult.class);
         verify(lexFulfillmentService).fulfillOutcome(lexCaptor.capture(), eq("show customer orders for Y11100"), any());
         assertEquals("SearchCustomerOrder", lexCaptor.getValue().getIntentName());
+        verify(suggestionEngineService, never()).generateSuggestions(any());
     }
 
     @Test

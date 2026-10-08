@@ -682,11 +682,18 @@ public class SuggestionEngineService {
     }
 
     private String buildCacheKey(SuggestionContext context) {
+        String excerptsKey = "";
+        if (context.getDocumentationExcerpts() != null && !context.getDocumentationExcerpts().isEmpty()) {
+            excerptsKey = context.getDocumentationExcerpts().stream()
+                    .map(this::normalizeToken)
+                    .collect(Collectors.joining("||"));
+        }
         return normalizeToken(context.getTenantCode()) + "|"
                 + normalizeToken(context.getUserId()) + "|"
                 + normalizeToken(context.getSessionId()) + "|"
                 + normalizeToken(context.getUserMessage()) + "|"
-                + normalizeToken(context.getAnswer());
+                + normalizeToken(context.getAnswer()) + "|"
+                + excerptsKey;
     }
 
     private String normalizeToken(String value) {

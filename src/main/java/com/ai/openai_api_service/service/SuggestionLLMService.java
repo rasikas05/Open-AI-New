@@ -52,6 +52,7 @@ public class SuggestionLLMService {
 
     static final int SUGGESTION_COMPLETION_RETRY_TOKENS = 128;
     static final int ANSWER_PROMPT_MAX_CHARS = 400;
+    static final int EXCERPT_PROMPT_MAX_CHARS = 500;
     static final int SUGGESTION_MAX_WORDS = 10;
     static final int SUGGESTION_MAX_CHARS = 60;
 
@@ -193,7 +194,11 @@ public class SuggestionLLMService {
 
     String buildUserPrompt(SuggestionContext context) {
         String message = context.getUserMessage() == null ? "" : context.getUserMessage().trim();
-        String answer = truncateAnswer(context.getAnswer() == null ? "" : context.getAnswer().trim());
+        List<String> excerpts = context.getDocumentationExcerpts();
+        if (excerpts != null && !excerpts.isEmpty()) {
+            return buildChunkGroundedPrompt(message, excerpts);
+        }
+        String answer = truncateToMax(context.getAnswer() == null ? "" : context.getAnswer().trim(), ANSWER_PROMPT_MAX_CHARS);
         StringBuilder builder = new StringBuilder();
         builder.append("User request: ").append(message).append('\n');
         if (!answer.isBlank()) {
@@ -208,11 +213,39 @@ public class SuggestionLLMService {
         return builder.toString();
     }
 
-    String truncateAnswer(String answer) {
-        if (answer == null || answer.length() <= ANSWER_PROMPT_MAX_CHARS) {
-            return answer == null ? "" : answer;
+    private String buildChunkGroundedPrompt(String userQuestion, List<String> excerpts) {
+        StringBuilder builder = new StringBuilder();
+        builder.append("User question:\n").append(userQuestion == null ? "" : userQuestion).append('\n');
+        builder.append("Relevant M3 documentation:\n");
+        int index = 1;
+        for (String excerpt : excerpts) {
+            if (excerpt == null || excerpt.isBlank()) {
+                continue;
+            }
+            builder.append("[Chunk ").append(index++).append("]\n");
+            builder.append(truncateToMax(excerpt.trim(), EXCERPT_PROMPT_MAX_CHARS)).append('\n');
         }
-        return answer.substring(0, ANSWER_PROMPT_MAX_CHARS).trim();
+        builder.append("Generate exactly 2 useful follow-up questions the user can tap and send next.\n");
+        builder.append("Follow-ups must be relevant to the user's question and supported by the documentation.\n");
+        builder.append("Do not invent unsupported M3 details. Do not answer the user. Do not repeat the original question.\n");
+        builder.append("5-8 words each, hard max 10. Two different first-person questions or short commands.\n");
+        builder.append("Never assistant voice (do you need help, I can, would you like).\n");
+        builder.append("JSON array of 2 strings. No objects, markdown, or extra text.");
+        return builder.toString();
+    }
+
+    String truncateAnswer(String answer) {
+        return truncateToMax(answer, ANSWER_PROMPT_MAX_CHARS);
+    }
+
+    static String truncateToMax(String text, int maxChars) {
+        if (text == null) {
+            return "";
+        }
+        if (text.length() <= maxChars) {
+            return text;
+        }
+        return text.substring(0, maxChars).trim();
     }
 
     private boolean isLengthTruncated(Map<String, Object> response) {

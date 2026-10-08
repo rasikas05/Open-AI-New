@@ -55,12 +55,15 @@ import com.ai.openai_api_service.service.timing.RequestTimingLog;
 import com.ai.openai_api_service.service.validation.SearchCriteriaValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.context.request.ServletRequestAttributes;
 import org.springframework.web.server.ResponseStatusException;
+
+import com.ai.openai_api_service.config.SuggestionExecutorConfig;
 
 import java.time.Instant;
 import java.util.ArrayList;
@@ -70,6 +73,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
 
 @Service
 public class ComprehendChatService {
@@ -140,6 +145,7 @@ public class ComprehendChatService {
     private final BusinessInformationProtectionService businessInformationProtectionService;
     private final PiiProtectionService piiProtectionService;
     private final BusinessPlaceholderRestorer businessPlaceholderRestorer;
+    private final ExecutorService suggestionExecutor;
 
     @Value("${openai.response.include-sanitization-debug:false}")
     private boolean includeSanitizationDebug;
@@ -183,6 +189,9 @@ public class ComprehendChatService {
     @Value("${openai.api.model:}")
     private String openAiModel;
 
+    @Value("${suggestion.rag.chunk-count:2}")
+    private int suggestionRagChunkCount;
+
     public ComprehendChatService(
             ChatPersistenceService chatPersistenceService,
             TenantQuotaService tenantQuotaService,
@@ -200,7 +209,8 @@ public class ComprehendChatService {
             InMemoryPendingLexSessionService pendingLexSessionService,
             BusinessInformationProtectionService businessInformationProtectionService,
             PiiProtectionService piiProtectionService,
-            BusinessPlaceholderRestorer businessPlaceholderRestorer
+            BusinessPlaceholderRestorer businessPlaceholderRestorer,
+            @Qualifier(SuggestionExecutorConfig.SUGGESTION_EXECUTOR_BEAN) ExecutorService suggestionExecutor
     ) {
         this.chatPersistenceService = chatPersistenceService;
         this.tenantQuotaService = tenantQuotaService;
@@ -219,6 +229,7 @@ public class ComprehendChatService {
         this.businessInformationProtectionService = businessInformationProtectionService;
         this.piiProtectionService = piiProtectionService;
         this.businessPlaceholderRestorer = businessPlaceholderRestorer;
+        this.suggestionExecutor = suggestionExecutor;
     }
 
     public ChatResponse chat(ChatRequest request) {
@@ -238,6 +249,7 @@ public class ComprehendChatService {
         long restoreMs = 0L;
         long liveHistoryMs = 0L;
         long suggestionsMs = 0L;
+        long parallelLlmMs = 0L;
         long persistenceMs = 0L;
         long quotaMs = 0L;
         long quotaCheckMs = 0L;
@@ -250,6 +262,8 @@ public class ComprehendChatService {
         int routerCompletionTokens = 0;
         int suggestionPromptTokens = 0;
         int suggestionCompletionTokens = 0;
+        boolean suggestionsPrecomputed = false;
+        SuggestionResult precomputedSuggestions = null;
 
         ComprehendChatTimingSnapshot timingSnapshot = currentTimingSnapshot();
         if (timingSnapshot != null) {
@@ -414,6 +428,12 @@ public class ComprehendChatService {
                             groundedTokens = docFx.groundedTokens();
                             gapFillTokens = docFx.gapFillTokens();
                             generalGptTokens = docFx.generalGptTokens();
+                            suggestionsPrecomputed = docFx.suggestionsPrecomputed();
+                            precomputedSuggestions = docFx.precomputedSuggestions();
+                            suggestionPromptTokens = nullSafeInt(docFx.suggestionPromptTokens());
+                            suggestionCompletionTokens = nullSafeInt(docFx.suggestionCompletionTokens());
+                            suggestionsMs = nullSafeInt(docFx.suggestionsTimeMs());
+                            parallelLlmMs = nullSafeInt(docFx.parallelLlmTimeMs());
                         }
                     } else {
                         route = "rag";
@@ -482,6 +502,12 @@ public class ComprehendChatService {
                                     groundedTokens = docFx.groundedTokens();
                                     gapFillTokens = docFx.gapFillTokens();
                                     generalGptTokens = docFx.generalGptTokens();
+                                    suggestionsPrecomputed = docFx.suggestionsPrecomputed();
+                                    precomputedSuggestions = docFx.precomputedSuggestions();
+                                    suggestionPromptTokens = nullSafeInt(docFx.suggestionPromptTokens());
+                                    suggestionCompletionTokens = nullSafeInt(docFx.suggestionCompletionTokens());
+                                    suggestionsMs = nullSafeInt(docFx.suggestionsTimeMs());
+                                    parallelLlmMs = nullSafeInt(docFx.parallelLlmTimeMs());
                                 }
                             } else {
                                 PlannerRouteOutcome m3Outcome = applyM3PlannerOutcome(
@@ -650,6 +676,12 @@ public class ComprehendChatService {
                 groundedTokens = docResult.groundedTokens();
                 gapFillTokens = docResult.gapFillTokens();
                 generalGptTokens = docResult.generalGptTokens();
+                suggestionsPrecomputed = docResult.suggestionsPrecomputed();
+                precomputedSuggestions = docResult.precomputedSuggestions();
+                suggestionPromptTokens = nullSafeInt(docResult.suggestionPromptTokens());
+                suggestionCompletionTokens = nullSafeInt(docResult.suggestionCompletionTokens());
+                suggestionsMs = nullSafeInt(docResult.suggestionsTimeMs());
+                parallelLlmMs = nullSafeInt(docResult.parallelLlmTimeMs());
 
                 if (chatResponse != null) {
                     Instant restoreStart = Instant.now();
@@ -765,14 +797,55 @@ public class ComprehendChatService {
         }
 
         Instant suggestionsStart = Instant.now();
-        SuggestionContext context = buildSuggestionContext(workingRequest, chatResponse.getReply(), sourcesForSuggestions);
-        SuggestionResult suggestionResult = suggestionEngineService.generateSuggestions(context);
-        chatResponse.setSuggestions(suggestionResult.getSuggestions());
-        chatResponse.setSuggestionDetails(suggestionResult.getDetails());
-        suggestionPromptTokens = suggestionResult.getPromptTokens();
-        suggestionCompletionTokens = suggestionResult.getCompletionTokens();
+        String suggestionHandler = routingSummary.getHandler();
+        if (shouldGenerateSuggestions(route, suggestionHandler)) {
+            if (suggestionsPrecomputed) {
+                SuggestionResult suggestionResult = precomputedSuggestions != null
+                        ? precomputedSuggestions
+                        : new SuggestionResult(List.of(), List.of());
+                chatResponse.setSuggestions(
+                        suggestionResult.getSuggestions() != null ? suggestionResult.getSuggestions() : List.of()
+                );
+                chatResponse.setSuggestionDetails(
+                        suggestionResult.getDetails() != null ? suggestionResult.getDetails() : List.of()
+                );
+                // tokens and suggestionsMs already set from DocRouteResult
+                log.info(
+                        "Suggestions attached | source=parallel_precomputed | count={} | suggestionsMs={} | parallelLlmMs={}",
+                        chatResponse.getSuggestions() != null ? chatResponse.getSuggestions().size() : 0,
+                        suggestionsMs,
+                        parallelLlmMs
+                );
+            } else {
+                // RAG path without usable promptChunks: no answer-based sequential fallback
+                chatResponse.setSuggestions(List.of());
+                chatResponse.setSuggestionDetails(List.of());
+                suggestionPromptTokens = 0;
+                suggestionCompletionTokens = 0;
+                suggestionsMs = 0L;
+                log.info(
+                        "Suggestions skipped | reason=no_usable_prompt_chunks | route={} | handler={}",
+                        route,
+                        suggestionHandler
+                );
+            }
+        } else {
+            chatResponse.setSuggestions(List.of());
+            chatResponse.setSuggestionDetails(List.of());
+            suggestionPromptTokens = 0;
+            suggestionCompletionTokens = 0;
+            suggestionsMs = 0L;
+            parallelLlmMs = 0L;
+            log.info(
+                    "Suggestions skipped | reason=non_documentation_path | route={} | handler={}",
+                    route,
+                    suggestionHandler
+            );
+        }
         Instant suggestionsEnd = Instant.now();
-        suggestionsMs = RequestTimingLog.durationMs(suggestionsStart, suggestionsEnd);
+        if (!suggestionsPrecomputed) {
+            suggestionsMs = RequestTimingLog.durationMs(suggestionsStart, suggestionsEnd);
+        }
         RequestTimingLog.logStage("suggestions", suggestionsStart, suggestionsEnd);
 
         log.debug(
@@ -835,11 +908,10 @@ public class ComprehendChatService {
                 + quotaMs
                 + queryRewriteMs
                 + retrievalMs
-                + groundedMs
+                + (parallelLlmMs > 0 ? parallelLlmMs : groundedMs + suggestionsMs)
                 + gapFillMs
                 + generalGptMs
                 + persistenceMs
-                + suggestionsMs
                 + liveHistoryMs
                 + restoreMs
                 + preRetrievalGlueMs;
@@ -1465,7 +1537,7 @@ public class ComprehendChatService {
             );
             if (!allowExternal) {
                 ChatResponse chatResponse = buildDocsOnlyInsufficientResponse(request, rewriteUsage);
-                return new DocRouteResult(
+                return DocRouteResult.withoutSuggestions(
                         chatResponse,
                         List.of(),
                         List.of(),
@@ -1494,7 +1566,7 @@ public class ComprehendChatService {
             if (rewriteUsage != null) {
                 chatResponse.setOpenAiUsage(mergeUsage(rewriteUsage, chatResponse.getOpenAiUsage()));
             }
-            return new DocRouteResult(
+            return DocRouteResult.withoutSuggestions(
                     chatResponse,
                     List.of(),
                     List.of(),
@@ -1542,7 +1614,17 @@ public class ComprehendChatService {
         List<SourceItem> responseSources = toChunkSources(promptChunks);
 
         ChatResponse chatResponse;
-        if (RETRIEVAL_READY.equals(reason)) {
+        boolean suggestionsPrecomputed = false;
+        SuggestionResult precomputedSuggestions = null;
+        int suggestionPromptTokensLocal = 0;
+        int suggestionCompletionTokensLocal = 0;
+        long suggestionsStageMs = 0L;
+        long parallelLlmMs = 0L;
+
+        if (RETRIEVAL_READY.equals(reason) && !promptChunks.isEmpty()) {
+            Instant parallelStart = Instant.now();
+            CompletableFuture<TimedSuggestionResult> suggestionFuture =
+                    startParallelChunkSuggestions(request, promptChunks);
             try {
                 Instant groundedStart = Instant.now();
                 GroundedRagCallResult groundedCall = openAIService.chatWithRagContext(request, promptChunks, session);
@@ -1604,6 +1686,7 @@ public class ComprehendChatService {
                 logUsage("Merged", chatResponse.getOpenAiUsage(), 0);
             } catch (OpenAIException e) {
                 if (e.isAiServiceUnavailable()) {
+                    suggestionFuture.cancel(true);
                     throw e;
                 }
                 log.warn("Grounded JSON parsing failed, falling back to General GPT: {}", e.getMessage());
@@ -1642,6 +1725,65 @@ public class ComprehendChatService {
                 );
                 }
             }
+
+            ParallelSuggestionOutcome suggestionOutcome = joinParallelSuggestions(suggestionFuture, parallelStart);
+            suggestionsPrecomputed = true;
+            precomputedSuggestions = suggestionOutcome.result();
+            suggestionPromptTokensLocal = suggestionOutcome.promptTokens();
+            suggestionCompletionTokensLocal = suggestionOutcome.completionTokens();
+            suggestionsStageMs = suggestionOutcome.suggestionsMs();
+            parallelLlmMs = suggestionOutcome.parallelLlmMs();
+            log.info(
+                    "Parallel LLM Stage | groundingMs={} | suggestionsMs={} | parallelLlmMs={} | suggestionChunks={}",
+                    groundedMs,
+                    suggestionsStageMs,
+                    parallelLlmMs,
+                    Math.min(Math.max(suggestionRagChunkCount, 1), promptChunks.size())
+            );
+        } else if (RETRIEVAL_READY.equals(reason)) {
+            try {
+                Instant groundedStart = Instant.now();
+                GroundedRagCallResult groundedCall = openAIService.chatWithRagContext(request, promptChunks, session);
+                Instant groundedEnd = Instant.now();
+                groundedMs = RequestTimingLog.durationMs(groundedStart, groundedEnd);
+                RequestTimingLog.logStage("grounded", groundedStart, groundedEnd);
+                logUsage("Grounded", groundedCall.usage(), groundedMs);
+                groundedTokens = nullSafeInt(groundedCall.usage() != null ? groundedCall.usage().getTotalTokens() : null);
+                OpenAIUsage groundedUsage = groundedCall.usage();
+                if (rewriteUsage != null) {
+                    groundedUsage = mergeUsage(rewriteUsage, groundedUsage);
+                }
+                GroundedRagResult grounded = groundedCall.grounded();
+                DocAnswerOutcome outcome = orchestrateGroundedStatus(
+                        request, grounded, groundedUsage, session, allowExternal
+                );
+                chatResponse = outcome.chatResponse();
+                reason = outcome.retrievalReason();
+                gapFillMs = outcome.gapFillTimeMs();
+                generalGptMs = outcome.generalGptTimeMs();
+                gapFillTokens = outcome.gapFillTokens();
+                generalGptTokens = outcome.generalGptTokens();
+                logUsage("Merged", chatResponse.getOpenAiUsage(), 0);
+            } catch (OpenAIException e) {
+                if (e.isAiServiceUnavailable()) {
+                    throw e;
+                }
+                log.warn("Grounded JSON parsing failed, falling back to General GPT: {}", e.getMessage());
+                if (!allowExternal) {
+                    chatResponse = buildDocsOnlyInsufficientResponse(request, rewriteUsage);
+                    reason = RETRIEVAL_RAG_NO_ANSWER;
+                } else {
+                    Instant generalStart = Instant.now();
+                    chatResponse = openAIService.chatWithoutPersistence(request, session);
+                    Instant generalEnd = Instant.now();
+                    generalGptMs = RequestTimingLog.durationMs(generalStart, generalEnd);
+                    generalGptTokens = nullSafeInt(chatResponse.getOpenAiUsage() != null ? chatResponse.getOpenAiUsage().getTotalTokens() : null);
+                    if (rewriteUsage != null) {
+                        chatResponse.setOpenAiUsage(mergeUsage(rewriteUsage, chatResponse.getOpenAiUsage()));
+                    }
+                    reason = RETRIEVAL_RAG_NO_ANSWER;
+                }
+            }
         } else {
             if (retrieval.getError() != null) {
                 log.warn("Retrieval error from Python, falling back to OpenAI: {}", retrieval.getError());
@@ -1678,8 +1820,97 @@ public class ComprehendChatService {
                 (int) generalGptMs,
                 groundedTokens,
                 gapFillTokens,
-                generalGptTokens
+                generalGptTokens,
+                suggestionsPrecomputed,
+                precomputedSuggestions,
+                suggestionPromptTokensLocal,
+                suggestionCompletionTokensLocal,
+                (int) suggestionsStageMs,
+                (int) parallelLlmMs
         );
+    }
+
+    private CompletableFuture<TimedSuggestionResult> startParallelChunkSuggestions(
+            ChatRequest request,
+            List<ChunkItem> promptChunks
+    ) {
+        int take = Math.min(Math.max(suggestionRagChunkCount, 1), promptChunks.size());
+        List<String> excerpts = promptChunks.subList(0, take).stream()
+                .map(ChunkItem::getChunk)
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .toList();
+        SuggestionContext context = new SuggestionContext();
+        context.setTenantCode(request.getTenantCode());
+        context.setUserId(request.getUserId());
+        context.setSessionId(request.getSessionId());
+        context.setUserMessage(request.getUserMessage());
+        context.setHistory(request.getHistory());
+        context.setDocumentationExcerpts(excerpts);
+        return CompletableFuture.supplyAsync(
+                () -> {
+                    Instant started = Instant.now();
+                    try {
+                        SuggestionResult result = suggestionEngineService.generateSuggestions(context);
+                        long elapsed = RequestTimingLog.durationMs(started, Instant.now());
+                        return new TimedSuggestionResult(result, elapsed, null);
+                    } catch (Exception e) {
+                        long elapsed = RequestTimingLog.durationMs(started, Instant.now());
+                        return new TimedSuggestionResult(new SuggestionResult(List.of(), List.of()), elapsed, e);
+                    }
+                },
+                suggestionExecutor
+        );
+    }
+
+    private ParallelSuggestionOutcome joinParallelSuggestions(
+            CompletableFuture<TimedSuggestionResult> suggestionFuture,
+            Instant parallelStart
+    ) {
+        SuggestionResult result = new SuggestionResult(List.of(), List.of());
+        int promptTokens = 0;
+        int completionTokens = 0;
+        long suggestionsMsLocal = 0L;
+        try {
+            TimedSuggestionResult timed = suggestionFuture.join();
+            if (timed != null) {
+                suggestionsMsLocal = timed.elapsedMs();
+                if (timed.error() != null) {
+                    log.warn("Suggestion generation failed | reason={}", timed.error().getMessage());
+                } else if (timed.result() != null) {
+                    result = timed.result();
+                    promptTokens = result.getPromptTokens();
+                    completionTokens = result.getCompletionTokens();
+                }
+            }
+        } catch (Exception e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            log.warn("Suggestion generation failed | reason={}", cause.getMessage());
+            if (!suggestionFuture.isDone()) {
+                suggestionFuture.cancel(true);
+            }
+        }
+        long parallelLlmMsLocal = RequestTimingLog.durationMs(parallelStart, Instant.now());
+        return new ParallelSuggestionOutcome(
+                result,
+                promptTokens,
+                completionTokens,
+                suggestionsMsLocal,
+                parallelLlmMsLocal
+        );
+    }
+
+    private record TimedSuggestionResult(SuggestionResult result, long elapsedMs, Exception error) {
+    }
+
+    private record ParallelSuggestionOutcome(
+            SuggestionResult result,
+            int promptTokens,
+            int completionTokens,
+            long suggestionsMs,
+            long parallelLlmMs
+    ) {
     }
 
     private DocAnswerOutcome orchestrateGroundedStatus(
@@ -2025,7 +2256,13 @@ public class ComprehendChatService {
                 nullSafeInt(docResult.generalGptTimeMs()),
                 docResult.groundedTokens(),
                 docResult.gapFillTokens(),
-                docResult.generalGptTokens()
+                docResult.generalGptTokens(),
+                docResult.suggestionsPrecomputed(),
+                docResult.precomputedSuggestions(),
+                nullSafeInt(docResult.suggestionPromptTokens()),
+                nullSafeInt(docResult.suggestionCompletionTokens()),
+                nullSafeInt(docResult.suggestionsTimeMs()),
+                nullSafeInt(docResult.parallelLlmTimeMs())
         );
     }
 
@@ -2357,6 +2594,16 @@ public class ComprehendChatService {
         chatResponse.setSanitizedUserMessage(sanitized);
     }
 
+    /**
+     * Step 1 performance gate: only documentation/RAG final paths get suggestion LLM.
+     * Uses final {@code route} + {@code handler} from routing (not planner category alone),
+     * so AUTO planner LIVE_M3 remapped to RAG still receives suggestions.
+     */
+    static boolean shouldGenerateSuggestions(String route, String handler) {
+        return "rag".equalsIgnoreCase(route)
+                && "documentation/retrieval".equalsIgnoreCase(handler);
+    }
+
     private SuggestionContext buildSuggestionContext(ChatRequest request, String answer, List<SourceItem> sources) {
         SuggestionContext context = new SuggestionContext();
         context.setTenantCode(request.getTenantCode());
@@ -2412,7 +2659,13 @@ public class ComprehendChatService {
             Integer generalGptMs,
             Integer groundedTokens,
             Integer gapFillTokens,
-            Integer generalGptTokens
+            Integer generalGptTokens,
+            boolean suggestionsPrecomputed,
+            SuggestionResult precomputedSuggestions,
+            Integer suggestionPromptTokens,
+            Integer suggestionCompletionTokens,
+            Integer suggestionsTimeMs,
+            Integer parallelLlmTimeMs
     ) {
     }
 
@@ -2432,8 +2685,57 @@ public class ComprehendChatService {
             Integer generalGptTimeMs,
             Integer groundedTokens,
             Integer gapFillTokens,
-            Integer generalGptTokens
+            Integer generalGptTokens,
+            boolean suggestionsPrecomputed,
+            SuggestionResult precomputedSuggestions,
+            Integer suggestionPromptTokens,
+            Integer suggestionCompletionTokens,
+            Integer suggestionsTimeMs,
+            Integer parallelLlmTimeMs
     ) {
+        static DocRouteResult withoutSuggestions(
+                ChatResponse chatResponse,
+                List<SourceItem> sourcesForSuggestions,
+                List<SourceItem> responseSources,
+                String retrievalReason,
+                Integer retrievalTimeMs,
+                Float maxScore,
+                Integer queryRewriteTimeMs,
+                Integer retrievalSpringMs,
+                Integer retrievalPythonMs,
+                Integer preRetrievalGlueMs,
+                Integer groundedTimeMs,
+                Integer gapFillTimeMs,
+                Integer generalGptTimeMs,
+                Integer groundedTokens,
+                Integer gapFillTokens,
+                Integer generalGptTokens
+        ) {
+            return new DocRouteResult(
+                    chatResponse,
+                    sourcesForSuggestions,
+                    responseSources,
+                    retrievalReason,
+                    retrievalTimeMs,
+                    maxScore,
+                    queryRewriteTimeMs,
+                    retrievalSpringMs,
+                    retrievalPythonMs,
+                    preRetrievalGlueMs,
+                    groundedTimeMs,
+                    gapFillTimeMs,
+                    generalGptTimeMs,
+                    groundedTokens,
+                    gapFillTokens,
+                    generalGptTokens,
+                    false,
+                    null,
+                    0,
+                    0,
+                    0,
+                    0
+            );
+        }
     }
 
     private record UnderstandRun(

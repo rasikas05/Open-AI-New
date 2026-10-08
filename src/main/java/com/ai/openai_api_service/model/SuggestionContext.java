@@ -11,6 +11,8 @@ public class SuggestionContext {
     private List<MessageDto> history;
     private String answer;
     private List<String> sources;
+    /** Top ranked RAG chunk texts for parallel chunk-grounded suggestions (Step 2). */
+    private List<String> documentationExcerpts;
 
     public String getTenantCode() {
         return tenantCode;
@@ -66,5 +68,13 @@ public class SuggestionContext {
 
     public void setSources(List<String> sources) {
         this.sources = sources;
+    }
+
+    public List<String> getDocumentationExcerpts() {
+        return documentationExcerpts;
+    }
+
+    public void setDocumentationExcerpts(List<String> documentationExcerpts) {
+        this.documentationExcerpts = documentationExcerpts;
     }
 }
