@@ -24,7 +24,7 @@ import static org.mockito.Mockito.when;
 class TenantAuthBypassFilterTest {
 
     private static final String DEMO = "EM47JBNURMACJZ8F_DEM";
-    private static final String SCOPE = "SCOPE_default-m2m-resource-server-5kguh6/read";
+    private static final String SCOPE = "SCOPE_default-m2m-resource-server-mawkw5/read";
 
     @Mock
     private TenantAuthBypassService bypassService;
@@ -33,7 +33,7 @@ class TenantAuthBypassFilterTest {
 
     @BeforeEach
     void setUp() {
-        RequiredM2mScope requiredM2mScope = new RequiredM2mScope("default-m2m-resource-server-5kguh6/read");
+        RequiredM2mScope requiredM2mScope = new RequiredM2mScope("default-m2m-resource-server-mawkw5/read");
         filter = new TenantAuthBypassFilter(bypassService, requiredM2mScope);
         SecurityContextHolder.clearContext();
     }

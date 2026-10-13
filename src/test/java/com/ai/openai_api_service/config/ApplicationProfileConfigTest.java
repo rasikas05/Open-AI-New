@@ -85,7 +85,7 @@ class ApplicationProfileConfigTest {
     }
 
     @Test
-    void prodProperties_tenantAuthBypassEmptyByDefault() throws IOException {
+    void prodProperties_tenantAuthBypassDisabledByDefault() throws IOException {
         Properties prod = loadClasspathProperties("/application-prod.properties");
         assertEquals("", prod.getProperty("security.tenant-auth-bypass.codes"));
         assertEquals("X-Tenant-Code", prod.getProperty("security.tenant-auth-bypass.header"));
