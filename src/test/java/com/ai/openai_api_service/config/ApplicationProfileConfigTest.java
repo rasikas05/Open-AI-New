@@ -85,6 +85,38 @@ class ApplicationProfileConfigTest {
     }
 
     @Test
+    void defaultProperties_llmProviderIsBedrock_withSeparateOpenAiRollbackSettings() throws IOException {
+        Properties base = loadClasspathProperties("/application.properties");
+
+        assertEquals("bedrock", base.getProperty("llm.provider"));
+        assertEquals("https://api.openai.com/v1/chat/completions", base.getProperty("openai.api.url"));
+        assertEquals("gpt-5.6-terra", base.getProperty("openai.api.model"));
+        assertTrue(
+                base.getProperty("openai.api.key").contains("${OPENAI_API_KEY"),
+                "openai key must use OPENAI_API_KEY placeholder"
+        );
+
+        assertEquals(
+                "https://bedrock-runtime.eu-west-1.amazonaws.com/openai/v1/chat/completions",
+                base.getProperty("bedrock.runtime.url")
+        );
+        assertEquals("global.openai.gpt-5.6-terra", base.getProperty("bedrock.runtime.model"));
+        assertTrue(
+                base.getProperty("bedrock.runtime.api-key").contains("${BEDROCK_API_KEY"),
+                "bedrock key must use BEDROCK_API_KEY placeholder"
+        );
+        assertEquals("120000", base.getProperty("bedrock.runtime.timeout-ms"));
+        assertEquals("none", base.getProperty("bedrock.runtime.reasoning-effort"));
+        assertEquals("4096", base.getProperty("bedrock.runtime.max-completion-tokens"));
+    }
+
+    @Test
+    void prodProperties_enableBedrockProvider() throws IOException {
+        Properties prod = loadClasspathProperties("/application-prod.properties");
+        assertEquals("bedrock", prod.getProperty("llm.provider"));
+    }
+
+    @Test
     void prodProperties_tenantAuthBypassDisabledByDefault() throws IOException {
         Properties prod = loadClasspathProperties("/application-prod.properties");
         assertEquals("", prod.getProperty("security.tenant-auth-bypass.codes"));

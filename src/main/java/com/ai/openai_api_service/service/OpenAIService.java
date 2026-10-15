@@ -1,8 +1,7 @@
 package com.ai.openai_api_service.service;
 
-import com.ai.openai_api_service.config.RestTemplateFactory;
-import com.ai.openai_api_service.exception.TenantQuotaExceededException;
 import com.ai.openai_api_service.exception.AiServiceErrors;
+import com.ai.openai_api_service.exception.TenantQuotaExceededException;
 import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.ChatMode;
 import com.ai.openai_api_service.model.ChatRequest;
@@ -27,17 +26,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
-import org.springframework.http.ResponseEntity;
-import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.HttpClientErrorException;
-import org.springframework.web.client.ResourceAccessException;
-import org.springframework.web.client.RestTemplate;
-
-import jakarta.annotation.PostConstruct;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -172,19 +161,11 @@ public class OpenAIService {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
-    private RestTemplate restTemplate;
     private final PresidioService presidioService;
     private final ChatPersistenceService chatPersistenceService;
     private final TenantQuotaService tenantQuotaService;
-
-    @Value("${openai.api.key}")
-    private String apiKey;
-
-    @Value("${openai.api.model}")
-    private String model;
-
-    @Value("${openai.api.url}")
-    private String openaiUrl;
+    private final LlmChatCompletionsClient llmClient;
+    private final BusinessInformationProtectionService businessInformationProtectionService;
 
     @Value("${openai.assistant.system-prompt.enabled:true}")
     private boolean systemPromptEnabled;
@@ -211,24 +192,22 @@ public class OpenAIService {
     @Value("${chat.history.allow-client-history:false}")
     private boolean allowClientHistory;
 
-    @Value("${openai.api.timeout-ms:120000}")
-    private int openAiTimeoutMs;
-
-    @Value("${openai.api.reasoning-effort:none}")
-    private String reasoningEffort;
-
-    @Value("${openai.api.max-completion-tokens:4096}")
-    private int defaultMaxCompletionTokens;
-
-    private final BusinessInformationProtectionService businessInformationProtectionService;
-
-    /** Test-friendly constructor; protection remains inactive when null or flag=false. */
+    /** Test-friendly constructor; protection and LLM client remain inactive when null. */
     public OpenAIService(
             PresidioService presidioService,
             ChatPersistenceService chatPersistenceService,
             TenantQuotaService tenantQuotaService
     ) {
-        this(presidioService, chatPersistenceService, tenantQuotaService, null);
+        this(presidioService, chatPersistenceService, tenantQuotaService, null, null);
+    }
+
+    public OpenAIService(
+            PresidioService presidioService,
+            ChatPersistenceService chatPersistenceService,
+            TenantQuotaService tenantQuotaService,
+            BusinessInformationProtectionService businessInformationProtectionService
+    ) {
+        this(presidioService, chatPersistenceService, tenantQuotaService, businessInformationProtectionService, null);
     }
 
     @Autowired
@@ -236,17 +215,14 @@ public class OpenAIService {
             PresidioService presidioService,
             ChatPersistenceService chatPersistenceService,
             TenantQuotaService tenantQuotaService,
-            @Autowired(required = false) BusinessInformationProtectionService businessInformationProtectionService
+            @Autowired(required = false) BusinessInformationProtectionService businessInformationProtectionService,
+            LlmChatCompletionsClient llmClient
     ) {
         this.presidioService = presidioService;
         this.chatPersistenceService = chatPersistenceService;
         this.tenantQuotaService = tenantQuotaService;
         this.businessInformationProtectionService = businessInformationProtectionService;
-    }
-
-    @PostConstruct
-    void initRestTemplate() {
-        this.restTemplate = RestTemplateFactory.create(openAiTimeoutMs);
+        this.llmClient = llmClient;
     }
 
     /**
@@ -554,14 +530,14 @@ public class OpenAIService {
                 throw e;
             }
             log.warn("Query rewriting failed: {}. Falling back to original sanitized query.", e.getMessage());
-            OpenAIUsage fallbackUsage = new OpenAIUsage(0, 0, 0, model);
+            OpenAIUsage fallbackUsage = new OpenAIUsage(0, 0, 0, activeModel());
             return new QueryRewriteResult(List.of(sanitizedQuery), fallbackUsage);
         } catch (Exception e) {
             if (AiServiceErrors.isQuotaOrCreditExhaustion(e.getMessage())) {
                 throw AiServiceErrors.unavailable(e.getMessage());
             }
             log.warn("Query rewriting failed: {}. Falling back to original sanitized query.", e.getMessage());
-            OpenAIUsage fallbackUsage = new OpenAIUsage(0, 0, 0, model);
+            OpenAIUsage fallbackUsage = new OpenAIUsage(0, 0, 0, activeModel());
             return new QueryRewriteResult(List.of(sanitizedQuery), fallbackUsage);
         }
     }
@@ -652,7 +628,7 @@ public class OpenAIService {
                 queries = List.of();
             }
 
-            OpenAIUsage resolvedUsage = usage != null ? usage : new OpenAIUsage(0, 0, 0, model);
+            OpenAIUsage resolvedUsage = usage != null ? usage : new OpenAIUsage(0, 0, 0, activeModel());
             return new RequestUnderstandResult(type, response, List.copyOf(queries), resolvedUsage);
         } catch (OpenAIException e) {
             throw e;
@@ -877,92 +853,29 @@ public class OpenAIService {
             Integer maxTokens,
             boolean jsonObjectResponse
     ) {
-        Map<String, Object> body = OpenAiChatRequestBuilder.buildChatCompletionBody(
-                model,
-                reasoningEffort,
-                defaultMaxCompletionTokens,
+        requireLlmClient();
+        LlmChatCompletionsClient.ChatCompletionResult result = llmClient.complete(
                 messages,
                 temperature,
                 maxTokens,
                 jsonObjectResponse
         );
-
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setBearerAuth(apiKey);
-        HttpEntity<Map<String, Object>> entity = new HttpEntity<>(body, headers);
-
-        log.info(
-                "Calling OpenAI chat completions. model={}, reasoningEffort={}, messageCount={}",
-                model,
-                OpenAiChatRequestBuilder.effectiveReasoningEffort(model, reasoningEffort),
-                messages.size()
-        );
-        long start = System.currentTimeMillis();
-
-        Map<String, Object> response;
-        try {
-            ResponseEntity<Map> responseEntity = restTemplate.exchange(
-                    openaiUrl,
-                    HttpMethod.POST,
-                    entity,
-                    Map.class
-            );
-            response = responseEntity.getBody();
-        } catch (HttpClientErrorException e) {
-            handleOpenAiError(e);
-            throw new OpenAIException("OpenAI call failed", e.getStatusCode().value());
-        } catch (ResourceAccessException e) {
-            long elapsed = System.currentTimeMillis() - start;
-            log.error("OpenAI request failed after {}ms: {}", elapsed, e.getMessage());
-            throw new OpenAIException(
-                    "OpenAI request timed out or failed after " + elapsed + "ms: " + e.getMessage(),
-                    504
-            );
-        }
-
-        long elapsed = System.currentTimeMillis() - start;
-        log.info("OpenAI chat completions completed in {}ms", elapsed);
-
-        if (response == null) {
-            throw new OpenAIException("No response from OpenAI.", 502);
-        }
-
-        String content = extractContent(response);
-        boolean truncated = isTruncated(response);
-        OpenAIUsage usage = extractUsage(response, model);
-        return new OpenAiCallResult(content, truncated, usage, elapsed);
+        return new OpenAiCallResult(result.content(), result.truncated(), result.usage(), result.elapsedMs());
     }
 
     private void validateApiKey() {
-        if (apiKey == null || apiKey.isBlank()) {
-            throw new OpenAIException(
-                    "OpenAI API key is missing. Set BEDROCK_API_KEY env var or openai.api.key property.",
-                    401
-            );
+        requireLlmClient();
+        llmClient.requireApiKey();
+    }
+
+    private void requireLlmClient() {
+        if (llmClient == null) {
+            throw new OpenAIException("LLM client is not configured.", 500);
         }
     }
 
-    private void handleOpenAiError(HttpClientErrorException e) {
-        int code = e.getStatusCode().value();
-        HttpHeaders h = e.getResponseHeaders();
-        if (h != null) {
-            log.warn("OpenAI x-ratelimit-limit-requests={}", h.getFirst("x-ratelimit-limit-requests"));
-            log.warn("OpenAI x-ratelimit-remaining-requests={}", h.getFirst("x-ratelimit-remaining-requests"));
-            log.warn("OpenAI x-ratelimit-reset-requests={}", h.getFirst("x-ratelimit-reset-requests"));
-            log.warn("OpenAI x-ratelimit-limit-tokens={}", h.getFirst("x-ratelimit-limit-tokens"));
-            log.warn("OpenAI x-ratelimit-remaining-tokens={}", h.getFirst("x-ratelimit-remaining-tokens"));
-            log.warn("OpenAI x-ratelimit-reset-tokens={}", h.getFirst("x-ratelimit-reset-tokens"));
-        }
-        String body = e.getResponseBodyAsString();
-        log.warn("OpenAI error status={} body={}", e.getStatusCode(), body);
-        if (AiServiceErrors.isQuotaOrCreditExhaustion(body) || AiServiceErrors.isQuotaOrCreditExhaustion(e.getMessage())) {
-            throw AiServiceErrors.unavailable("OpenAI status=" + code + " body=" + body);
-        }
-        String msg = code == 401
-                ? "OpenAI API key is invalid or missing. Check openai.api.key in application.properties (no quotes)."
-                : "OpenAI API error: " + code + " " + e.getStatusText();
-        throw new OpenAIException(msg, code);
+    private String activeModel() {
+        return llmClient != null ? llmClient.activeModel() : "gpt-5.6-terra";
     }
 
     private ChatResponse blockedResponse(TenantQuotaExceededException e) {
@@ -974,57 +887,10 @@ public class OpenAIService {
         return blocked;
     }
 
-    private String extractContent(Map<String, Object> response) {
-        Object choicesObj = response.get("choices");
-        if (!(choicesObj instanceof List<?> choicesList) || choicesList.isEmpty()) {
-            throw new OpenAIException("No choices returned from OpenAI.", 502);
-        }
-        Object firstChoice = choicesList.get(0);
-        if (!(firstChoice instanceof Map<?, ?> choiceMap)) {
-            throw new OpenAIException("Unexpected response format from OpenAI.", 502);
-        }
-        Object messageObj = choiceMap.get("message");
-        if (!(messageObj instanceof Map<?, ?> messageMap)) {
-            throw new OpenAIException("Unexpected message format from OpenAI.", 502);
-        }
-        Object contentObj = messageMap.get("content");
-        return contentObj != null ? contentObj.toString() : "";
-    }
-
-    private boolean isTruncated(Map<String, Object> response) {
-        Object choicesObj = response.get("choices");
-        if (!(choicesObj instanceof List<?> choicesList) || choicesList.isEmpty()) {
-            return false;
-        }
-        Object firstChoice = choicesList.get(0);
-        if (!(firstChoice instanceof Map<?, ?> choiceMap)) {
-            return false;
-        }
-        Object finishReason = choiceMap.get("finish_reason");
-        return finishReason != null && "length".equals(finishReason.toString());
-    }
-
+    /** Package-visible for legacy unit tests; prefer {@link LlmChatCompletionsClient#extractUsage}. */
     OpenAIUsage extractUsage(Map<String, Object> response, String modelUsed) {
-        OpenAIUsage usage = new OpenAIUsage();
-        usage.setModel(modelUsed);
-        Object usageObj = response.get("usage");
-        if (!(usageObj instanceof Map<?, ?> usageMap)) {
-            usage.setPromptTokens(0);
-            usage.setCompletionTokens(0);
-            usage.setTotalTokens(0);
-            return usage;
-        }
-        usage.setPromptTokens(toInt(usageMap.get("prompt_tokens")));
-        usage.setCompletionTokens(toInt(usageMap.get("completion_tokens")));
-        usage.setTotalTokens(toInt(usageMap.get("total_tokens")));
-        return usage;
-    }
-
-    private Integer toInt(Object value) {
-        if (value instanceof Number n) {
-            return n.intValue();
-        }
-        return 0;
+        LlmChatCompletionsClient parser = llmClient != null ? llmClient : new LlmChatCompletionsClient();
+        return parser.extractUsage(response, modelUsed);
     }
 
     String formatRagContext(List<ChunkItem> chunks) {

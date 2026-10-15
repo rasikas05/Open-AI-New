@@ -1,6 +1,5 @@
 package com.ai.openai_api_service.service;
 
-import com.ai.openai_api_service.config.RestTemplateFactory;
 import com.ai.openai_api_service.model.SuggestionCategory;
 import com.ai.openai_api_service.model.SuggestionContext;
 import com.ai.openai_api_service.model.SuggestionItem;
@@ -9,13 +8,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.HttpEntity;
-import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpMethod;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -29,23 +22,11 @@ public class SuggestionLLMService {
 
     private static final Logger log = LoggerFactory.getLogger(SuggestionLLMService.class);
 
-    private final RestTemplate restTemplate;
+    private final LlmChatCompletionsClient llmClient;
     private final ObjectMapper objectMapper = new ObjectMapper();
-
-    @Value("${openai.api.key}")
-    private String apiKey;
-
-    @Value("${openai.api.model}")
-    private String model;
-
-    @Value("${openai.api.url}")
-    private String openaiUrl;
 
     @Value("${suggestion.llm.enabled:true}")
     private boolean llmEnabled;
-
-    @Value("${openai.api.reasoning-effort:none}")
-    private String reasoningEffort;
 
     @Value("${suggestion.llm.max-completion-tokens:80}")
     private int suggestionMaxCompletionTokens;
@@ -56,10 +37,8 @@ public class SuggestionLLMService {
     static final int SUGGESTION_MAX_WORDS = 10;
     static final int SUGGESTION_MAX_CHARS = 60;
 
-    public SuggestionLLMService(
-            @Value("${openai.api.timeout-ms:120000}") int openAiTimeoutMs
-    ) {
-        this.restTemplate = RestTemplateFactory.create(openAiTimeoutMs);
+    public SuggestionLLMService(LlmChatCompletionsClient llmClient) {
+        this.llmClient = llmClient;
     }
 
     public record SuggestionLlmOutcome(List<SuggestionItem> items, int promptTokens, int completionTokens) {
@@ -77,7 +56,7 @@ public class SuggestionLLMService {
     }
 
     public SuggestionLlmOutcome suggestWithUsage(SuggestionContext context, int minCount, int maxCount) {
-        if (!llmEnabled || context == null || apiKey == null || apiKey.isBlank()) {
+        if (!llmEnabled || context == null || llmClient == null || !llmClient.hasApiKey()) {
             return SuggestionLlmOutcome.empty();
         }
 
@@ -93,61 +72,47 @@ public class SuggestionLLMService {
                 Map.of("role", "user", "content", prompt)
         );
         int tokenCap = suggestionCompletionTokenCap();
-        Map<String, Object> body = OpenAiChatRequestBuilder.buildChatCompletionBody(
-                model,
-                reasoningEffort,
-                tokenCap,
-                messages,
-                0.3,
-                tokenCap
-        );
-
-        HttpHeaders headers = new HttpHeaders();
-        headers.setContentType(MediaType.APPLICATION_JSON);
-        headers.setBearerAuth(apiKey);
 
         try {
             Instant openAiStart = Instant.now();
             log.debug(
-                    "Calling OpenAI chat completions for suggestions. model={}, reasoningEffort={}",
-                    model,
-                    OpenAiChatRequestBuilder.effectiveReasoningEffort(model, reasoningEffort)
+                    "Calling {} chat completions for suggestions. model={}, reasoningEffort={}",
+                    llmClient.activeProviderLabel(),
+                    llmClient.activeModel(),
+                    OpenAiChatRequestBuilder.effectiveReasoningEffort(
+                            llmClient.activeModel(),
+                            llmClient.activeReasoningEffort()
+                    )
             );
-            ResponseEntity<Map> responseEntity = restTemplate.exchange(
-                    openaiUrl,
-                    HttpMethod.POST,
-                    new HttpEntity<>(body, headers),
-                    Map.class
+            LlmChatCompletionsClient.ChatCompletionResult result = llmClient.complete(
+                    messages,
+                    0.3,
+                    tokenCap,
+                    false
             );
             long openAiWaitMs = Duration.between(openAiStart, Instant.now()).toMillis();
-            Map<String, Object> response = responseEntity.getBody();
             Instant parseStart = Instant.now();
-            List<SuggestionItem> items = extractSuggestions(response, maxCount);
-            if (items.isEmpty() && isLengthTruncated(response) && tokenCap < SUGGESTION_COMPLETION_RETRY_TOKENS) {
+            List<SuggestionItem> items = parseSuggestionContent(result.content(), maxCount);
+            if (items.isEmpty() && result.truncated() && tokenCap < SUGGESTION_COMPLETION_RETRY_TOKENS) {
                 log.debug("Suggestion JSON truncated; retrying with max_completion_tokens={}", SUGGESTION_COMPLETION_RETRY_TOKENS);
-                body = OpenAiChatRequestBuilder.buildChatCompletionBody(
-                        model,
-                        reasoningEffort,
-                        SUGGESTION_COMPLETION_RETRY_TOKENS,
+                result = llmClient.complete(
                         messages,
                         0.3,
-                        SUGGESTION_COMPLETION_RETRY_TOKENS
+                        SUGGESTION_COMPLETION_RETRY_TOKENS,
+                        false
                 );
-                responseEntity = restTemplate.exchange(
-                        openaiUrl,
-                        HttpMethod.POST,
-                        new HttpEntity<>(body, headers),
-                        Map.class
-                );
-                response = responseEntity.getBody();
-                items = extractSuggestions(response, maxCount);
+                items = parseSuggestionContent(result.content(), maxCount);
             }
             long parseMs = Duration.between(parseStart, Instant.now()).toMillis();
-            int promptTokens = extractUsageField(response, "prompt_tokens");
-            int completionTokens = extractUsageField(response, "completion_tokens");
+            int promptTokens = result.usage() != null && result.usage().getPromptTokens() != null
+                    ? result.usage().getPromptTokens()
+                    : 0;
+            int completionTokens = result.usage() != null && result.usage().getCompletionTokens() != null
+                    ? result.usage().getCompletionTokens()
+                    : 0;
             log.debug(
                     "Suggestion LLM Timing | model={} | promptBuildMs={} | openAiWaitMs={} | parseMs={} | llmCount={} | promptTokens={} | completionTokens={}",
-                    model,
+                    llmClient.activeModel(),
                     promptBuildMs,
                     openAiWaitMs,
                     parseMs,
@@ -160,21 +125,6 @@ public class SuggestionLLMService {
             log.warn("LLM suggestion generation failed: {}", e.getMessage());
             return SuggestionLlmOutcome.empty();
         }
-    }
-
-    private int extractUsageField(Map<String, Object> response, String field) {
-        if (response == null) {
-            return 0;
-        }
-        Object usageObj = response.get("usage");
-        if (!(usageObj instanceof Map<?, ?> usage)) {
-            return 0;
-        }
-        Object value = usage.get(field);
-        if (value instanceof Number number) {
-            return number.intValue();
-        }
-        return 0;
     }
 
     private String buildPrompt(SuggestionContext context, int minCount, int maxCount) {
@@ -248,43 +198,6 @@ public class SuggestionLLMService {
         return text.substring(0, maxChars).trim();
     }
 
-    private boolean isLengthTruncated(Map<String, Object> response) {
-        if (response == null) {
-            return false;
-        }
-        Object choicesObj = response.get("choices");
-        if (!(choicesObj instanceof List<?> choices) || choices.isEmpty()) {
-            return false;
-        }
-        Object first = choices.get(0);
-        if (!(first instanceof Map<?, ?> choiceMap)) {
-            return false;
-        }
-        Object finish = choiceMap.get("finish_reason");
-        return finish != null && "length".equalsIgnoreCase(finish.toString());
-    }
-
-    private List<SuggestionItem> extractSuggestions(Map<String, Object> response, int maxCount) {
-        if (response == null) {
-            return List.of();
-        }
-        Object choicesObj = response.get("choices");
-        if (!(choicesObj instanceof List<?> choices) || choices.isEmpty()) {
-            return List.of();
-        }
-        Object first = choices.get(0);
-        if (!(first instanceof Map<?, ?> choiceMap)) {
-            return List.of();
-        }
-        Object messageObj = choiceMap.get("message");
-        if (!(messageObj instanceof Map<?, ?> messageMap)) {
-            return List.of();
-        }
-        Object contentObj = messageMap.get("content");
-        String content = contentObj == null ? "" : contentObj.toString();
-        return parseSuggestionContent(content, maxCount);
-    }
-
     List<SuggestionItem> parseSuggestionContent(String content, int maxCount) {
         if (content == null || content.isBlank()) {
             return List.of();
@@ -342,7 +255,7 @@ public class SuggestionLLMService {
         }
         return items;
     }
-    
+
     boolean isCompleteAndValid(String text) {
         try {
             if (text == null || text.isBlank()) {

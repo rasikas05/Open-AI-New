@@ -45,19 +45,28 @@ class GroundedStageTimingProfileTest {
         String apiKey = System.getenv("OPENAI_API_KEY");
         Assumptions.assumeTrue(apiKey != null && !apiKey.isBlank(), "OPENAI_API_KEY required");
 
-        OpenAIService service = new OpenAIService(null, null, null);
-        ReflectionTestUtils.setField(service, "apiKey", apiKey);
-        ReflectionTestUtils.setField(service, "model", System.getenv().getOrDefault("OPENAI_MODEL", "gpt-4.1"));
+        LlmChatCompletionsClient llmClient = new LlmChatCompletionsClient();
+        ReflectionTestUtils.setField(llmClient, "provider", "openai");
+        ReflectionTestUtils.setField(llmClient, "openaiApiKey", apiKey);
         ReflectionTestUtils.setField(
-                service,
+                llmClient,
+                "openaiModel",
+                System.getenv().getOrDefault("OPENAI_MODEL", "gpt-4.1")
+        );
+        ReflectionTestUtils.setField(
+                llmClient,
                 "openaiUrl",
                 System.getenv().getOrDefault("OPENAI_API_URL", "https://api.openai.com/v1/chat/completions")
         );
+        ReflectionTestUtils.setField(llmClient, "openaiTimeoutMs", 120_000);
+        ReflectionTestUtils.setField(llmClient, "openaiReasoningEffort", "none");
+        ReflectionTestUtils.setField(llmClient, "openaiMaxCompletionTokens", 4096);
+        llmClient.init();
+
+        OpenAIService service = new OpenAIService(null, null, null, null, llmClient);
         ReflectionTestUtils.setField(service, "loadHistoryFromDb", false);
         ReflectionTestUtils.setField(service, "allowClientHistory", false);
         ReflectionTestUtils.setField(service, "removeAnonymizationPlaceholders", true);
-        ReflectionTestUtils.setField(service, "openAiTimeoutMs", 120_000);
-        service.initRestTemplate();
 
         Path out = resolveOutPath();
         Files.createDirectories(out.getParent());

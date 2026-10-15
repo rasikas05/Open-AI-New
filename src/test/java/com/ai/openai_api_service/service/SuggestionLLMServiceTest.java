@@ -18,7 +18,7 @@ class SuggestionLLMServiceTest {
 
     @BeforeEach
     void setUp() {
-        service = new SuggestionLLMService(5000);
+        service = new SuggestionLLMService(null);
         ReflectionTestUtils.setField(service, "suggestionMaxCompletionTokens", 80);
     }
 
