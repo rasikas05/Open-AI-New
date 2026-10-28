@@ -40,4 +40,16 @@ public final class ProgramIdDetector {
         }
         return List.copyOf(new ArrayList<>(found));
     }
+
+    /**
+     * True when the whole token is an M3 program ID (same {@link #PROGRAM_ID} pattern as {@link #detect}).
+     */
+    public static boolean isProgramId(String token) {
+        if (token == null || token.isBlank()) {
+            return false;
+        }
+        String upper = token.trim().toUpperCase(Locale.ROOT);
+        Matcher matcher = PROGRAM_ID.matcher(upper);
+        return matcher.find() && matcher.start() == 0 && matcher.end() == upper.length();
+    }
 }

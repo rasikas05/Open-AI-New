@@ -5,6 +5,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ProgramIdDetectorTest {
@@ -33,5 +34,16 @@ class ProgramIdDetectorTest {
     @Test
     void detect_emptyWhenNoMatch() {
         assertTrue(ProgramIdDetector.detect("how does pricing work").isEmpty());
+    }
+
+    @Test
+    void isProgramId_wholeTokenOnly() {
+        assertTrue(ProgramIdDetector.isProgramId("MMS001"));
+        assertTrue(ProgramIdDetector.isProgramId("crs610"));
+        assertTrue(ProgramIdDetector.isProgramId("OIS100/E"));
+        assertFalse(ProgramIdDetector.isProgramId("M3"));
+        assertFalse(ProgramIdDetector.isProgramId("P1001"));
+        assertFalse(ProgramIdDetector.isProgramId("Y00111"));
+        assertFalse(ProgramIdDetector.isProgramId("Explain MMS001 please"));
     }
 }

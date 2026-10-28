@@ -4,6 +4,7 @@ import com.ai.openai_api_service.config.LexProperties;
 import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.lex.LexRecognizeResult;
+import com.ai.openai_api_service.service.timing.FlowTrace;
 import com.ai.openai_api_service.service.timing.RoutingCallTracker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -61,6 +62,10 @@ public class LexService {
     }
 
     public LexRecognizeResult recognizeText(String lexSessionId, String text) {
+        return recognizeText(lexSessionId, text, lexProperties.getLocaleId());
+    }
+
+    public LexRecognizeResult recognizeText(String lexSessionId, String text, String localeId) {
         if (!lexProperties.isEnabled()) {
             throw new OpenAIException("Lex integration is disabled", 503);
         }
@@ -75,11 +80,12 @@ public class LexService {
         if (lexSessionId == null || lexSessionId.isBlank()) {
             throw new OpenAIException("Lex sessionId cannot be empty", 400);
         }
+        String lexLocale = requireRuntimeLocale(localeId);
 
         RecognizeTextRequest request = RecognizeTextRequest.builder()
                 .botId(botId)
                 .botAliasId(botAliasId)
-                .localeId(lexProperties.getLocaleId())
+                .localeId(lexLocale)
                 .sessionId(lexSessionId)
                 .text(text)
                 .build();
@@ -100,15 +106,18 @@ public class LexService {
                     result.getSlots(),
                     result.getSessionAttributes()
             );
+            FlowTrace.lex(result.getIntentName(), result.getIntentState(), result.getDialogActionType());
             return result;
         } catch (LexRuntimeV2Exception e) {
             HTTP.info("[LEX] RecognizeText -> ERROR | {}", formatLexSeconds(lexStart));
             log.error("Lex RecognizeText failed: {}", e.awsErrorDetails() != null
                     ? e.awsErrorDetails().errorMessage()
                     : e.getMessage());
+            FlowTrace.lexFailed(e.getClass().getSimpleName());
             throw new OpenAIException("Lex RecognizeText failed: " + e.getMessage(), 502);
         } catch (SdkClientException e) {
             HTTP.info("[LEX] RecognizeText -> ERROR | {}", formatLexSeconds(lexStart));
+            FlowTrace.lexFailed(e.getClass().getSimpleName());
             String region = lexProperties.getRegion();
             log.error(
                     "Lex connectivity failed (region={}, endpoint=runtime-v2-lex.{}.amazonaws.com): {}",
@@ -130,6 +139,20 @@ public class LexService {
      * Updates Lex session attributes without advancing dialog (intent/slots preserved by Lex).
      */
     public void putSessionAttributes(String lexSessionId, Map<String, String> sessionAttributes) {
+        putSessionAttributes(lexSessionId, sessionAttributes, lexProperties.getLocaleId());
+    }
+
+    private static String requireRuntimeLocale(String localeId) {
+        if (!ChatPersistenceService.LOCALE_EN_US.equals(localeId)) {
+            throw new OpenAIException("Lex locale must be en_US", 400);
+        }
+        return localeId;
+    }
+
+    /**
+     * Updates Lex session attributes without advancing dialog (intent/slots preserved by Lex).
+     */
+    public void putSessionAttributes(String lexSessionId, Map<String, String> sessionAttributes, String localeId) {
         if (!lexProperties.isEnabled()) {
             throw new OpenAIException("Lex integration is disabled", 503);
         }
@@ -141,6 +164,7 @@ public class LexService {
         if (lexSessionId == null || lexSessionId.isBlank()) {
             throw new OpenAIException("Lex sessionId cannot be empty", 400);
         }
+        String lexLocale = requireRuntimeLocale(localeId);
         if (sessionAttributes == null || sessionAttributes.isEmpty()) {
             return;
         }
@@ -148,7 +172,7 @@ public class LexService {
         PutSessionRequest request = PutSessionRequest.builder()
                 .botId(botId)
                 .botAliasId(botAliasId)
-                .localeId(lexProperties.getLocaleId())
+                .localeId(lexLocale)
                 .sessionId(lexSessionId)
                 .sessionState(SessionState.builder()
                         .sessionAttributes(sessionAttributes)

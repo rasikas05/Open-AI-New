@@ -23,13 +23,24 @@ import com.ai.openai_api_service.model.python_rag.PythonRouteResponse;
 import com.ai.openai_api_service.model.rag.GroundedRagCallResult;
 import com.ai.openai_api_service.model.rag.GroundedRagResult;
 import com.ai.openai_api_service.model.rag.RagStatus;
+import com.ai.openai_api_service.service.protection.BusinessInformationDetector;
 import com.ai.openai_api_service.service.protection.BusinessInformationProtectionService;
 import com.ai.openai_api_service.service.protection.BusinessPlaceholderRestorer;
+import com.ai.openai_api_service.service.protection.FieldClassificationCatalog;
+import com.ai.openai_api_service.service.protection.LLMPolicyApplier;
 import com.ai.openai_api_service.service.protection.PiiProtectionService;
+import com.ai.openai_api_service.service.protection.PlaceholderFormatter;
 import com.ai.openai_api_service.service.protection.ProtectionSession;
+import com.ai.openai_api_service.service.protection.ValueShapeValidator;
 import com.ai.openai_api_service.service.query.SearchContextService;
 import com.ai.openai_api_service.service.guided.GuidedSearchService;
 import com.ai.openai_api_service.service.guided.InMemoryGuidedSearchSessionService;
+import com.ai.openai_api_service.service.i18n.AcceptedRomanScript;
+import com.ai.openai_api_service.service.i18n.LanguageDetectionResult;
+import com.ai.openai_api_service.service.i18n.LanguageDetectionService;
+import com.ai.openai_api_service.service.i18n.RomanScriptClassifier;
+import com.ai.openai_api_service.service.i18n.SupportedResponseLanguages;
+import com.ai.openai_api_service.service.i18n.TranslationService;
 import com.ai.openai_api_service.service.lex.InMemoryPendingLexSessionService;
 import com.ai.openai_api_service.service.api.InformationRequestCatalog;
 import com.ai.openai_api_service.service.TenantQuotaService.QuotaCheckResult;
@@ -40,6 +51,7 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.Spy;
@@ -57,11 +69,13 @@ import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
@@ -70,6 +84,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.ArgumentMatchers.nullable;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -104,6 +119,14 @@ class ComprehendChatServiceTest {
     private PiiProtectionService piiProtectionService;
     @Mock
     private BusinessPlaceholderRestorer businessPlaceholderRestorer;
+    @Mock
+    private LanguageDetectionService languageDetectionService;
+    @Mock
+    private TranslationService translationService;
+    @Mock
+    private RomanScriptClassifier romanScriptClassifier;
+    @Spy
+    private SupportedResponseLanguages supportedResponseLanguages = new SupportedResponseLanguages("");
     @Mock
     private ExecutorService suggestionExecutor;
     @Spy
@@ -180,6 +203,12 @@ class ComprehendChatServiceTest {
         // Step 1/2: suggestions only on docs RAG with chunks; most routes never call this.
         lenient().when(suggestionEngineService.generateSuggestions(any()))
                 .thenReturn(new SuggestionResult(List.of(), List.of()));
+        lenient().when(romanScriptClassifier.classify(any())).thenReturn(Optional.empty());
+        lenient().when(languageDetectionService.detect(any()))
+                .thenReturn(new LanguageDetectionResult(
+                        "en", "en_US", LanguageDetectionService.NO_LANGUAGE, "en", "en_US", 1.0, null, false));
+        lenient().when(translationService.normalize(any(), any()))
+                .thenAnswer(invocation -> invocation.getArgument(0));
         lenient().when(guidedSearchSessionService.find(any())).thenReturn(Optional.empty());
         lenient().when(businessInformationProtectionService.isEnabled()).thenReturn(false);
         lenient().when(businessInformationProtectionService.protect(any(ProtectionSession.class), any())).thenAnswer(inv -> inv.getArgument(0));
@@ -221,7 +250,7 @@ class ComprehendChatServiceTest {
 
         OpenAIUsage usage = new OpenAIUsage(10, 20, 30, "gpt-4.1");
         GroundedRagResult grounded = new GroundedRagResult(RagStatus.FULL, "grounded answer", List.of());
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any()))
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any(), any(), any(), any()))
                 .thenReturn(new GroundedRagCallResult(grounded, usage, "{\"status\":\"FULL\"}"));
 
         ChatRequest request = baseRequest("how to create customer");
@@ -237,11 +266,406 @@ class ComprehendChatServiceTest {
         assertEquals("http://example.com", response.getSources().get(0).getUrl());
         assertEquals("Title", response.getSources().get(0).getTitle());
         assertEquals(0.62f, response.getSources().get(0).getScore());
-        verify(openAIService).chatWithRagContext(any(), eq(List.of(chunk)), any());
-        verify(openAIService, never()).chatWithoutPersistence(any(), any());
-        verify(openAIService, never()).chatGapFill(any(), any(), any(), any());
+        verify(openAIService).chatWithRagContext(any(), eq(List.of(chunk)), any(), any(), any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any(), any());
+        verify(openAIService, never()).chatGapFill(any(), any(), any(), any(), any());
         verify(pythonRagService, never()).query(any());
         verify(tenantQuotaService).recordUsage(eq("tenant1"), eq(30), anyString());
+    }
+
+    @Test
+    void languageDetection_runsBeforeGuidedTurn_andLeavesRouteUnchanged() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(languageDetectionService.detect("how to create customer"))
+                .thenReturn(new LanguageDetectionResult("de", "de_DE", "nl", "de", "de_DE", 1.0, 0.20, false));
+        when(translationService.normalize(eq("how to create customer"), any()))
+                .thenReturn("how to create a customer");
+        when(pythonRagService.route("how to create a customer")).thenReturn(new PythonRouteResponse("rag"));
+
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        retrieval.setRetrievalTimeMs(42);
+        retrieval.setMaxScore(0.62f);
+        ChunkItem chunk = new ChunkItem("chunk text", 0.62f, "Title", "http://example.com", List.of("CRS610"), null, null, null, null);
+        retrieval.setPromptChunks(List.of(chunk));
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
+
+        OpenAIUsage usage = new OpenAIUsage(10, 20, 30, "gpt-4.1");
+        GroundedRagResult grounded = new GroundedRagResult(RagStatus.FULL, "grounded answer", List.of());
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any(), any(), any(), any()))
+                .thenReturn(new GroundedRagCallResult(grounded, usage, "{\"status\":\"FULL\"}"));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("how to create customer"));
+
+        assertEquals("grounded answer", response.getReply());
+        assertEquals("rag", response.getActionTaken());
+        assertEquals(ChatPersistenceService.LOCALE_DE_DE, response.getLocale());
+        verify(pythonRagService).route("how to create a customer");
+        verify(chatPersistenceService).saveSessionLocaleIfAbsent(
+                "tenant1", "user1", "session1", ChatPersistenceService.LOCALE_DE_DE);
+        InOrder order = inOrder(languageDetectionService, guidedSearchSessionService);
+        order.verify(languageDetectionService).detect("how to create customer");
+        order.verify(guidedSearchSessionService).find(any());
+    }
+
+    @Test
+    void englishSelection_savesEnUsAndLeavesOriginalMessageOnRoute() {
+        stubGroundedRag("How do I check customer details?");
+        when(languageDetectionService.detect("How do I check customer details?"))
+                .thenReturn(new LanguageDetectionResult("en", "en_US", "de", "en", "en_US", 1.0, 0.20, false));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("How do I check customer details?"));
+
+        assertEquals(ChatPersistenceService.LOCALE_EN_US, response.getLocale());
+        assertEquals("rag", response.getActionTaken());
+        verify(pythonRagService).route("How do I check customer details?");
+        verify(chatPersistenceService).saveSessionLocaleIfAbsent(
+                "tenant1", "user1", "session1", ChatPersistenceService.LOCALE_EN_US);
+    }
+
+    @Test
+    void frenchQuestion_routesEnglishAndSavesFrench() {
+        String french = "Bonjour client comment créer un client";
+        String english = "Hello client how to create a customer";
+        stubGroundedRag(english);
+        when(translationService.normalize(eq(french), any())).thenReturn(english);
+        when(languageDetectionService.detect(french))
+                .thenReturn(new LanguageDetectionResult("fr", "fr_FR", "es", "fr", "fr_FR", 1.0, 0.20, false));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest(french));
+
+        assertEquals("fr_FR", response.getLocale());
+        verify(pythonRagService).route(english);
+        verify(chatPersistenceService).saveSessionLocaleIfAbsent("tenant1", "user1", "session1", "fr_FR");
+        verify(openAIService).chatWithRagContext(any(), any(), any(), eq("fr_FR"), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void precheckNone_resolvesEnUsWithoutSaving() {
+        stubGroundedRag("Hi");
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("Hi"));
+
+        assertEquals(ChatPersistenceService.LOCALE_EN_US, response.getLocale());
+        verify(chatPersistenceService, never()).saveSessionLocaleIfAbsent(any(), any(), any(), any());
+    }
+
+    @Test
+    void savedGermanLocale_staysForShortFollowUpAndEnglishSentenceUpdates() {
+        when(chatPersistenceService.findSavedSessionLocale("tenant1", "user1", "session1"))
+                .thenReturn(ChatPersistenceService.LOCALE_DE_DE);
+        stubGroundedRag("OIS100");
+        when(languageDetectionService.detect("OIS100")).thenReturn(LanguageDetectionResult.fallback(0.0));
+
+        ChatResponse shortFollowUp = comprehendChatService.chat(baseRequest("OIS100"));
+
+        assertEquals(ChatPersistenceService.LOCALE_DE_DE, shortFollowUp.getLocale());
+        verify(pythonRagService).route("OIS100");
+        verify(translationService).normalize(eq("OIS100"), any());
+        verify(chatPersistenceService, never()).saveSessionLocaleIfAbsent(any(), any(), any(), any());
+
+        stubGroundedRag("How do I check customer details?");
+        when(languageDetectionService.detect("How do I check customer details?"))
+                .thenReturn(new LanguageDetectionResult("en", "en_US", "de", "en", "en_US", 1.0, 0.20, false));
+
+        ChatResponse englishTurn = comprehendChatService.chat(baseRequest("How do I check customer details?"));
+
+        assertEquals(ChatPersistenceService.LOCALE_EN_US, englishTurn.getLocale());
+        verify(pythonRagService).route("How do I check customer details?");
+        verify(chatPersistenceService).saveSessionLocaleIfAbsent(
+                "tenant1", "user1", "session1", ChatPersistenceService.LOCALE_EN_US);
+    }
+
+    @Test
+    void uncertainLatinWithoutRomanAccept_treatedAsEnglishContinuesRouting() {
+        String latin = "Hi tu mala kay madat karu shakatos";
+        when(languageDetectionService.detect(latin)).thenReturn(LanguageDetectionService.uncertain(
+                new LanguageDetectionResult("es", "es_ES", "fr", "es", "es_ES", 1.0, 0.2, false)
+        ));
+        when(romanScriptClassifier.classify(latin)).thenReturn(Optional.empty());
+        stubGroundedRag(latin);
+
+        ChatResponse response = comprehendChatService.chat(baseRequest(latin));
+
+        assertNotEquals(ComprehendChatService.UNSUPPORTED_LANGUAGE_REPLY, response.getReply());
+        assertEquals("rag", response.getActionTaken());
+        assertEquals(ChatPersistenceService.LOCALE_EN_US, response.getLocale());
+        verify(romanScriptClassifier).classify(latin);
+        verify(translationService, never()).normalize(any(), any());
+        verify(translationService, never()).normalizeRomanized(any(), any());
+        verify(pythonRagService).route(latin);
+        verify(chatPersistenceService).saveSessionLocaleIfAbsent(
+                "tenant1", "user1", "session1", ChatPersistenceService.LOCALE_EN_US);
+    }
+
+    @Test
+    void supportedHindi_doesNotCallRomanScriptClassifier() {
+        String hindi = "मुझे ग्राहक की जानकारी कैसे देखनी है?";
+        String english = "How do I see the customer information?";
+        when(languageDetectionService.detect(hindi)).thenReturn(
+                new LanguageDetectionResult("hi", "hi_IN", "en", "hi", "hi_IN", 1.0, 0.2, false));
+        when(translationService.normalize(eq(hindi), any())).thenReturn(english);
+        stubGroundedRag(english);
+
+        ChatResponse response = comprehendChatService.chat(baseRequest(hindi));
+
+        assertEquals("rag", response.getActionTaken());
+        assertEquals("hi_IN", response.getLocale());
+        verify(romanScriptClassifier, never()).classify(any());
+        verify(chatPersistenceService).saveSessionLocaleIfAbsent("tenant1", "user1", "session1", "hi_IN");
+    }
+
+    @Test
+    void identifierOnly_doesNotCallRomanScriptClassifier() {
+        when(chatPersistenceService.findSavedSessionLocale("tenant1", "user1", "session1"))
+                .thenReturn(ChatPersistenceService.LOCALE_DE_DE);
+        stubGroundedRag("Y00111");
+        when(pythonRagService.route("OIS100")).thenReturn(new PythonRouteResponse("rag"));
+        when(languageDetectionService.detect("Y00111")).thenReturn(LanguageDetectionResult.fallback(0.0));
+        when(languageDetectionService.detect("OIS100")).thenReturn(LanguageDetectionResult.fallback(0.0));
+
+        ChatResponse customer = comprehendChatService.chat(baseRequest("Y00111"));
+        ChatResponse program = comprehendChatService.chat(baseRequest("OIS100"));
+
+        assertEquals(ChatPersistenceService.LOCALE_DE_DE, customer.getLocale());
+        assertEquals(ChatPersistenceService.LOCALE_DE_DE, program.getLocale());
+        verify(romanScriptClassifier, never()).classify(any());
+        verify(chatPersistenceService, never()).saveSessionLocaleIfAbsent(any(), any(), any(), any());
+        verify(pythonRagService).route("Y00111");
+        verify(pythonRagService).route("OIS100");
+    }
+
+    @ParameterizedTest
+    @MethodSource("multilingualItemCreateCases")
+    void multilingualItemCreate_routesRag_preservesM3_andSetsResponseLocale(
+            String question,
+            String detectedLang,
+            String detectedLocale,
+            String selectedLang,
+            String selectedLocale,
+            boolean fallback,
+            String english,
+            String expectedResponseLocale
+    ) {
+        when(languageDetectionService.detect(question))
+                .thenReturn(new LanguageDetectionResult(
+                        detectedLang, detectedLocale, "en", selectedLang, selectedLocale, 1.0, 0.3, fallback));
+        when(translationService.normalize(eq(question), any())).thenReturn(english);
+        when(businessInformationProtectionService.isEnabled()).thenReturn(true);
+        when(businessInformationProtectionService.protect(any(ProtectionSession.class), any())).thenAnswer(inv -> {
+            ProtectionSession session = inv.getArgument(0);
+            FieldClassificationCatalog catalog = new FieldClassificationCatalog();
+            BusinessInformationProtectionService realBip = new BusinessInformationProtectionService(
+                    new BusinessInformationDetector(catalog, new ValueShapeValidator()),
+                    catalog,
+                    new LLMPolicyApplier(new PlaceholderFormatter()),
+                    true
+            );
+            realBip.protect(session, inv.getArgument(1));
+            assertTrue(session.textForLlm() == null || !session.textForLlm().contains("<PRODUCT_NUMBER>"),
+                    () -> "BIP masked M3: " + session.textForLlm());
+            assertTrue(session.textForLlm() != null && session.textForLlm().contains("M3"),
+                    () -> "lost M3 after BIP: " + session.textForLlm());
+            return session;
+        });
+        stubQuotaAllowed();
+        when(pythonRagService.route(english)).thenReturn(new PythonRouteResponse("rag"));
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        retrieval.setRetrievalTimeMs(42);
+        retrieval.setMaxScore(0.62f);
+        ChunkItem chunk = new ChunkItem(
+                "MMS001 Item. Open procedure", 0.72f, "Item. Open", "http://example.com",
+                List.of("MMS001"), null, null, null, null);
+        retrieval.setPromptChunks(List.of(chunk));
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any(), eq(expectedResponseLocale), any(), any()))
+                .thenReturn(new GroundedRagCallResult(
+                        new GroundedRagResult(
+                                RagStatus.FULL,
+                                "Use MMS001 – Item. Open to create the item.",
+                                List.of()
+                        ),
+                        new OpenAIUsage(10, 20, 30, "gpt-4.1"),
+                        "{\"status\":\"FULL\"}"
+                ));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest(question));
+
+        assertEquals(expectedResponseLocale, response.getLocale());
+        assertEquals("rag", response.getActionTaken());
+        assertTrue(response.getReply().contains("MMS001"));
+        verify(pythonRagService).route(english);
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
+    }
+
+    static Stream<Arguments> multilingualItemCreateCases() {
+        return Stream.of(
+                Arguments.of(
+                        "How do I create a new item in M3?",
+                        "en", "en_US", "en", "en_US", false,
+                        "How do I create a new item in M3?",
+                        "en_US"
+                ),
+                Arguments.of(
+                        "¿Cómo creo un artículo nuevo en M3?",
+                        "es", "es_ES", "es", "es_ES", false,
+                        "How do I create a new article in M3?",
+                        "es_ES"
+                ),
+                Arguments.of(
+                        "Comment créer un nouvel article dans M3 ?",
+                        "fr", "fr_FR", "fr", "fr_FR", false,
+                        "How do I create a new item in M3?",
+                        "fr_FR"
+                ),
+                Arguments.of(
+                        "M3 मध्ये नवीन आयटम कसा तयार करायचा?",
+                        "mr", "mr_IN", "en", "en_US", true,
+                        "How to create a new item in M3?",
+                        "mr_IN"
+                )
+        );
+    }
+
+    @Test
+    void languageSwitchOnly_savesSessionLocaleAndReturnsAckWithoutRouting() {
+        stubQuotaAllowed();
+        String message = "Please answer in English";
+        when(languageDetectionService.detect(message))
+                .thenReturn(new LanguageDetectionResult("mr", "mr_IN", "en", "en", "en_US", 1.0, 0.4, true));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest(message));
+
+        assertEquals(ComprehendChatService.LANGUAGE_SWITCH_ACK, response.getReply());
+        assertEquals("conversational", response.getActionTaken());
+        assertEquals("en_US", response.getLocale());
+        verify(chatPersistenceService).saveSessionLocaleIfAbsent("tenant1", "user1", "session1", "en_US");
+        verify(pythonRagService, never()).route(anyString());
+        verify(translationService, never()).normalize(any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void shortFollowUp_afterLanguageSwitch_usesSavedLocale() {
+        when(chatPersistenceService.findSavedSessionLocale("tenant1", "user1", "session1"))
+                .thenReturn("en_US");
+        when(languageDetectionService.detect("Y00111")).thenReturn(LanguageDetectionResult.fallback(0.0));
+        when(pythonRagService.route("Y00111")).thenReturn(new PythonRouteResponse("rag"));
+        stubGroundedRag("Y00111");
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("Y00111"));
+
+        assertEquals("en_US", response.getLocale());
+        verify(chatPersistenceService, never()).saveSessionLocaleIfAbsent(any(), any(), any(), any());
+    }
+
+    @Test
+    void marathiMixedScript_usesDetectedLocaleEvenWhenSelectedEnglish() {
+        String question = "M3 मध्ये नवीन आयटम कसा तयार करायचा?";
+        String english = "How to create a new item in M3?";
+        when(languageDetectionService.detect(question))
+                .thenReturn(new LanguageDetectionResult("mr", "mr_IN", "en", "en", "en_US", 1.0, 0.35, true));
+        when(translationService.normalize(eq(question), any())).thenReturn(english);
+        stubGroundedRag(english);
+
+        ChatResponse response = comprehendChatService.chat(baseRequest(question));
+
+        assertEquals("mr_IN", response.getLocale());
+        assertEquals("rag", response.getActionTaken());
+        verify(chatPersistenceService).saveSessionLocaleIfAbsent("tenant1", "user1", "session1", "mr_IN");
+        verify(pythonRagService).route(english);
+    }
+
+    @Test
+    void hinglish_translatesOriginalThenSavesLocaleAndRoutesEnglish() {
+        String question = "mujhe customer details batao";
+        String english = "Tell me the customer details";
+        when(languageDetectionService.detect(question)).thenReturn(LanguageDetectionResult.fallback(0.0));
+        when(romanScriptClassifier.classify(question)).thenReturn(Optional.of(AcceptedRomanScript.hinglish()));
+        when(translationService.normalizeRomanized(eq(question), any())).thenReturn(english);
+        stubGroundedRag(english);
+
+        ChatResponse response = comprehendChatService.chat(baseRequest(question));
+
+        assertEquals("rag", response.getActionTaken());
+        assertEquals("hi_IN", response.getLocale());
+        assertNotEquals("gpt_infor", response.getActionTaken());
+        InOrder order = inOrder(translationService, chatPersistenceService);
+        order.verify(translationService).normalizeRomanized(eq(question), argThat(script ->
+                script != null && "hi".equals(script.languageCode())));
+        order.verify(chatPersistenceService).saveSessionLocaleIfAbsent(
+                "tenant1", "user1", "session1", "hi_IN");
+        verify(pythonRagService).route(english);
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
+        verify(translationService, never()).normalize(any(), any());
+    }
+
+    @Test
+    void romanMarathi_translatesOriginalThenSavesLocaleAndRoutesEnglish() {
+        String question = "mala customer order details sang";
+        String english = "Tell me the customer order details";
+        when(languageDetectionService.detect(question)).thenReturn(LanguageDetectionResult.fallback(0.0));
+        when(romanScriptClassifier.classify(question)).thenReturn(Optional.of(AcceptedRomanScript.marathi()));
+        when(translationService.normalizeRomanized(eq(question), any())).thenReturn(english);
+        stubGroundedRag(english);
+
+        ChatResponse response = comprehendChatService.chat(baseRequest(question));
+
+        assertEquals("rag", response.getActionTaken());
+        assertEquals("mr_IN", response.getLocale());
+        InOrder order = inOrder(translationService, chatPersistenceService);
+        order.verify(translationService).normalizeRomanized(eq(question), argThat(script ->
+                script != null && "mr".equals(script.languageCode())));
+        order.verify(chatPersistenceService).saveSessionLocaleIfAbsent(
+                "tenant1", "user1", "session1", "mr_IN");
+        verify(pythonRagService).route(english);
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
+        verify(translationService, never()).normalize(any(), any());
+    }
+
+    @Test
+    void rejectedRomanScriptLabel_nonLatin_keepsUnsupportedReplyAndLocale() {
+        stubQuotaAllowed();
+        String question = "顧客の詳細を確認するにはどうすればよいですか？";
+        when(chatPersistenceService.findSavedSessionLocale("tenant1", "user1", "session1"))
+                .thenReturn(ChatPersistenceService.LOCALE_DE_DE);
+        when(languageDetectionService.detect(question)).thenReturn(LanguageDetectionResult.fallback(0.0));
+        when(romanScriptClassifier.classify(question)).thenReturn(Optional.empty());
+
+        ChatResponse response = comprehendChatService.chat(baseRequest(question));
+
+        assertEquals(ComprehendChatService.UNSUPPORTED_LANGUAGE_REPLY, response.getReply());
+        assertNotEquals("gpt_infor", response.getActionTaken());
+        assertEquals(ChatPersistenceService.LOCALE_DE_DE, response.getLocale());
+        verify(translationService, never()).normalize(any(), any());
+        verify(translationService, never()).normalizeRomanized(any(), any());
+        verify(pythonRagService, never()).route(anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
+        verify(chatPersistenceService, never()).saveSessionLocaleIfAbsent(any(), any(), any(), any());
+    }
+
+    @Test
+    void hinglishTranslationFailure_doesNotSaveLocaleOrRoute() {
+        stubQuotaAllowed();
+        String question = "mujhe customer Y00111 batao";
+        when(languageDetectionService.detect(question)).thenReturn(LanguageDetectionResult.fallback(0.0));
+        when(romanScriptClassifier.classify(question)).thenReturn(Optional.of(AcceptedRomanScript.hinglish()));
+        when(translationService.normalizeRomanized(eq(question), any()))
+                .thenThrow(new OpenAIException("The message could not be translated.", 422));
+
+        OpenAIException ex = assertThrows(
+                OpenAIException.class,
+                () -> comprehendChatService.chat(baseRequest(question))
+        );
+
+        assertEquals(422, ex.getStatusCode());
+        verify(chatPersistenceService, never()).saveSessionLocaleIfAbsent(any(), any(), any(), any());
+        verify(pythonRagService, never()).route(anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
+        verify(translationService, never()).normalize(any(), any());
     }
 
     @Test
@@ -259,7 +683,7 @@ class ComprehendChatServiceTest {
         ChatResponse openAiResponse = new ChatResponse("fallback answer", false);
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(usage);
-        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
+        when(openAIService.chatWithoutPersistence(any(), any(), any())).thenReturn(openAiResponse);
 
         ChatResponse response = comprehendChatService.chat(baseRequest("weak docs"));
 
@@ -267,8 +691,8 @@ class ComprehendChatServiceTest {
         assertEquals("gpt_infor", response.getActionTaken());
         assertNotNull(response.getSources());
         assertTrue(response.getSources().isEmpty());
-        verify(openAIService).chatWithoutPersistence(any(), any());
-        verify(openAIService, never()).chatWithRagContext(any(), any(), any());
+        verify(openAIService).chatWithoutPersistence(any(), any(), any());
+        verify(openAIService, never()).chatWithRagContext(any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -287,7 +711,7 @@ class ComprehendChatServiceTest {
 
         ChatResponse openAiResponse = new ChatResponse("grounded answer", false);
         openAiResponse.setActionTaken("rag");
-        when(openAIService.chatWithRagContext(any(), anyList(), any())).thenReturn(
+        when(openAIService.chatWithRagContext(any(), anyList(), any(), any(), any(), any())).thenReturn(
                 new GroundedRagCallResult(
                         new GroundedRagResult(RagStatus.FULL, "grounded answer", List.of()),
                         new OpenAIUsage(1, 1, 2, "gpt-4.1"),
@@ -371,7 +795,7 @@ class ComprehendChatServiceTest {
         );
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(new OpenAIUsage(1, 1, 2, "gpt-4.1"));
-        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
+        when(openAIService.chatWithoutPersistence(any(), any(), any())).thenReturn(openAiResponse);
 
         ChatResponse response = comprehendChatService.chat(baseRequest(original));
 
@@ -411,8 +835,8 @@ class ComprehendChatServiceTest {
         assertEquals("live answer", response.getReply());
         assertEquals("read", response.getActionTaken());
         verify(pythonRagService).query(any());
-        verify(openAIService, never()).chatWithRagContext(any(), any(), any());
-        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+        verify(openAIService, never()).chatWithRagContext(any(), any(), any(), any(), any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any(), any());
         verify(tenantQuotaService, never()).recordUsage(anyString(), anyInt(), anyString());
     }
 
@@ -431,7 +855,7 @@ class ComprehendChatServiceTest {
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
 
         OpenAIUsage ragUsage = new OpenAIUsage(3000, 20, 3020, "gpt-4.1");
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any())).thenReturn(
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any(), any(), any(), any())).thenReturn(
                 new GroundedRagCallResult(
                         new GroundedRagResult(RagStatus.INSUFFICIENT, "", List.of()),
                         ragUsage,
@@ -443,7 +867,7 @@ class ComprehendChatServiceTest {
         ChatResponse fallbackResponse = new ChatResponse("To add a KIT on a customer order line, open OIS100...", false);
         fallbackResponse.setActionTaken("gpt_infor");
         fallbackResponse.setOpenAiUsage(fallbackUsage);
-        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallbackResponse);
+        when(openAIService.chatWithoutPersistence(any(), any(), any())).thenReturn(fallbackResponse);
 
         ChatResponse response = comprehendChatService.chat(baseRequest("how to add KIT"));
 
@@ -451,9 +875,9 @@ class ComprehendChatServiceTest {
         assertEquals("gpt_infor", response.getActionTaken());
         assertEquals("rag_no_answer_fallback", response.getRetrievalReason());
         assertEquals(3170, response.getOpenAiUsage().getTotalTokens());
-        verify(openAIService).chatWithRagContext(any(), eq(List.of(chunk)), any());
-        verify(openAIService).chatWithoutPersistence(any(), any());
-        verify(openAIService, never()).chatGapFill(any(), any(), any(), any());
+        verify(openAIService).chatWithRagContext(any(), eq(List.of(chunk)), any(), any(), any(), any());
+        verify(openAIService).chatWithoutPersistence(any(), any(), any());
+        verify(openAIService, never()).chatGapFill(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -470,7 +894,7 @@ class ComprehendChatServiceTest {
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
 
         OpenAIUsage ragUsage = new OpenAIUsage(100, 50, 150, "gpt-4.1");
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any())).thenReturn(
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any(), any(), any(), any())).thenReturn(
                 new GroundedRagCallResult(
                         new GroundedRagResult(
                                 RagStatus.PARTIAL,
@@ -485,7 +909,7 @@ class ComprehendChatServiceTest {
         OpenAIUsage gapUsage = new OpenAIUsage(20, 30, 50, "gpt-4.1");
         ChatResponse gapResponse = new ChatResponse("Functional purpose: ...", false);
         gapResponse.setOpenAiUsage(gapUsage);
-        when(openAIService.chatGapFill(any(), anyString(), anyList(), any())).thenReturn(gapResponse);
+        when(openAIService.chatGapFill(any(), anyString(), anyList(), any(), any())).thenReturn(gapResponse);
 
         ChatResponse response = comprehendChatService.chat(baseRequest("What is MNS204 used for?"));
 
@@ -504,9 +928,10 @@ class ComprehendChatServiceTest {
                 any(),
                 eq("MNS204 appears in user settings documentation."),
                 eq(List.of("Functional purpose", "Business usage")),
-                any()
+                any(),
+                eq("en_US")
         );
-        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any(), any());
     }
 
     @Test
@@ -522,7 +947,7 @@ class ComprehendChatServiceTest {
         retrieval.setPromptChunks(List.of(chunk));
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
 
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any())).thenReturn(
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any(), any(), any(), any())).thenReturn(
                 new GroundedRagCallResult(
                         new GroundedRagResult(
                                 RagStatus.PARTIAL,
@@ -537,8 +962,8 @@ class ComprehendChatServiceTest {
         ChatResponse response = comprehendChatService.chat(baseRequest("What is MNS204 used for?"));
 
         assertEquals("Docs only answer", response.getReply());
-        verify(openAIService, never()).chatGapFill(any(), any(), any(), any());
-        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+        verify(openAIService, never()).chatGapFill(any(), any(), any(), any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any(), any());
     }
 
     @Test
@@ -552,19 +977,19 @@ class ComprehendChatServiceTest {
         ChunkItem chunk = new ChunkItem("chunk", 0.7f, "T", "http://x", List.of(), null, null, null, null);
         retrieval.setPromptChunks(List.of(chunk));
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
-        when(openAIService.chatWithRagContext(any(), anyList(), any()))
+        when(openAIService.chatWithRagContext(any(), anyList(), any(), any(), any(), any()))
                 .thenThrow(new OpenAIException("Failed to parse grounded RAG JSON", 502));
 
         ChatResponse fallback = new ChatResponse("general answer", false);
         fallback.setActionTaken("gpt_infor");
         fallback.setOpenAiUsage(new OpenAIUsage(5, 5, 10, "gpt-4.1"));
-        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallback);
+        when(openAIService.chatWithoutPersistence(any(), any(), any())).thenReturn(fallback);
 
         ChatResponse response = comprehendChatService.chat(baseRequest("how to create customer"));
 
         assertEquals("general answer", response.getReply());
         assertEquals("rag_no_answer_fallback", response.getRetrievalReason());
-        verify(openAIService).chatWithoutPersistence(any(), any());
+        verify(openAIService).chatWithoutPersistence(any(), any(), any());
     }
 
     @Test
@@ -580,14 +1005,14 @@ class ComprehendChatServiceTest {
         ChatResponse openAiResponse = new ChatResponse("fallback after timeout", false);
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(usage);
-        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
+        when(openAIService.chatWithoutPersistence(any(), any(), any())).thenReturn(openAiResponse);
 
         ChatResponse response = comprehendChatService.chat(baseRequest("how to create customer"));
 
         assertEquals("fallback after timeout", response.getReply());
         assertEquals("retrieval_error", response.getRetrievalReason());
-        verify(openAIService).chatWithoutPersistence(any(), any());
-        verify(openAIService, never()).chatWithRagContext(any(), any(), any());
+        verify(openAIService).chatWithoutPersistence(any(), any(), any());
+        verify(openAIService, never()).chatWithRagContext(any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -605,15 +1030,15 @@ class ComprehendChatServiceTest {
         ChatResponse openAiResponse = new ChatResponse("general m3 answer", false);
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(usage);
-        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
+        when(openAIService.chatWithoutPersistence(any(), any(), any())).thenReturn(openAiResponse);
 
         ChatResponse response = comprehendChatService.chat(baseRequest("unknown topic"));
 
         assertEquals("general m3 answer", response.getReply());
         assertEquals("gpt_infor", response.getActionTaken());
         assertEquals("no_matches", response.getRetrievalReason());
-        verify(openAIService).chatWithoutPersistence(any(), any());
-        verify(openAIService, never()).chatWithRagContext(any(), any(), any());
+        verify(openAIService).chatWithoutPersistence(any(), any(), any());
+        verify(openAIService, never()).chatWithRagContext(any(), any(), any(), any(), any(), any());
         verify(pythonRagService, never()).query(any());
     }
 
@@ -633,14 +1058,14 @@ class ComprehendChatServiceTest {
         ChatResponse openAiResponse = new ChatResponse("fallback after qdrant error", false);
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(usage);
-        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
+        when(openAIService.chatWithoutPersistence(any(), any(), any())).thenReturn(openAiResponse);
 
         ChatResponse response = comprehendChatService.chat(baseRequest("how to configure CRS900"));
 
         assertEquals("fallback after qdrant error", response.getReply());
         assertEquals("retrieval_error", response.getRetrievalReason());
         assertEquals("gpt_infor", response.getActionTaken());
-        verify(openAIService).chatWithoutPersistence(any(), any());
+        verify(openAIService).chatWithoutPersistence(any(), any(), any());
         verify(tenantQuotaService).recordUsage(eq("tenant1"), eq(10), anyString());
     }
 
@@ -657,14 +1082,14 @@ class ComprehendChatServiceTest {
         ChatResponse openAiResponse = new ChatResponse("fallback after connection error", false);
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(usage);
-        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
+        when(openAIService.chatWithoutPersistence(any(), any(), any())).thenReturn(openAiResponse);
 
         ChatResponse response = comprehendChatService.chat(baseRequest("how to create customer"));
 
         assertEquals("fallback after connection error", response.getReply());
         assertEquals("retrieval_error", response.getRetrievalReason());
         assertEquals(40, response.getOpenAiUsage().getTotalTokens());
-        verify(openAIService).chatWithoutPersistence(any(), any());
+        verify(openAIService).chatWithoutPersistence(any(), any(), any());
         verify(tenantQuotaService).recordUsage(eq("tenant1"), eq(40), anyString());
     }
 
@@ -680,12 +1105,13 @@ class ComprehendChatServiceTest {
         verify(piiProtectionService, never()).anonymize(anyString());
         verify(piiProtectionService, never()).protect(any());
         verify(pythonRagService, never()).route(anyString());
-        verify(openAIService, never()).chatWithRagContext(any(), any(), any());
-        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+        verify(openAIService, never()).chatWithRagContext(any(), any(), any(), any(), any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any(), any());
         verify(tenantQuotaService, never()).recordUsage(anyString(), anyInt(), anyString());
         verify(chatPersistenceService, never()).persistChat(
                 anyString(), anyString(), anyString(), anyString(), anyString(),
-                anyString(), any(), anyString(), anyBoolean(), anyString(), any(), any(), any(), any()
+                anyString(), any(), anyString(), anyBoolean(), anyString(), any(), any(), any(), any(),
+                any(), any()
         );
     }
 
@@ -705,14 +1131,14 @@ class ComprehendChatServiceTest {
         ChatResponse openAiResponse = new ChatResponse("answer", false);
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(new OpenAIUsage(1, 1, 2, "gpt-4.1"));
-        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
+        when(openAIService.chatWithoutPersistence(any(), any(), any())).thenReturn(openAiResponse);
 
         ChatResponse response = comprehendChatService.chat(baseRequest(original));
 
         assertTrue(response.getSanitizationApplied());
         verify(pythonRagService).route(eq(original));
         verify(pythonRagService).retrieve(eq(sanitized), eq(List.of(sanitized)), any(), any(), any(), any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -731,7 +1157,7 @@ class ComprehendChatServiceTest {
         ChatResponse openAiResponse = new ChatResponse("still works", false);
         openAiResponse.setActionTaken("gpt_infor");
         openAiResponse.setOpenAiUsage(new OpenAIUsage(3, 3, 6, "gpt-4.1"));
-        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(openAiResponse);
+        when(openAIService.chatWithoutPersistence(any(), any(), any())).thenReturn(openAiResponse);
 
         ChatResponse response = comprehendChatService.chat(baseRequest(original));
 
@@ -755,7 +1181,7 @@ class ComprehendChatServiceTest {
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
 
         OpenAIUsage usage = new OpenAIUsage(100, 50, 150, "gpt-4.1");
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any())).thenReturn(
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any(), any(), any(), any())).thenReturn(
                 new GroundedRagCallResult(
                         new GroundedRagResult(RagStatus.FULL, "configure in CRS780", List.of()),
                         usage,
@@ -780,7 +1206,9 @@ class ComprehendChatServiceTest {
                 eq(88),
                 isNull(),
                 any(),
-                eq(ChatMode.AUTO)
+                eq(ChatMode.AUTO),
+                eq("en"),
+                eq(ChatPersistenceService.LOCALE_EN_US)
         );
         assertEquals(100, usageCaptor.getValue().getPromptTokens());
         assertEquals(50, usageCaptor.getValue().getCompletionTokens());
@@ -818,7 +1246,7 @@ class ComprehendChatServiceTest {
 
         ChatResponse fallback = new ChatResponse("fallback", false);
         fallback.setActionTaken("gpt_infor");
-        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallback);
+        when(openAIService.chatWithoutPersistence(any(), any(), any())).thenReturn(fallback);
 
         comprehendChatService.chat(baseRequest("pricing issue"));
 
@@ -846,7 +1274,7 @@ class ComprehendChatServiceTest {
         ChatResponse fallback = new ChatResponse("fallback", false);
         fallback.setActionTaken("gpt_infor");
         fallback.setOpenAiUsage(answerUsage);
-        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallback);
+        when(openAIService.chatWithoutPersistence(any(), any(), any())).thenReturn(fallback);
 
         ChatResponse response = comprehendChatService.chat(baseRequest("pricing issue"));
 
@@ -876,11 +1304,11 @@ class ComprehendChatServiceTest {
 
         ChatResponse fallback = new ChatResponse("doc answer", false);
         fallback.setActionTaken("gpt_infor");
-        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallback);
+        when(openAIService.chatWithoutPersistence(any(), any(), any())).thenReturn(fallback);
 
         comprehendChatService.chat(baseRequest("how to configure dispatch policy"));
 
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -901,7 +1329,7 @@ class ComprehendChatServiceTest {
 
         assertEquals("legacy live answer", response.getReply());
         verify(pythonRagService).query(any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -920,7 +1348,7 @@ class ComprehendChatServiceTest {
                 Map.of(),
                 List.of("What is the customer number?")
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "show customer details")).thenReturn(lexResult);
+        when(lexService.recognizeText("tenant1:user1:session1", "show customer details", ChatPersistenceService.LOCALE_EN_US)).thenReturn(lexResult);
 
         ChatResponse response = comprehendChatService.chat(baseRequest("show customer details"));
 
@@ -950,16 +1378,545 @@ class ComprehendChatServiceTest {
                 Map.of(),
                 List.of("What is the customer number?")
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "Show address of customer")).thenReturn(lexResult);
+        when(lexService.recognizeText("tenant1:user1:session1", "Show address of customer", ChatPersistenceService.LOCALE_EN_US)).thenReturn(lexResult);
 
         ChatResponse response = comprehendChatService.chat(baseRequest("Show address of customer"));
 
         assertEquals("lex_elicit_slot", response.getActionTaken());
         verify(lexService).putSessionAttributes(
                 eq("tenant1:user1:session1"),
-                eq(Map.of(LexRecognizeResult.ATTR_REQUESTED_INFORMATION, "ADDRESS"))
-        );
+                eq(Map.of(LexRecognizeResult.ATTR_REQUESTED_INFORMATION, "ADDRESS")),
+                eq(ChatPersistenceService.LOCALE_EN_US));
         verify(lexFulfillmentService, never()).fulfillOutcome(any(), any(), any());
+    }
+
+    @Test
+    void liveRoute_englishSelection_sendsEnUsToLex() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("How do I check customer details?")).thenReturn(new PythonRouteResponse("live"));
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        when(languageDetectionService.detect("How do I check customer details?"))
+                .thenReturn(new LanguageDetectionResult("en", "en_US", "de", "en", "en_US", 1.0, 0.20, false));
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "InProgress",
+                "ElicitSlot",
+                "CustomerNumber",
+                Map.of(),
+                List.of("What is the customer number?")
+        );
+        when(lexService.recognizeText(
+                "tenant1:user1:session1",
+                "How do I check customer details?",
+                ChatPersistenceService.LOCALE_EN_US
+        )).thenReturn(lexResult);
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("How do I check customer details?"));
+
+        assertEquals("GetCustomer", response.getLexIntent());
+        assertEquals("CustomerNumber", response.getLexSlotToElicit());
+        verify(lexService).recognizeText(
+                "tenant1:user1:session1",
+                "How do I check customer details?",
+                ChatPersistenceService.LOCALE_EN_US
+        );
+    }
+
+    @Test
+    void liveRoute_germanSelection_sendsDeDeToLex() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(translationService.normalize(eq("Wie kann ich die Kundendaten überprüfen?"), any()))
+                .thenReturn("How can I check the customer data?");
+        when(pythonRagService.route("How can I check the customer data?"))
+                .thenReturn(new PythonRouteResponse("live"));
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        when(languageDetectionService.detect("Wie kann ich die Kundendaten überprüfen?"))
+                .thenReturn(new LanguageDetectionResult("de", "de_DE", "nl", "de", "de_DE", 1.0, 0.20, false));
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "InProgress",
+                "ElicitSlot",
+                "CustomerNumber",
+                Map.of(),
+                List.of("What is the customer number?")
+        );
+        when(lexService.recognizeText(
+                "tenant1:user1:session1",
+                "How can I check the customer data?",
+                ChatPersistenceService.LOCALE_EN_US
+        )).thenReturn(lexResult);
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("Wie kann ich die Kundendaten überprüfen?"));
+
+        assertEquals("GetCustomer", response.getLexIntent());
+        assertEquals("CustomerNumber", response.getLexSlotToElicit());
+        assertEquals("lex_elicit_slot", response.getActionTaken());
+        assertEquals(ChatPersistenceService.LOCALE_DE_DE, response.getLocale());
+        verify(lexService).recognizeText(
+                "tenant1:user1:session1",
+                "How can I check the customer data?",
+                ChatPersistenceService.LOCALE_EN_US
+        );
+    }
+
+    @Test
+    void liveRoute_germanElicitSlot_putsSameLocaleAfterRecognizeText() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(pythonRagService.route("Show address of customer")).thenReturn(new PythonRouteResponse("live"));
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        when(languageDetectionService.detect("Show address of customer"))
+                .thenReturn(new LanguageDetectionResult("de", "de_DE", "nl", "de", "de_DE", 1.0, 0.20, false));
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "InProgress",
+                "ElicitSlot",
+                "CustomerNumber",
+                Map.of(),
+                List.of("What is the customer number?")
+        );
+        when(lexService.recognizeText(
+                "tenant1:user1:session1",
+                "Show address of customer",
+                ChatPersistenceService.LOCALE_EN_US
+        )).thenReturn(lexResult);
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("Show address of customer"));
+
+        assertEquals("lex_elicit_slot", response.getActionTaken());
+        assertEquals("CustomerNumber", response.getLexSlotToElicit());
+        assertEquals(ChatPersistenceService.LOCALE_DE_DE, response.getLocale());
+        verify(lexService).putSessionAttributes(
+                eq("tenant1:user1:session1"),
+                eq(Map.of(LexRecognizeResult.ATTR_REQUESTED_INFORMATION, "ADDRESS")),
+                eq(ChatPersistenceService.LOCALE_EN_US)
+        );
+    }
+
+    @Test
+    void pendingGermanSlot_skipsRouterAndSendsDeDe() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(lexService.isEnabled()).thenReturn(true);
+        when(lexService.buildLexSessionId(any())).thenReturn("tenant1:user1:session1");
+        when(chatPersistenceService.findSavedSessionLocale("tenant1", "user1", "session1"))
+                .thenReturn(ChatPersistenceService.LOCALE_DE_DE);
+        pendingLexSessionService.markPending("tenant1:user1:session1");
+        LexRecognizeResult lexResult = new LexRecognizeResult(
+                "GetCustomer",
+                "InProgress",
+                "ElicitSlot",
+                "CustomerNumber",
+                Map.of("CustomerNumber", "Y11100"),
+                List.of("What is the customer number?")
+        );
+        when(lexService.recognizeText(
+                "tenant1:user1:session1",
+                "OIS100",
+                ChatPersistenceService.LOCALE_EN_US
+        )).thenReturn(lexResult);
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("OIS100"));
+
+        assertEquals("lex_elicit_slot", response.getActionTaken());
+        assertEquals("GetCustomer", response.getLexIntent());
+        assertEquals("CustomerNumber", response.getLexSlotToElicit());
+        assertEquals(ChatPersistenceService.LOCALE_DE_DE, response.getLocale());
+        verify(pythonRagService, never()).route(anyString());
+        verify(lexService).recognizeText(
+                "tenant1:user1:session1",
+                "OIS100",
+                ChatPersistenceService.LOCALE_EN_US
+        );
+    }
+
+    @Test
+    void germanSelection_ragRoute_doesNotCallLex() {
+        String german = "Wie kann ich die Kundendaten überprüfen?";
+        String english = "How can I check the customer data?";
+        when(translationService.normalize(eq(german), any())).thenReturn(english);
+        stubGroundedRag(english);
+        when(languageDetectionService.detect(german))
+                .thenReturn(new LanguageDetectionResult("de", "de_DE", "nl", "de", "de_DE", 1.0, 0.20, false));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest(german));
+
+        assertEquals("rag", response.getActionTaken());
+        assertEquals(ChatPersistenceService.LOCALE_DE_DE, response.getLocale());
+        verify(pythonRagService).route(english);
+        verify(openAIService).chatWithRagContext(
+                any(),
+                any(),
+                any(),
+                eq(ChatPersistenceService.LOCALE_DE_DE), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void translationFailure_stopsBeforeRouterAndLex() {
+        stubQuotaAllowed();
+        when(languageDetectionService.detect("Bonjour client"))
+                .thenReturn(new LanguageDetectionResult("fr", "fr_FR", "en", "fr", "fr_FR", 1.0, 0.20, false));
+        when(translationService.normalize(eq("Bonjour client"), any()))
+                .thenThrow(new OpenAIException("The message could not be translated.", 422));
+
+        OpenAIException ex = assertThrows(
+                OpenAIException.class,
+                () -> comprehendChatService.chat(baseRequest("Bonjour client"))
+        );
+
+        assertEquals(422, ex.getStatusCode());
+        verify(pythonRagService, never()).route(anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
+        verify(guidedSearchService, never()).handleTurn(any(), any(), anyString());
+    }
+
+    @Test
+    void germanQuestion_persistsOriginalAndAnonymizedEnglish() {
+        String german = "Zeige Kunde Y00111";
+        String english = "Show customer Y00111";
+        String masked = "Show customer [ID]";
+        when(translationService.normalize(eq(german), any())).thenReturn(english);
+        when(languageDetectionService.detect(german))
+                .thenReturn(new LanguageDetectionResult("de", "de_DE", "nl", "de", "de_DE", 1.0, 0.20, false));
+        when(piiProtectionService.protect(any())).thenAnswer(invocation -> {
+            ProtectionSession session = invocation.getArgument(0);
+            session.applyPiiSanitizedText(masked);
+            return session;
+        });
+        stubGroundedRag(english);
+
+        comprehendChatService.chat(baseRequest(german));
+
+        verify(chatPersistenceService).persistChat(
+                eq("tenant1"),
+                eq("user1"),
+                eq("session1"),
+                eq(german),
+                eq(masked),
+                any(),
+                any(),
+                any(),
+                eq(true),
+                any(),
+                any(),
+                any(),
+                any(),
+                eq(ChatMode.AUTO),
+                eq("de"),
+                eq(ChatPersistenceService.LOCALE_DE_DE)
+        );
+    }
+
+    @Test
+    void missingSessionLocale_recoversOwnedResolvedLocale() {
+        when(chatPersistenceService.findSavedSessionLocale("tenant1", "user1", "session1")).thenReturn(null);
+        when(chatPersistenceService.findRecoveredSessionLocale("tenant1", "user1", "session1"))
+                .thenReturn(ChatPersistenceService.LOCALE_DE_DE);
+        stubGroundedRag("OIS100");
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("OIS100"));
+
+        assertEquals(ChatPersistenceService.LOCALE_DE_DE, response.getLocale());
+        verify(chatPersistenceService).saveSessionLocaleIfAbsent(
+                "tenant1", "user1", "session1", ChatPersistenceService.LOCALE_DE_DE);
+        verify(openAIService).chatWithRagContext(
+                any(),
+                any(),
+                any(),
+                eq(ChatPersistenceService.LOCALE_DE_DE), any(), any());
+    }
+
+    @Test
+    void frenchIdentifier_keepsFrenchWithoutChangingLocale() {
+        when(chatPersistenceService.findSavedSessionLocale("tenant1", "user1", "session1")).thenReturn("fr_FR");
+        stubGroundedRag("OIS100");
+        when(languageDetectionService.detect("OIS100")).thenReturn(LanguageDetectionResult.fallback(0.0));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("OIS100"));
+
+        assertEquals("fr_FR", response.getLocale());
+        verify(pythonRagService).route("OIS100");
+        verify(openAIService).chatWithRagContext(any(), any(), any(), eq("fr_FR"), any(), any());
+        verify(chatPersistenceService, never()).saveSessionLocaleIfAbsent(any(), any(), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void germanLocale_switchesToFrenchForMeaningfulFrenchQuestion() {
+        String french = "Comment créer un client dans le système";
+        String english = "How to create a customer in the system";
+        stubGroundedRag(english);
+        when(translationService.normalize(eq(french), any())).thenReturn(english);
+        when(languageDetectionService.detect(french))
+                .thenReturn(new LanguageDetectionResult("fr", "fr_FR", "de", "fr", "fr_FR", 1.0, 0.20, false));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest(french));
+
+        assertEquals("fr_FR", response.getLocale());
+        verify(pythonRagService).route(english);
+        verify(chatPersistenceService).saveSessionLocaleIfAbsent("tenant1", "user1", "session1", "fr_FR");
+        verify(openAIService).chatWithRagContext(any(), any(), any(), eq("fr_FR"), any(), any());
+    }
+
+    @Test
+    void hindiAndSpanishQuestions_routeEnglishAndSaveLocales() {
+        String hindi = "ग्राहक कैसे बनाएं इस सिस्टम में";
+        String hindiEnglish = "How to create a customer in this system";
+        stubGroundedRag(hindiEnglish);
+        when(translationService.normalize(eq(hindi), any())).thenReturn(hindiEnglish);
+        when(languageDetectionService.detect(hindi))
+                .thenReturn(new LanguageDetectionResult("hi", "hi_IN", "en", "hi", "hi_IN", 1.0, 0.20, false));
+
+        ChatResponse hindiResponse = comprehendChatService.chat(baseRequest(hindi));
+
+        assertEquals("hi_IN", hindiResponse.getLocale());
+        verify(pythonRagService).route(hindiEnglish);
+        verify(chatPersistenceService).saveSessionLocaleIfAbsent("tenant1", "user1", "session1", "hi_IN");
+        verify(openAIService).chatWithRagContext(any(), any(), any(), eq("hi_IN"), any(), any());
+
+        String spanish = "Cómo crear un cliente en el sistema";
+        String spanishEnglish = "How to create a customer in the system";
+        stubGroundedRag(spanishEnglish);
+        when(translationService.normalize(eq(spanish), any())).thenReturn(spanishEnglish);
+        when(languageDetectionService.detect(spanish))
+                .thenReturn(new LanguageDetectionResult("es", "es_ES", "en", "es", "es_ES", 1.0, 0.20, false));
+
+        ChatResponse spanishResponse = comprehendChatService.chat(baseRequest(spanish));
+
+        assertEquals("es_ES", spanishResponse.getLocale());
+        verify(pythonRagService).route(spanishEnglish);
+        verify(chatPersistenceService).saveSessionLocaleIfAbsent("tenant1", "user1", "session1", "es_ES");
+        verify(openAIService).chatWithRagContext(any(), any(), any(), eq("es_ES"), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void unsupportedMeaningfulLanguage_stopsBeforeRouting() {
+        stubQuotaAllowed();
+        when(chatPersistenceService.findSavedSessionLocale("tenant1", "user1", "session1"))
+                .thenReturn("fr_FR");
+        when(languageDetectionService.detect("Sawubona ngicela usizo"))
+                .thenReturn(new LanguageDetectionResult("zu", "zu_ZA", "en", "zu", "zu_ZA", 1.0, 0.20, false));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("Sawubona ngicela usizo"));
+
+        assertEquals(ComprehendChatService.UNSUPPORTED_LANGUAGE_REPLY, response.getReply());
+        assertNotEquals("gpt_infor", response.getActionTaken());
+        assertEquals("fr_FR", response.getLocale());
+        verify(translationService, never()).normalize(any(), any());
+        verify(pythonRagService, never()).route(anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
+        verify(openAIService, never()).chatFollowingUserMessage(any());
+        verify(openAIService, never()).understandRequest(any(), anyString(), any());
+        verify(chatPersistenceService, never()).saveSessionLocaleIfAbsent(any(), any(), any(), any());
+    }
+
+    @Test
+    void nonLatinUndetected_returnsFixedEnglishReplyWithoutModelOrLocaleChange() {
+        stubQuotaAllowed();
+        when(chatPersistenceService.findSavedSessionLocale("tenant1", "user1", "session1"))
+                .thenReturn(ChatPersistenceService.LOCALE_DE_DE);
+        String message = "顧客 Y00111 の詳細を確認するにはどうすればよいですか？";
+        when(languageDetectionService.detect(message)).thenReturn(LanguageDetectionResult.fallback(0.0));
+        ChatResponse response = comprehendChatService.chat(baseRequest(message));
+        assertEquals(ComprehendChatService.UNSUPPORTED_LANGUAGE_REPLY, response.getReply());
+        assertNotEquals("gpt_infor", response.getActionTaken());
+        assertEquals(ChatPersistenceService.LOCALE_DE_DE, response.getLocale());
+        verify(translationService, never()).normalize(any(), any());
+        verify(pythonRagService, never()).route(anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
+        verify(openAIService, never()).chatFollowingUserMessage(any());
+        verify(openAIService, never()).understandRequest(any(), anyString(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any(), any());
+        verify(chatPersistenceService, never()).saveSessionLocaleIfAbsent(any(), any(), any(), any());
+    }
+
+    @Test
+    void uncertainLatinPurchaseOrder_treatedAsEnglishNotUnsupported() {
+        stubQuotaAllowed();
+        stubSanitize();
+        String message = "purchase order";
+        when(languageDetectionService.detect(message)).thenReturn(LanguageDetectionResult.fallback(0.0));
+        when(romanScriptClassifier.classify(message)).thenReturn(Optional.empty());
+        stubGroundedRag(message);
+
+        ChatResponse response = comprehendChatService.chat(baseRequest(message));
+
+        assertNotEquals(ComprehendChatService.UNSUPPORTED_LANGUAGE_REPLY, response.getReply());
+        assertEquals("rag", response.getActionTaken());
+        verify(romanScriptClassifier).classify(message);
+        verify(translationService, never()).normalize(any(), any());
+        verify(pythonRagService).route(message);
+        verify(chatPersistenceService).saveSessionLocaleIfAbsent(
+                "tenant1", "user1", "session1", ChatPersistenceService.LOCALE_EN_US);
+    }
+
+    @Test
+    void guidedSession_uncertainCancel_reachesGuidedGateNotUnsupported() {
+        stubQuotaAllowed();
+        stubSanitize();
+        GuidedSearchState state = GuidedSearchState.selectField("SearchCustomerOrder");
+        when(guidedSearchSessionService.find(any())).thenReturn(Optional.of(state));
+        when(languageDetectionService.detect("cancel")).thenReturn(LanguageDetectionResult.fallback(0.0));
+        ChatResponse cancelled = new ChatResponse("Guided search cancelled. How else can I help?", false);
+        cancelled.setActionTaken(GuidedSearchService.ACTION_CANCELLED);
+        when(guidedSearchService.handleTurn(any(), eq(state), eq("cancel")))
+                .thenReturn(new GuidedSearchService.GuidedTurnResult(cancelled, false));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("cancel"));
+
+        assertEquals(GuidedSearchService.ACTION_CANCELLED, response.getActionTaken());
+        assertNotEquals(ComprehendChatService.UNSUPPORTED_LANGUAGE_REPLY, response.getReply());
+        verify(guidedSearchService).handleTurn(any(), eq(state), eq("cancel"));
+        verify(romanScriptClassifier, never()).classify(any());
+        verify(pythonRagService, never()).route(anyString());
+    }
+
+    @Test
+    void noGuidedSession_cancelDoesNotClearUnrelatedState() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(guidedSearchSessionService.find(any())).thenReturn(Optional.empty());
+        when(languageDetectionService.detect("cancel")).thenReturn(LanguageDetectionResult.fallback(0.0));
+        when(romanScriptClassifier.classify("cancel")).thenReturn(Optional.empty());
+        stubGroundedRag("cancel");
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("cancel"));
+
+        assertNotEquals(GuidedSearchService.ACTION_CANCELLED, response.getActionTaken());
+        assertNotEquals(ComprehendChatService.UNSUPPORTED_LANGUAGE_REPLY, response.getReply());
+        verify(guidedSearchService, never()).handleTurn(any(), any(), anyString());
+        verify(pythonRagService).route("cancel");
+    }
+
+    @Test
+    void guidedSession_uncertainPurchaseOrder_handledByGuidedGate() {
+        stubQuotaAllowed();
+        stubSanitize();
+        GuidedSearchState state = GuidedSearchState.selectField("SearchCustomerOrder");
+        when(guidedSearchSessionService.find(any())).thenReturn(Optional.of(state));
+        when(languageDetectionService.detect("purchase order")).thenReturn(LanguageDetectionResult.fallback(0.0));
+        ChatResponse guided = new ChatResponse("I couldn't match that to a searchable field.", false);
+        guided.setActionTaken(GuidedSearchService.ACTION_SELECT_FIELD);
+        when(guidedSearchService.handleTurn(any(), eq(state), eq("purchase order")))
+                .thenReturn(new GuidedSearchService.GuidedTurnResult(guided, false));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("purchase order"));
+
+        assertEquals(GuidedSearchService.ACTION_SELECT_FIELD, response.getActionTaken());
+        assertNotEquals(ComprehendChatService.UNSUPPORTED_LANGUAGE_REPLY, response.getReply());
+        verify(guidedSearchService).handleTurn(any(), eq(state), eq("purchase order"));
+        verify(romanScriptClassifier, never()).classify(any());
+        verify(pythonRagService, never()).route(anyString());
+    }
+
+    @Test
+    void germanConversational_blankPlannerResponseDoesNotUseEnglishCannedMessage() {
+        enableRequestRouter();
+        stubQuotaAllowed();
+        stubSanitize();
+        String german = "Hallo, wie geht es Ihnen heute?";
+        when(languageDetectionService.detect(german))
+                .thenReturn(new LanguageDetectionResult("de", "de_DE", "nl", "de", "de_DE", 1.0, 0.20, false));
+        when(translationService.normalize(eq(german), any())).thenReturn("Hello, how are you today?");
+        stubPythonRoute("Hello, how are you today?", "rag");
+        when(openAIService.understandRequest(any(), eq("Hello, how are you today?"), eq(ChatPersistenceService.LOCALE_DE_DE)))
+                .thenReturn(new RequestUnderstandResult(
+                        RequestUnderstandType.CONVERSATIONAL,
+                        "",
+                        List.of(),
+                        new OpenAIUsage(1, 1, 2, "gpt")
+                ));
+
+        ChatRequest request = baseRequest(german);
+        request.setMode(ChatMode.AUTO);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertNotEquals(ComprehendChatService.DEFAULT_AUTO_CONVERSATIONAL_MESSAGE, response.getReply());
+        assertEquals("", response.getReply());
+        assertEquals("conversational", response.getActionTaken());
+        verify(openAIService).understandRequest(any(), eq("Hello, how are you today?"), eq(ChatPersistenceService.LOCALE_DE_DE));
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+    }
+
+    @Test
+    void germanRag_sendsProtectedOriginalAndKeepsEnglishRetrieval() {
+        String german = "Zeige den Kunden Y00111 und Geheimnis";
+        String english = "Show customer Y00111 and the secret";
+        when(translationService.normalize(eq(german), any())).thenReturn(english);
+        when(languageDetectionService.detect(german))
+                .thenReturn(new LanguageDetectionResult("de", "de_DE", "nl", "de", "de_DE", 1.0, 0.20, false));
+        when(piiProtectionService.protect(any())).thenAnswer(invocation -> {
+            ProtectionSession session = invocation.getArgument(0);
+            String input = session.businessProtectedText() != null
+                    ? session.businessProtectedText()
+                    : session.originalText();
+            session.applyPiiSanitizedText(input.replace("Geheimnis", "[MASK]"));
+            return session;
+        });
+        stubGroundedRag(english);
+
+        comprehendChatService.chat(baseRequest(german));
+
+        ArgumentCaptor<ProtectionSession> sessionCaptor = ArgumentCaptor.forClass(ProtectionSession.class);
+        ArgumentCaptor<String> originalCaptor = ArgumentCaptor.forClass(String.class);
+        ArgumentCaptor<String> languageCaptor = ArgumentCaptor.forClass(String.class);
+        verify(openAIService).chatWithRagContext(
+                any(),
+                any(),
+                sessionCaptor.capture(),
+                eq(ChatPersistenceService.LOCALE_DE_DE),
+                originalCaptor.capture(),
+                languageCaptor.capture()
+        );
+        assertEquals("de", languageCaptor.getValue());
+        assertTrue(originalCaptor.getValue().contains("Y00111"));
+        assertTrue(originalCaptor.getValue().contains("[MASK]"));
+        assertFalse(originalCaptor.getValue().contains("Geheimnis"));
+        assertFalse(originalCaptor.getValue().contains(german));
+        assertEquals(english, sessionCaptor.getValue().textForLlm());
+        verify(pythonRagService).route(english);
+        verify(pythonRagService).retrieve(eq(english), eq(List.of(english)), any(), any(), any(), any());
+    }
+
+    @Test
+    void questionContainingIdentifier_isNotIdentifierOnly() {
+        String question = "How do I view customer Y00111?";
+        stubGroundedRag(question);
+        when(languageDetectionService.detect(question))
+                .thenReturn(new LanguageDetectionResult("en", "en_US", "de", "en", "en_US", 1.0, 0.20, false));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest(question));
+
+        assertEquals("rag", response.getActionTaken());
+        verify(pythonRagService).route(question);
+        verify(chatPersistenceService).saveSessionLocaleIfAbsent(
+                "tenant1", "user1", "session1", ChatPersistenceService.LOCALE_EN_US);
+    }
+
+    @Test
+    void guidedTurn_returnsReplyWithoutCallingLex() {
+        stubQuotaAllowed();
+        stubSanitize();
+        GuidedSearchState state = GuidedSearchState.selectField("SearchCustomerOrder");
+        when(guidedSearchSessionService.find(any())).thenReturn(Optional.of(state));
+        ChatResponse guided = new ChatResponse("Choose a customer order field.", false);
+        guided.setActionTaken(GuidedSearchService.ACTION_SELECT_FIELD);
+        when(guidedSearchService.handleTurn(any(), eq(state), eq("continue")))
+                .thenReturn(new GuidedSearchService.GuidedTurnResult(guided, false));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("continue"));
+
+        assertEquals("Choose a customer order field.", response.getReply());
+        assertEquals(GuidedSearchService.ACTION_SELECT_FIELD, response.getActionTaken());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
+        verify(pythonRagService, never()).route(anyString());
     }
 
     @Test
@@ -981,7 +1938,7 @@ class ComprehendChatServiceTest {
                 Map.of(),
                 List.of(clarification)
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "give me orders having order type F10"))
+        when(lexService.recognizeText("tenant1:user1:session1", "give me orders having order type F10", ChatPersistenceService.LOCALE_EN_US))
                 .thenReturn(lexResult);
 
         ChatResponse response = comprehendChatService.chat(baseRequest("give me orders having order type F10"));
@@ -1013,7 +1970,7 @@ class ComprehendChatServiceTest {
                 Map.of(),
                 List.of("What supplier do you want to search for?")
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "Search Purchase Order"))
+        when(lexService.recognizeText("tenant1:user1:session1", "Search Purchase Order", ChatPersistenceService.LOCALE_EN_US))
                 .thenReturn(lexResult);
 
         ChatResponse response = comprehendChatService.chat(baseRequest("Search Purchase Order"));
@@ -1022,7 +1979,7 @@ class ComprehendChatServiceTest {
         assertEquals("lex_elicit_slot", response.getActionTaken());
         assertEquals("SearchPurchaseOrder", response.getLexIntent());
         verify(pythonRagService, never()).route(anyString());
-        verify(lexService).recognizeText("tenant1:user1:session1", "Search Purchase Order");
+        verify(lexService).recognizeText("tenant1:user1:session1", "Search Purchase Order", ChatPersistenceService.LOCALE_EN_US);
         assertTrue(pendingLexSessionService.get("tenant1:user1:session1").isPresent());
         verify(lexFulfillmentService, never()).fulfillOutcome(any(), any(), any());
     }
@@ -1043,7 +2000,7 @@ class ComprehendChatServiceTest {
                 Map.of("CustomerNumber", "CSU001"),
                 List.of()
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "show customer CSU001")).thenReturn(lexResult);
+        when(lexService.recognizeText("tenant1:user1:session1", "show customer CSU001", ChatPersistenceService.LOCALE_EN_US)).thenReturn(lexResult);
 
         M3RequestDto m3Request = new M3RequestDto(true, "CRS610MI", "GetBasicData", Map.of("CUNO", "CSU001"));
         ChatResponse fulfillResponse = new ChatResponse("Looking up customer CSU001...", false);
@@ -1082,7 +2039,9 @@ class ComprehendChatServiceTest {
                 isNull(),
                 eq(new LiveHistoryAuditMetadata("GetCustomer", "Customer", "CSU001")),
                 isNull(),
-                eq(ChatMode.AUTO)
+                eq(ChatMode.AUTO),
+                eq("en"),
+                eq(ChatPersistenceService.LOCALE_EN_US)
         );
     }
 
@@ -1103,7 +2062,7 @@ class ComprehendChatServiceTest {
                 List.of(),
                 Map.of(LexRecognizeResult.ATTR_REQUESTED_INFORMATION, "ADDRESS")
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "Y11100")).thenReturn(lexResult);
+        when(lexService.recognizeText("tenant1:user1:session1", "Y11100", ChatPersistenceService.LOCALE_EN_US)).thenReturn(lexResult);
 
         M3RequestDto m3Request = new M3RequestDto(true, "CRS610MI", "GetBasicData", Map.of("CUNO", "Y11100"));
         ChatResponse fulfillResponse = new ChatResponse("Looking up customer Y11100...", false);
@@ -1136,7 +2095,7 @@ class ComprehendChatServiceTest {
                 Map.of("CustomerNumber", "Y11100"),
                 List.of()
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "Show address of customer Y11100"))
+        when(lexService.recognizeText("tenant1:user1:session1", "Show address of customer Y11100", ChatPersistenceService.LOCALE_EN_US))
                 .thenReturn(lexResult);
 
         M3RequestDto m3Request = new M3RequestDto(true, "CRS610MI", "GetBasicData", Map.of("CUNO", "Y11100"));
@@ -1167,7 +2126,7 @@ class ComprehendChatServiceTest {
                 Map.of(),
                 List.of()
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "show customer")).thenReturn(lexResult);
+        when(lexService.recognizeText("tenant1:user1:session1", "show customer", ChatPersistenceService.LOCALE_EN_US)).thenReturn(lexResult);
 
         ChatResponse response = comprehendChatService.chat(baseRequest("show customer"));
 
@@ -1179,8 +2138,8 @@ class ComprehendChatServiceTest {
         verify(pythonRagService, never()).query(any());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
         verify(pythonRagService, never()).executeLiveIntent(anyString(), any());
-        verify(openAIService, never()).chatWithRagContext(any(), anyList(), any());
-        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+        verify(openAIService, never()).chatWithRagContext(any(), anyList(), any(), any(), any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any(), any());
     }
 
     @Test
@@ -1199,7 +2158,7 @@ class ComprehendChatServiceTest {
                 Map.of("CustomerNumber", "Y00111"),
                 List.of()
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "show customer Y00111")).thenReturn(lexResult);
+        when(lexService.recognizeText("tenant1:user1:session1", "show customer Y00111", ChatPersistenceService.LOCALE_EN_US)).thenReturn(lexResult);
 
         ChatResponse response = comprehendChatService.chat(baseRequest("show customer Y00111"));
 
@@ -1209,8 +2168,8 @@ class ComprehendChatServiceTest {
         verify(lexFulfillmentService, never()).fulfillOutcome(any(), any(), any());
         verify(pythonRagService, never()).query(any());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
-        verify(openAIService, never()).chatWithRagContext(any(), anyList(), any());
-        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+        verify(openAIService, never()).chatWithRagContext(any(), anyList(), any(), any(), any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any(), any());
     }
 
     @Test
@@ -1229,7 +2188,7 @@ class ComprehendChatServiceTest {
                 Map.of(),
                 List.of()
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "Show customer orders")).thenReturn(lexResult);
+        when(lexService.recognizeText("tenant1:user1:session1", "Show customer orders", ChatPersistenceService.LOCALE_EN_US)).thenReturn(lexResult);
 
         ChatResponse missing = new ChatResponse("Unable to process...", false);
         missing.setActionTaken("search_criteria_missing");
@@ -1247,7 +2206,7 @@ class ComprehendChatServiceTest {
 
         assertEquals(GuidedSearchService.ACTION_SELECT_FIELD, response.getActionTaken());
         verify(guidedSearchService).start(eq("SearchCustomerOrder"), any());
-        verify(lexService).recognizeText(anyString(), anyString());
+        verify(lexService).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -1267,7 +2226,7 @@ class ComprehendChatServiceTest {
                 Map.of("HighestStatus", "77"),
                 List.of()
         );
-        when(lexService.recognizeText(anyString(), eq("Show customer orders with highest status 77")))
+        when(lexService.recognizeText(anyString(), eq("Show customer orders with highest status 77"), eq(ChatPersistenceService.LOCALE_EN_US)))
                 .thenReturn(lexResult);
 
         M3RequestDto m3Request = new M3RequestDto(
@@ -1306,7 +2265,7 @@ class ComprehendChatServiceTest {
         assertEquals(GuidedSearchService.ACTION_COLLECT_VALUE, response.getActionTaken());
         verify(guidedSearchService).handleTurn(any(), eq(state), eq("order 1000001234"));
         verify(pythonRagService, never()).route(anyString());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
         verify(guidedSearchService, never()).start(anyString(), any());
     }
 
@@ -1328,9 +2287,9 @@ class ComprehendChatServiceTest {
         assertEquals(GuidedSearchService.ACTION_CANCELLED, response.getActionTaken());
         verify(guidedSearchService).handleTurn(any(), eq(state), eq("cancel"));
         verify(pythonRagService, never()).route(anyString());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
-        verify(openAIService, never()).chatWithRagContext(any(), anyList(), any());
+        verify(openAIService, never()).chatWithRagContext(any(), anyList(), any(), any(), any(), any());
     }
 
     @Test
@@ -1351,7 +2310,7 @@ class ComprehendChatServiceTest {
         assertEquals(GuidedSearchService.ACTION_SELECT_FIELD, response.getActionTaken());
         verify(guidedSearchService).handleTurn(any(), eq(state), eq("something"));
         verify(pythonRagService, never()).route(anyString());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -1381,7 +2340,7 @@ class ComprehendChatServiceTest {
 
         OpenAIUsage usage = new OpenAIUsage(10, 20, 30, "gpt-4.1");
         GroundedRagResult grounded = new GroundedRagResult(RagStatus.FULL, "OIS100 is used for customer order entry.", List.of());
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any()))
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any(), any(), any(), any()))
                 .thenReturn(new GroundedRagCallResult(grounded, usage, "{\"status\":\"FULL\"}"));
 
         ChatResponse response = comprehendChatService.chat(baseRequest("What is OIS100?"));
@@ -1415,7 +2374,7 @@ class ComprehendChatServiceTest {
                 Map.of("Supplier", "S00001"),
                 List.of()
         );
-        when(lexService.recognizeText(anyString(), eq("actually search purchase orders"))).thenReturn(lexResult);
+        when(lexService.recognizeText(anyString(), eq("actually search purchase orders"), eq(ChatPersistenceService.LOCALE_EN_US))).thenReturn(lexResult);
 
         ChatResponse fulfilled = new ChatResponse("Processing your request...", false);
         fulfilled.setActionTaken("search");
@@ -1433,7 +2392,7 @@ class ComprehendChatServiceTest {
         assertEquals("search", response.getActionTaken());
         verify(guidedSearchService).handleTurn(any(), eq(state), eq("actually search purchase orders"));
         verify(pythonRagService).route("actually search purchase orders");
-        verify(lexService).recognizeText(anyString(), eq("actually search purchase orders"));
+        verify(lexService).recognizeText(anyString(), eq("actually search purchase orders"), eq(ChatPersistenceService.LOCALE_EN_US));
     }
 
     @Test
@@ -1452,7 +2411,7 @@ class ComprehendChatServiceTest {
                 Map.of(),
                 List.of("Please provide the customer number.")
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "Show customer credit limit")).thenReturn(lexResult);
+        when(lexService.recognizeText("tenant1:user1:session1", "Show customer credit limit", ChatPersistenceService.LOCALE_EN_US)).thenReturn(lexResult);
 
         ChatResponse response = comprehendChatService.chat(baseRequest("Show customer credit limit"));
 
@@ -1478,7 +2437,7 @@ class ComprehendChatServiceTest {
                 List.of(),
                 Map.of(LexRecognizeResult.ATTR_REQUESTED_INFORMATION, "CREDIT_LIMIT")
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "Y11100")).thenReturn(lexResult);
+        when(lexService.recognizeText("tenant1:user1:session1", "Y11100", ChatPersistenceService.LOCALE_EN_US)).thenReturn(lexResult);
 
         M3RequestDto m3Request = new M3RequestDto(true, "CRS610MI", "GetFinancial", Map.of("CUNO", "Y11100"));
         ChatResponse fulfillResponse = new ChatResponse("Credit limit for Y11100...", false);
@@ -1491,7 +2450,7 @@ class ComprehendChatServiceTest {
 
         assertEquals("read", response.getActionTaken());
         verify(pythonRagService, never()).route(anyString());
-        verify(lexService).recognizeText("tenant1:user1:session1", "Y11100");
+        verify(lexService).recognizeText("tenant1:user1:session1", "Y11100", ChatPersistenceService.LOCALE_EN_US);
         assertTrue(pendingLexSessionService.get("tenant1:user1:session1").isEmpty());
     }
 
@@ -1511,7 +2470,7 @@ class ComprehendChatServiceTest {
                 Map.of("CustomerNumber", "Y11100"),
                 List.of()
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "Y11100")).thenReturn(fulfillLex);
+        when(lexService.recognizeText("tenant1:user1:session1", "Y11100", ChatPersistenceService.LOCALE_EN_US)).thenReturn(fulfillLex);
         ChatResponse fulfillResponse = new ChatResponse("ok", false);
         fulfillResponse.setActionTaken("read");
         fulfillResponse.setM3Request(new M3RequestDto(true, "CRS610MI", "GetFinancial", Map.of("CUNO", "Y11100")));
@@ -1526,7 +2485,7 @@ class ComprehendChatServiceTest {
         retrieval.setRetrievalReason("ready_for_grounding");
         retrieval.setPromptChunks(List.of());
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
-        when(openAIService.chatWithRagContext(any(), anyList(), any()))
+        when(openAIService.chatWithRagContext(any(), anyList(), any(), any(), any(), any()))
                 .thenReturn(new GroundedRagCallResult(
                         new GroundedRagResult(RagStatus.FULL, "docs", List.of()),
                         new OpenAIUsage(1, 1, 2, "gpt"),
@@ -1551,7 +2510,7 @@ class ComprehendChatServiceTest {
         retrieval.setRetrievalReason("ready_for_grounding");
         retrieval.setPromptChunks(List.of());
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
-        when(openAIService.chatWithRagContext(any(), anyList(), any()))
+        when(openAIService.chatWithRagContext(any(), anyList(), any(), any(), any(), any()))
                 .thenReturn(new GroundedRagCallResult(
                         new GroundedRagResult(RagStatus.FULL, "CRS610 docs", List.of()),
                         new OpenAIUsage(1, 1, 2, "gpt"),
@@ -1562,7 +2521,7 @@ class ComprehendChatServiceTest {
 
         assertEquals("CRS610 docs", response.getReply());
         verify(pythonRagService).route("Explain CRS610");
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -1582,7 +2541,7 @@ class ComprehendChatServiceTest {
         retrieval.setRetrievalReason("ready_for_grounding");
         retrieval.setPromptChunks(List.of());
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
-        when(openAIService.chatWithRagContext(any(), anyList(), any()))
+        when(openAIService.chatWithRagContext(any(), anyList(), any(), any(), any(), any()))
                 .thenReturn(new GroundedRagCallResult(
                         new GroundedRagResult(RagStatus.FULL, "rag after ttl", List.of()),
                         new OpenAIUsage(1, 1, 2, "gpt"),
@@ -1593,7 +2552,7 @@ class ComprehendChatServiceTest {
 
         assertEquals("rag after ttl", response.getReply());
         verify(pythonRagService).route("Y11100");
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -1612,7 +2571,7 @@ class ComprehendChatServiceTest {
                 Map.of(),
                 List.of("Sorry")
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "nonsense")).thenReturn(lexResult);
+        when(lexService.recognizeText("tenant1:user1:session1", "nonsense", ChatPersistenceService.LOCALE_EN_US)).thenReturn(lexResult);
 
         ChatResponse response = comprehendChatService.chat(baseRequest("nonsense"));
 
@@ -1636,7 +2595,7 @@ class ComprehendChatServiceTest {
         );
         retrieval.setPromptChunks(List.of(chunk));
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any()))
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any(), any(), any(), any()))
                 .thenReturn(new GroundedRagCallResult(
                         new GroundedRagResult(RagStatus.FULL, "CRS610 explanation", List.of()),
                         new OpenAIUsage(1, 1, 2, "gpt"),
@@ -1648,7 +2607,7 @@ class ComprehendChatServiceTest {
         assertEquals("CRS610 explanation", response.getReply());
         verify(pythonRagService).route("Explain CRS610");
         assertTrue(pendingLexSessionService.get("tenant1:user1:session1").isEmpty());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -1668,7 +2627,7 @@ class ComprehendChatServiceTest {
                 Map.of("CustomerNumber", "Y11100"),
                 List.of()
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "Show customer Y11100 credit limit"))
+        when(lexService.recognizeText("tenant1:user1:session1", "Show customer Y11100 credit limit", ChatPersistenceService.LOCALE_EN_US))
                 .thenReturn(lexResult);
 
         M3RequestDto m3Request = new M3RequestDto(true, "CRS610MI", "GetFinancial", Map.of("CUNO", "Y11100"));
@@ -1684,7 +2643,7 @@ class ComprehendChatServiceTest {
         assertEquals("read", response.getActionTaken());
         assertTrue(pendingLexSessionService.get("tenant1:user1:session1").isEmpty());
         verify(pythonRagService).route("Show customer Y11100 credit limit");
-        verify(lexService).recognizeText("tenant1:user1:session1", "Show customer Y11100 credit limit");
+        verify(lexService).recognizeText("tenant1:user1:session1", "Show customer Y11100 credit limit", ChatPersistenceService.LOCALE_EN_US);
     }
 
     @Test
@@ -1696,7 +2655,7 @@ class ComprehendChatServiceTest {
         stubDocsGroundedPath("how to create customer", "grounded answer");
         when(chatPersistenceService.persistChat(
                 anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
-                any(), any(), any(), any(), any(), any(), any(), any()
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
         )).thenReturn(99L);
 
         ChatRequest request = baseRequest("how to create customer");
@@ -1708,7 +2667,7 @@ class ComprehendChatServiceTest {
         assertEquals("rag", response.getActionTaken());
         assertEquals(99L, response.getRequestLogId());
         verify(pythonRagService).route("how to create customer");
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -1726,7 +2685,7 @@ class ComprehendChatServiceTest {
                 Map.of(),
                 List.of("What is the customer number?")
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "show customer details")).thenReturn(lexResult);
+        when(lexService.recognizeText("tenant1:user1:session1", "show customer details", ChatPersistenceService.LOCALE_EN_US)).thenReturn(lexResult);
 
         ChatRequest request = baseRequest("show customer details");
         request.setMode(ChatMode.AUTO);
@@ -1734,7 +2693,7 @@ class ComprehendChatServiceTest {
 
         assertEquals("lex_elicit_slot", response.getActionTaken());
         verify(pythonRagService).route("show customer details");
-        verify(lexService).recognizeText("tenant1:user1:session1", "show customer details");
+        verify(lexService).recognizeText("tenant1:user1:session1", "show customer details", ChatPersistenceService.LOCALE_EN_US);
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
     }
 
@@ -1754,7 +2713,7 @@ class ComprehendChatServiceTest {
         assertEquals("rag", response.getActionTaken());
         verify(pythonRagService).route("how to create customer");
         verify(pythonRagService).retrieve(anyString(), anyList(), any(), any(), any(), any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -1773,7 +2732,7 @@ class ComprehendChatServiceTest {
         assertEquals("rag", response.getActionTaken());
         verify(pythonRagService).route("unknown topic");
         verify(pythonRagService).retrieve(anyString(), anyList(), any(), any(), any(), any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -1791,7 +2750,7 @@ class ComprehendChatServiceTest {
                 Map.of(),
                 List.of("What is the customer number?")
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "show customer Y00111")).thenReturn(lexResult);
+        when(lexService.recognizeText("tenant1:user1:session1", "show customer Y00111", ChatPersistenceService.LOCALE_EN_US)).thenReturn(lexResult);
 
         ChatRequest request = baseRequest("show customer Y00111");
         request.setMode(ChatMode.M3);
@@ -1799,7 +2758,7 @@ class ComprehendChatServiceTest {
 
         assertEquals("lex_elicit_slot", response.getActionTaken());
         verify(pythonRagService).route("show customer Y00111");
-        verify(lexService).recognizeText("tenant1:user1:session1", "show customer Y00111");
+        verify(lexService).recognizeText("tenant1:user1:session1", "show customer Y00111", ChatPersistenceService.LOCALE_EN_US);
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
     }
 
@@ -1816,8 +2775,8 @@ class ComprehendChatServiceTest {
         assertEquals(ComprehendChatService.DEFAULT_M3_CLASSIFIER_ERROR_MESSAGE, response.getReply());
         assertEquals("m3_classifier_error", response.getActionTaken());
         verify(pythonRagService).route("how to create customer");
-        verify(lexService, never()).recognizeText(anyString(), anyString());
-        verify(openAIService, never()).understandRequest(any(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
+        verify(openAIService, never()).understandRequest(any(), anyString(), any());
     }
 
     @Test
@@ -1835,7 +2794,7 @@ class ComprehendChatServiceTest {
         assertEquals("rag", response.getActionTaken());
         verify(pythonRagService, never()).route(anyString());
         verify(pythonRagService).retrieve(anyString(), anyList(), any(), any(), any(), any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -1855,7 +2814,7 @@ class ComprehendChatServiceTest {
                 List.of(),
                 Map.of(LexRecognizeResult.ATTR_REQUESTED_INFORMATION, "CREDIT_LIMIT")
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "Y11100")).thenReturn(lexResult);
+        when(lexService.recognizeText("tenant1:user1:session1", "Y11100", ChatPersistenceService.LOCALE_EN_US)).thenReturn(lexResult);
 
         M3RequestDto m3Request = new M3RequestDto(true, "CRS610MI", "GetFinancial", Map.of("CUNO", "Y11100"));
         ChatResponse fulfillResponse = new ChatResponse("Credit limit for Y11100...", false);
@@ -1872,7 +2831,7 @@ class ComprehendChatServiceTest {
         assertNotNull(response.getM3Request());
         verify(pythonRagService, never()).route(anyString());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
-        verify(lexService).recognizeText("tenant1:user1:session1", "Y11100");
+        verify(lexService).recognizeText("tenant1:user1:session1", "Y11100", ChatPersistenceService.LOCALE_EN_US);
     }
 
     @Test
@@ -1885,7 +2844,7 @@ class ComprehendChatServiceTest {
         stubDocsGroundedPath("edited question", "edited answer");
         when(chatPersistenceService.persistChat(
                 anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
-                any(), any(), any(), any(), any(), any(), any(), eq(ChatMode.DOCS)
+                any(), any(), any(), any(), any(), any(), any(), eq(ChatMode.DOCS), any(), any()
         )).thenReturn(456L);
         when(chatPersistenceService.supersedeEditedRequest(123L, 456L, 10L)).thenReturn(true);
 
@@ -1912,7 +2871,9 @@ class ComprehendChatServiceTest {
                 any(),
                 any(),
                 any(),
-                eq(ChatMode.DOCS)
+                eq(ChatMode.DOCS),
+                eq("en"),
+                eq(ChatPersistenceService.LOCALE_EN_US)
         );
     }
 
@@ -1933,7 +2894,7 @@ class ComprehendChatServiceTest {
         );
         retrieval.setPromptChunks(List.of(chunk));
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any()))
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any(), any(), any(), any()))
                 .thenReturn(new GroundedRagCallResult(
                         new GroundedRagResult(RagStatus.FULL, "edited answer", List.of()),
                         new OpenAIUsage(1, 1, 2, "gpt"),
@@ -1942,7 +2903,7 @@ class ComprehendChatServiceTest {
 
         when(chatPersistenceService.persistChat(
                 anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
-                any(), any(), any(), any(), any(), any(), any(), any()
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
         )).thenReturn(457L);
         when(chatPersistenceService.supersedeEditedRequest(123L, 457L, 10L)).thenReturn(false);
 
@@ -1976,7 +2937,7 @@ class ComprehendChatServiceTest {
         verify(pythonRagService, never()).route(anyString());
         verify(chatPersistenceService, never()).persistChat(
                 anyString(), anyString(), anyString(), anyString(), anyString(),
-                anyString(), any(), any(), any(), any(), any(), any(), any(), any()
+                anyString(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
         );
     }
 
@@ -2010,7 +2971,7 @@ class ComprehendChatServiceTest {
         ChatResponse fallbackResponse = new ChatResponse("General GPT answer", false);
         fallbackResponse.setActionTaken("gpt_infor");
         if (allowExternal) {
-            when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallbackResponse);
+            when(openAIService.chatWithoutPersistence(any(), any(), any())).thenReturn(fallbackResponse);
         }
 
         ChatResponse response = comprehendChatService.chat(docsRequest("how to add KIT", externalSourceEnabled));
@@ -2018,13 +2979,13 @@ class ComprehendChatServiceTest {
         if (allowExternal) {
             assertEquals("General GPT answer", response.getReply());
             assertEquals("gpt_infor", response.getActionTaken());
-            verify(openAIService).chatWithoutPersistence(any(), any());
+            verify(openAIService).chatWithoutPersistence(any(), any(), any());
         } else {
             assertEquals(ComprehendChatService.DOCS_INSUFFICIENT_MESSAGE, response.getReply());
             assertEquals("rag", response.getActionTaken());
-            verify(openAIService, never()).chatWithoutPersistence(any(), any());
+            verify(openAIService, never()).chatWithoutPersistence(any(), any(), any());
         }
-        verify(openAIService, never()).chatGapFill(any(), any(), any(), any());
+        verify(openAIService, never()).chatGapFill(any(), any(), any(), any(), any());
     }
 
     static Stream<Arguments> docsExternalSourceFlagStates() {
@@ -2045,14 +3006,14 @@ class ComprehendChatServiceTest {
         ChatResponse fallbackResponse = new ChatResponse("General GPT answer", false);
         fallbackResponse.setActionTaken("gpt_infor");
         fallbackResponse.setOpenAiUsage(fallbackUsage);
-        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallbackResponse);
+        when(openAIService.chatWithoutPersistence(any(), any(), any())).thenReturn(fallbackResponse);
 
         ChatResponse response = comprehendChatService.chat(docsRequest("how to add KIT", true));
 
         assertEquals("General GPT answer", response.getReply());
         assertEquals("gpt_infor", response.getActionTaken());
-        verify(openAIService).chatWithoutPersistence(any(), any());
-        verify(openAIService, never()).chatGapFill(any(), any(), any(), any());
+        verify(openAIService).chatWithoutPersistence(any(), any(), any());
+        verify(openAIService, never()).chatGapFill(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -2063,13 +3024,13 @@ class ComprehendChatServiceTest {
 
         ChatResponse fallbackResponse = new ChatResponse("General GPT answer", false);
         fallbackResponse.setActionTaken("gpt_infor");
-        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallbackResponse);
+        when(openAIService.chatWithoutPersistence(any(), any(), any())).thenReturn(fallbackResponse);
 
         ChatRequest request = docsRequest("how to add KIT", null);
         ChatResponse response = comprehendChatService.chat(request);
 
         assertEquals("General GPT answer", response.getReply());
-        verify(openAIService).chatWithoutPersistence(any(), any());
+        verify(openAIService).chatWithoutPersistence(any(), any(), any());
     }
 
     @Test
@@ -2086,8 +3047,8 @@ class ComprehendChatServiceTest {
         assertEquals("Document answer from CRS780", response.getReply());
         assertEquals("rag", response.getActionTaken());
         assertEquals(List.of("Follow up A", "Follow up B"), response.getSuggestions());
-        verify(openAIService, never()).chatWithoutPersistence(any(), any());
-        verify(openAIService, never()).chatGapFill(any(), any(), any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any(), any());
+        verify(openAIService, never()).chatGapFill(any(), any(), any(), any(), any());
         verify(suggestionEngineService).generateSuggestions(any());
     }
 
@@ -2109,7 +3070,7 @@ class ComprehendChatServiceTest {
         retrieval.setPromptChunks(eightChunks);
         retrieval.setPromptChunkCount(8);
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
-        when(openAIService.chatWithRagContext(any(), anyList(), any()))
+        when(openAIService.chatWithRagContext(any(), anyList(), any(), any(), any(), any()))
                 .thenReturn(new GroundedRagCallResult(
                         new GroundedRagResult(RagStatus.FULL, "Grounded from eight chunks", List.of()),
                         new OpenAIUsage(1, 1, 2, "gpt"),
@@ -2126,7 +3087,7 @@ class ComprehendChatServiceTest {
 
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<ChunkItem>> groundingChunks = ArgumentCaptor.forClass(List.class);
-        verify(openAIService).chatWithRagContext(any(), groundingChunks.capture(), any());
+        verify(openAIService).chatWithRagContext(any(), groundingChunks.capture(), any(), any(), any(), any());
         assertEquals(8, groundingChunks.getValue().size());
 
         ArgumentCaptor<SuggestionContext> suggestionCtx = ArgumentCaptor.forClass(SuggestionContext.class);
@@ -2172,7 +3133,7 @@ class ComprehendChatServiceTest {
         assertNotNull(response.getReply());
         assertTrue(response.getSuggestions() == null || response.getSuggestions().isEmpty());
         verify(suggestionEngineService, never()).generateSuggestions(any());
-        verify(openAIService, never()).chatWithRagContext(any(), anyList(), any());
+        verify(openAIService, never()).chatWithRagContext(any(), anyList(), any(), any(), any(), any());
     }
 
     @Test
@@ -2190,8 +3151,8 @@ class ComprehendChatServiceTest {
         assertTrue(response.getReply().contains("MNS204 appears in user settings documentation."));
         assertTrue(response.getReply().contains(ComprehendChatService.DOCS_PARTIAL_CONTINUATION));
         assertEquals("rag", response.getActionTaken());
-        verify(openAIService, never()).chatGapFill(any(), any(), any(), any());
-        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+        verify(openAIService, never()).chatGapFill(any(), any(), any(), any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any(), any());
     }
 
     @Test
@@ -2205,8 +3166,8 @@ class ComprehendChatServiceTest {
         assertEquals(ComprehendChatService.DOCS_INSUFFICIENT_MESSAGE, response.getReply());
         assertEquals("rag", response.getActionTaken());
         assertEquals("rag_no_answer_fallback", response.getRetrievalReason());
-        verify(openAIService, never()).chatWithoutPersistence(any(), any());
-        verify(openAIService, never()).chatGapFill(any(), any(), any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any(), any());
+        verify(openAIService, never()).chatGapFill(any(), any(), any(), any(), any());
     }
 
     @Test
@@ -2223,8 +3184,8 @@ class ComprehendChatServiceTest {
 
         assertEquals(ComprehendChatService.DOCS_INSUFFICIENT_MESSAGE, response.getReply());
         assertEquals("rag", response.getActionTaken());
-        verify(openAIService, never()).chatWithoutPersistence(any(), any());
-        verify(openAIService, never()).chatWithRagContext(any(), any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any(), any());
+        verify(openAIService, never()).chatWithRagContext(any(), any(), any(), any(), any(), any());
     }
 
     @Test
@@ -2238,7 +3199,7 @@ class ComprehendChatServiceTest {
 
         assertEquals(ComprehendChatService.DOCS_INSUFFICIENT_MESSAGE, response.getReply());
         assertEquals("rag", response.getActionTaken());
-        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any(), any());
     }
 
     @Test
@@ -2250,14 +3211,14 @@ class ComprehendChatServiceTest {
         ChunkItem chunk = new ChunkItem("chunk", 0.7f, "Title", "http://example.com", List.of(), null, null, null, null);
         retrieval.setPromptChunks(List.of(chunk));
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any()))
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any(), any(), any(), any()))
                 .thenThrow(new OpenAIException("parse failed", 500));
 
         ChatResponse response = comprehendChatService.chat(docsRequest("purchase settings", false));
 
         assertEquals(ComprehendChatService.DOCS_INSUFFICIENT_MESSAGE, response.getReply());
         assertEquals("rag", response.getActionTaken());
-        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any(), any());
     }
 
     @Test
@@ -2271,7 +3232,7 @@ class ComprehendChatServiceTest {
         ChunkItem chunk = new ChunkItem("chunk", 0.64f, "Title", "http://example.com", List.of("OIS100"), null, null, null, null);
         retrieval.setPromptChunks(List.of(chunk));
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any())).thenReturn(
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any(), any(), any(), any())).thenReturn(
                 new GroundedRagCallResult(
                         new GroundedRagResult(RagStatus.INSUFFICIENT, "", List.of()),
                         new OpenAIUsage(1, 1, 2, "gpt"),
@@ -2281,14 +3242,14 @@ class ComprehendChatServiceTest {
 
         ChatResponse fallbackResponse = new ChatResponse("Auto general GPT", false);
         fallbackResponse.setActionTaken("gpt_infor");
-        when(openAIService.chatWithoutPersistence(any(), any())).thenReturn(fallbackResponse);
+        when(openAIService.chatWithoutPersistence(any(), any(), any())).thenReturn(fallbackResponse);
 
         ChatRequest request = baseRequest("how to add KIT");
         request.setExternalSourceEnabled(false);
         ChatResponse response = comprehendChatService.chat(request);
 
         assertEquals("Auto general GPT", response.getReply());
-        verify(openAIService).chatWithoutPersistence(any(), any());
+        verify(openAIService).chatWithoutPersistence(any(), any(), any());
     }
 
     @Test
@@ -2302,13 +3263,13 @@ class ComprehendChatServiceTest {
         );
         ChatResponse gapResponse = new ChatResponse("Functional purpose: ...", false);
         gapResponse.setOpenAiUsage(new OpenAIUsage(1, 1, 2, "gpt"));
-        when(openAIService.chatGapFill(any(), anyString(), anyList(), any())).thenReturn(gapResponse);
+        when(openAIService.chatGapFill(any(), anyString(), anyList(), any(), any())).thenReturn(gapResponse);
 
         ChatResponse response = comprehendChatService.chat(docsRequest("What is MNS204 used for?", true));
 
         assertTrue(response.getReply().contains("Functional purpose: ..."));
-        verify(openAIService).chatGapFill(any(), anyString(), anyList(), any());
-        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+        verify(openAIService).chatGapFill(any(), anyString(), anyList(), any(), any());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any(), any());
     }
 
     private ChatRequest docsRequest(String message, Boolean externalSourceEnabled) {
@@ -2328,7 +3289,7 @@ class ComprehendChatServiceTest {
         );
         retrieval.setPromptChunks(List.of(chunk));
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any()))
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any(), any(), any(), any()))
                 .thenReturn(new GroundedRagCallResult(
                         new GroundedRagResult(status, answer, missingTopics),
                         new OpenAIUsage(1, 1, 2, "gpt"),
@@ -2346,12 +3307,30 @@ class ComprehendChatServiceTest {
         );
         retrieval.setPromptChunks(List.of(chunk));
         when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
-        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any()))
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any(), any(), any(), any()))
                 .thenReturn(new GroundedRagCallResult(
                         new GroundedRagResult(RagStatus.FULL, groundedReply, List.of()),
                         new OpenAIUsage(1, 1, 2, "gpt"),
                         "{}"
                 ));
+    }
+
+    private void stubGroundedRag(String message) {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(pythonRagService.route(message)).thenReturn(new PythonRouteResponse("rag"));
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        retrieval.setRetrievalTimeMs(42);
+        retrieval.setMaxScore(0.62f);
+        ChunkItem chunk = new ChunkItem(
+                "chunk text", 0.62f, "Title", "http://example.com", List.of("CRS610"), null, null, null, null);
+        retrieval.setPromptChunks(List.of(chunk));
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
+        OpenAIUsage usage = new OpenAIUsage(10, 20, 30, "gpt-4.1");
+        GroundedRagResult grounded = new GroundedRagResult(RagStatus.FULL, "grounded answer", List.of());
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any(), any(), any(), any()))
+                .thenReturn(new GroundedRagCallResult(grounded, usage, "{\"status\":\"FULL\"}"));
     }
 
     private void stubQuotaAllowed() {
@@ -2397,7 +3376,7 @@ class ComprehendChatServiceTest {
         stubQuotaAllowed();
         stubSanitize();
         stubPythonRoute("hi", "rag");
-        when(openAIService.understandRequest(any(), eq("hi"))).thenReturn(new RequestUnderstandResult(
+        when(openAIService.understandRequest(any(), eq("hi"), any())).thenReturn(new RequestUnderstandResult(
                 RequestUnderstandType.CONVERSATIONAL,
                 "Hi! How can I help with live M3 data today?",
                 List.of(),
@@ -2408,12 +3387,12 @@ class ComprehendChatServiceTest {
 
         assertEquals("Hi! How can I help with live M3 data today?", response.getReply());
         assertEquals("conversational", response.getActionTaken());
-        verify(openAIService).understandRequest(any(), eq("hi"));
+        verify(openAIService).understandRequest(any(), eq("hi"), any());
         verify(pythonRagService).route("hi");
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
         verify(openAIService, never()).rewriteQueries(any(), anyString());
-        verify(openAIService, never()).chatWithoutPersistence(any(), any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -2423,7 +3402,7 @@ class ComprehendChatServiceTest {
         stubSanitize();
         stubPythonRoute("what is GLS037", "rag");
         List<String> queries = List.of("GLS037 accounting identities", "GLS037 Infor M3");
-        when(openAIService.understandRequest(any(), eq("what is GLS037"))).thenReturn(new RequestUnderstandResult(
+        when(openAIService.understandRequest(any(), eq("what is GLS037"), any())).thenReturn(new RequestUnderstandResult(
                 RequestUnderstandType.RAG,
                 "",
                 queries,
@@ -2458,13 +3437,13 @@ class ComprehendChatServiceTest {
                 Map.of(),
                 List.of("What is the customer number?")
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "get customer ABC")).thenReturn(lexResult);
+        when(lexService.recognizeText("tenant1:user1:session1", "get customer ABC", ChatPersistenceService.LOCALE_EN_US)).thenReturn(lexResult);
 
         ChatResponse response = comprehendChatService.chat(baseRequest("get customer ABC"));
 
         assertEquals("What is the customer number?", response.getReply());
         verify(pythonRagService).route("get customer ABC");
-        verify(openAIService, never()).understandRequest(any(), anyString());
+        verify(openAIService, never()).understandRequest(any(), anyString(), any());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
     }
 
@@ -2486,7 +3465,7 @@ class ComprehendChatServiceTest {
                 Map.of("CustomerNumber", "Y11100"),
                 List.of()
         );
-        when(lexService.recognizeText("tenant1:user1:session1", original)).thenReturn(lexResult);
+        when(lexService.recognizeText("tenant1:user1:session1", original, ChatPersistenceService.LOCALE_EN_US)).thenReturn(lexResult);
         ChatResponse fulfillResponse = new ChatResponse("Customer Y11100", false);
         fulfillResponse.setActionTaken("read");
         fulfillResponse.setM3Request(new M3RequestDto(true, "CRS610MI", "GetBasicData", Map.of("CUNO", "Y11100")));
@@ -2496,8 +3475,8 @@ class ComprehendChatServiceTest {
         ChatResponse response = comprehendChatService.chat(baseRequest(original));
 
         assertEquals("read", response.getActionTaken());
-        verify(lexService).recognizeText("tenant1:user1:session1", original);
-        verify(openAIService, never()).understandRequest(any(), anyString());
+        verify(lexService).recognizeText("tenant1:user1:session1", original, ChatPersistenceService.LOCALE_EN_US);
+        verify(openAIService, never()).understandRequest(any(), anyString(), any());
         verify(piiProtectionService).anonymize(original);
         verify(chatPersistenceService).persistChat(
                 eq("tenant1"),
@@ -2513,7 +3492,9 @@ class ComprehendChatServiceTest {
                 any(),
                 any(),
                 any(),
-                eq(ChatMode.AUTO)
+                eq(ChatMode.AUTO),
+                eq("en"),
+                eq(ChatPersistenceService.LOCALE_EN_US)
         );
     }
 
@@ -2522,7 +3503,7 @@ class ComprehendChatServiceTest {
         enableRequestRouter();
         stubQuotaAllowed();
         stubSanitize();
-        when(openAIService.understandRequest(any(), eq("get customer ABC"))).thenReturn(new RequestUnderstandResult(
+        when(openAIService.understandRequest(any(), eq("get customer ABC"), any())).thenReturn(new RequestUnderstandResult(
                 RequestUnderstandType.LIVE_M3,
                 "",
                 List.of(),
@@ -2537,7 +3518,7 @@ class ComprehendChatServiceTest {
         assertEquals("docs_live_steer", response.getActionTaken());
         verify(pythonRagService, never()).route(anyString());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -2545,7 +3526,7 @@ class ComprehendChatServiceTest {
         enableRequestRouter();
         stubQuotaAllowed();
         stubSanitize();
-        when(openAIService.understandRequest(any(), eq("what is AWS"))).thenReturn(new RequestUnderstandResult(
+        when(openAIService.understandRequest(any(), eq("what is AWS"), any())).thenReturn(new RequestUnderstandResult(
                 RequestUnderstandType.NON_M3,
                 "",
                 List.of(),
@@ -2561,8 +3542,8 @@ class ComprehendChatServiceTest {
         assertEquals("docs_non_m3_steer", response.getActionTaken());
         verify(pythonRagService, never()).route(anyString());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
-        verify(openAIService, never()).chatWithoutPersistence(any(), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
+        verify(openAIService, never()).chatWithoutPersistence(any(), any(), any());
     }
 
     @Test
@@ -2570,7 +3551,7 @@ class ComprehendChatServiceTest {
         enableRequestRouter();
         stubQuotaAllowed();
         stubSanitize();
-        when(openAIService.understandRequest(any(), eq("what is SAP"))).thenReturn(new RequestUnderstandResult(
+        when(openAIService.understandRequest(any(), eq("what is SAP"), any())).thenReturn(new RequestUnderstandResult(
                 RequestUnderstandType.NON_M3,
                 "",
                 List.of(),
@@ -2585,7 +3566,7 @@ class ComprehendChatServiceTest {
         assertEquals(ComprehendChatService.DEFAULT_DOCS_NON_M3_MESSAGE, response.getReply());
         assertEquals("docs_non_m3_steer", response.getActionTaken());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -2594,7 +3575,7 @@ class ComprehendChatServiceTest {
         stubQuotaAllowed();
         stubSanitize();
         String plannerReply = "Docs mode covers Infor M3 documentation. Switch to Auto for general topics.";
-        when(openAIService.understandRequest(any(), eq("tell me a joke"))).thenReturn(new RequestUnderstandResult(
+        when(openAIService.understandRequest(any(), eq("tell me a joke"), any())).thenReturn(new RequestUnderstandResult(
                 RequestUnderstandType.NON_M3,
                 plannerReply,
                 List.of(),
@@ -2621,7 +3602,7 @@ class ComprehendChatServiceTest {
         comprehendChatService.chat(baseRequest("how to create customer"));
 
         verify(pythonRagService).route("how to create customer");
-        verify(openAIService, never()).understandRequest(any(), anyString());
+        verify(openAIService, never()).understandRequest(any(), anyString(), any());
     }
 
     static Stream<Arguments> conversationalNaturalReplyCases() {
@@ -2642,7 +3623,7 @@ class ComprehendChatServiceTest {
         if (mode != ChatMode.DOCS) {
             stubPythonRoute(message, "rag");
         }
-        when(openAIService.understandRequest(any(), eq(message))).thenReturn(new RequestUnderstandResult(
+        when(openAIService.understandRequest(any(), eq(message), any())).thenReturn(new RequestUnderstandResult(
                 RequestUnderstandType.CONVERSATIONAL,
                 plannerReply,
                 List.of(),
@@ -2655,8 +3636,8 @@ class ComprehendChatServiceTest {
 
         assertEquals(plannerReply, response.getReply());
         assertEquals("conversational", response.getActionTaken());
-        verify(openAIService).understandRequest(any(), eq(message));
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(openAIService).understandRequest(any(), eq(message), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
         if (mode == ChatMode.DOCS) {
             verify(pythonRagService, never()).route(anyString());
@@ -2671,7 +3652,7 @@ class ComprehendChatServiceTest {
         stubQuotaAllowed();
         stubSanitize();
         stubPythonRoute("hi", "rag");
-        when(openAIService.understandRequest(any(), eq("hi"))).thenReturn(new RequestUnderstandResult(
+        when(openAIService.understandRequest(any(), eq("hi"), any())).thenReturn(new RequestUnderstandResult(
                 RequestUnderstandType.CONVERSATIONAL,
                 "",
                 List.of(),
@@ -2684,8 +3665,8 @@ class ComprehendChatServiceTest {
 
         assertEquals(ComprehendChatService.DEFAULT_M3_CONVERSATIONAL_MESSAGE, response.getReply());
         assertEquals("conversational", response.getActionTaken());
-        verify(openAIService).understandRequest(any(), eq("hi"));
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(openAIService).understandRequest(any(), eq("hi"), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -2704,16 +3685,16 @@ class ComprehendChatServiceTest {
                 Map.of("CustomerNumber", "Y00111"),
                 List.of("Here are the customer details.")
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "Show customer Y00111")).thenReturn(lexResult);
+        when(lexService.recognizeText("tenant1:user1:session1", "Show customer Y00111", ChatPersistenceService.LOCALE_EN_US)).thenReturn(lexResult);
 
         ChatRequest request = baseRequest("Show customer Y00111");
         request.setMode(ChatMode.M3);
         ChatResponse response = comprehendChatService.chat(request);
 
         assertEquals("Here are the customer details.", response.getReply());
-        verify(lexService).recognizeText("tenant1:user1:session1", "Show customer Y00111");
+        verify(lexService).recognizeText("tenant1:user1:session1", "Show customer Y00111", ChatPersistenceService.LOCALE_EN_US);
         verify(pythonRagService).route("Show customer Y00111");
-        verify(openAIService, never()).understandRequest(any(), anyString());
+        verify(openAIService, never()).understandRequest(any(), anyString(), any());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
     }
 
@@ -2723,7 +3704,7 @@ class ComprehendChatServiceTest {
         stubQuotaAllowed();
         stubSanitize();
         stubPythonRoute("what is OIS100?", "rag");
-        when(openAIService.understandRequest(any(), eq("what is OIS100?"))).thenReturn(new RequestUnderstandResult(
+        when(openAIService.understandRequest(any(), eq("what is OIS100?"), any())).thenReturn(new RequestUnderstandResult(
                 RequestUnderstandType.RAG,
                 "",
                 List.of("OIS100"),
@@ -2736,7 +3717,7 @@ class ComprehendChatServiceTest {
 
         assertEquals(ComprehendChatService.DEFAULT_M3_DOCS_STEER_MESSAGE, response.getReply());
         assertEquals("m3_docs_steer", response.getActionTaken());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
         verify(pythonRagService).route("what is OIS100?");
         verify(suggestionEngineService, never()).generateSuggestions(any());
@@ -2749,7 +3730,7 @@ class ComprehendChatServiceTest {
         stubSanitize();
         stubPythonRoute("adhoc reporting", "rag");
         String plannerReply = "In M3 mode I focus on live tenant data. Switch to Auto or Docs for reporting how-tos.";
-        when(openAIService.understandRequest(any(), eq("adhoc reporting"))).thenReturn(new RequestUnderstandResult(
+        when(openAIService.understandRequest(any(), eq("adhoc reporting"), any())).thenReturn(new RequestUnderstandResult(
                 RequestUnderstandType.RAG,
                 plannerReply,
                 List.of("adhoc reporting"),
@@ -2763,7 +3744,7 @@ class ComprehendChatServiceTest {
         assertEquals(plannerReply, response.getReply());
         assertEquals("m3_docs_steer", response.getActionTaken());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -2772,7 +3753,7 @@ class ComprehendChatServiceTest {
         stubQuotaAllowed();
         stubSanitize();
         stubPythonRoute("tell me a joke", "rag");
-        when(openAIService.understandRequest(any(), eq("tell me a joke"))).thenReturn(new RequestUnderstandResult(
+        when(openAIService.understandRequest(any(), eq("tell me a joke"), any())).thenReturn(new RequestUnderstandResult(
                 RequestUnderstandType.NON_M3,
                 "I mainly support Infor M3 and CloudSuite questions.",
                 List.of(),
@@ -2785,7 +3766,7 @@ class ComprehendChatServiceTest {
 
         assertEquals(ComprehendChatService.DEFAULT_M3_NON_M3_MESSAGE, response.getReply());
         assertEquals("m3_non_m3_steer", response.getActionTaken());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
         verify(pythonRagService).route("tell me a joke");
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
     }
@@ -2803,8 +3784,8 @@ class ComprehendChatServiceTest {
 
         assertEquals(ComprehendChatService.DEFAULT_M3_CLASSIFIER_ERROR_MESSAGE, response.getReply());
         assertEquals("m3_classifier_error", response.getActionTaken());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
-        verify(openAIService, never()).understandRequest(any(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
+        verify(openAIService, never()).understandRequest(any(), anyString(), any());
     }
 
     @Test
@@ -2825,7 +3806,7 @@ class ComprehendChatServiceTest {
                 List.of(),
                 Map.of(LexRecognizeResult.ATTR_REQUESTED_INFORMATION, "CREDIT_LIMIT")
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "Y00111")).thenReturn(lexResult);
+        when(lexService.recognizeText("tenant1:user1:session1", "Y00111", ChatPersistenceService.LOCALE_EN_US)).thenReturn(lexResult);
 
         M3RequestDto m3Request = new M3RequestDto(true, "CRS610MI", "GetFinancial", Map.of("CUNO", "Y00111"));
         ChatResponse fulfillResponse = new ChatResponse("Credit limit for Y00111...", false);
@@ -2840,10 +3821,10 @@ class ComprehendChatServiceTest {
 
         assertEquals("read", response.getActionTaken());
         assertNotNull(response.getM3Request());
-        verify(openAIService, never()).understandRequest(any(), anyString());
+        verify(openAIService, never()).understandRequest(any(), anyString(), any());
         verify(pythonRagService, never()).route(anyString());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
-        verify(lexService).recognizeText("tenant1:user1:session1", "Y00111");
+        verify(lexService).recognizeText("tenant1:user1:session1", "Y00111", ChatPersistenceService.LOCALE_EN_US);
     }
 
     @Test
@@ -2862,7 +3843,7 @@ class ComprehendChatServiceTest {
         assertEquals("general_redirect", response.getActionTaken());
         verify(pythonRagService).route("tell me about trip planning");
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -2878,7 +3859,7 @@ class ComprehendChatServiceTest {
 
         verify(pythonRagService, never()).route(anyString());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
         assertEquals("docs_non_m3_steer", response.getActionTaken());
         assertEquals(ComprehendChatService.DEFAULT_DOCS_NON_M3_MESSAGE, response.getReply());
     }
@@ -2897,7 +3878,7 @@ class ComprehendChatServiceTest {
         assertEquals("general_redirect", response.getActionTaken());
         verify(pythonRagService).route("what is the weather");
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -2916,7 +3897,7 @@ class ComprehendChatServiceTest {
         assertEquals("rag", response.getActionTaken());
         verify(pythonRagService).route("what is OIS100?");
         verify(pythonRagService).retrieve(eq("what is OIS100?"), anyList(), any(), any(), any(), any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -2934,7 +3915,7 @@ class ComprehendChatServiceTest {
         assertEquals("rag", response.getActionTaken());
         verify(pythonRagService, never()).route(anyString());
         verify(pythonRagService).retrieve(anyString(), anyList(), any(), any(), any(), any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -2950,8 +3931,8 @@ class ComprehendChatServiceTest {
         comprehendChatService.chat(request);
 
         verify(pythonRagService).route("fetch customer Y11100");
-        verify(openAIService, never()).understandRequest(any(), anyString());
-        verify(lexService).recognizeText("tenant1:user1:session1", "fetch customer Y11100");
+        verify(openAIService, never()).understandRequest(any(), anyString(), any());
+        verify(lexService).recognizeText("tenant1:user1:session1", "fetch customer Y11100", ChatPersistenceService.LOCALE_EN_US);
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
     }
 
@@ -2970,7 +3951,7 @@ class ComprehendChatServiceTest {
         assertEquals("docs_live_steer", response.getActionTaken());
         verify(pythonRagService, never()).route(anyString());
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -2990,7 +3971,7 @@ class ComprehendChatServiceTest {
         assertEquals("rag", response.getActionTaken());
         verify(pythonRagService).route(message);
         verify(pythonRagService).retrieve(eq(message), anyList(), any(), any(), any(), any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -3007,8 +3988,8 @@ class ComprehendChatServiceTest {
         comprehendChatService.chat(request);
 
         verify(pythonRagService).route(message);
-        verify(openAIService, never()).understandRequest(any(), anyString());
-        verify(lexService).recognizeText("tenant1:user1:session1", message);
+        verify(openAIService, never()).understandRequest(any(), anyString(), any());
+        verify(lexService).recognizeText("tenant1:user1:session1", message, ChatPersistenceService.LOCALE_EN_US);
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
     }
 
@@ -3029,7 +4010,7 @@ class ComprehendChatServiceTest {
         assertEquals("m3_docs_steer", response.getActionTaken());
         verify(pythonRagService).route(message);
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -3049,7 +4030,7 @@ class ComprehendChatServiceTest {
         assertEquals("rag", response.getActionTaken());
         verify(pythonRagService).route(message);
         verify(pythonRagService).retrieve(eq(message), anyList(), any(), any(), any(), any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @Test
@@ -3066,8 +4047,8 @@ class ComprehendChatServiceTest {
         ChatResponse response = comprehendChatService.chat(request);
 
         assertEquals("rag", response.getActionTaken());
-        verify(openAIService).understandRequest(any(), eq("what is OIS100?"));
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(openAIService).understandRequest(any(), eq("what is OIS100?"), any());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
     }
 
     @ParameterizedTest(name = "route={0} handler={1} allow={2}")
@@ -3108,10 +4089,10 @@ class ComprehendChatServiceTest {
 
         assertEquals("Hello! How can I help you today?", response.getReply());
         assertEquals("conversational", response.getActionTaken());
-        verify(openAIService).understandRequest(any(), eq("hello"));
+        verify(openAIService).understandRequest(any(), eq("hello"), any());
         verify(pythonRagService).route("hello");
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
-        verify(lexService, never()).recognizeText(anyString(), anyString());
+        verify(lexService, never()).recognizeText(anyString(), anyString(), anyString());
         verify(suggestionEngineService, never()).generateSuggestions(any());
     }
 
@@ -3131,7 +4112,7 @@ class ComprehendChatServiceTest {
                 Map.of("CustomerNumber", "Y11100"),
                 List.of()
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "show customer orders for Y11100"))
+        when(lexService.recognizeText("tenant1:user1:session1", "show customer orders for Y11100", ChatPersistenceService.LOCALE_EN_US))
                 .thenReturn(lexResult);
         ChatResponse fulfillResponse = new ChatResponse("Orders for Y11100", false);
         fulfillResponse.setActionTaken("search");
@@ -3144,8 +4125,8 @@ class ComprehendChatServiceTest {
         comprehendChatService.chat(request);
 
         verify(pythonRagService).route("show customer orders for Y11100");
-        verify(openAIService, never()).understandRequest(any(), anyString());
-        verify(lexService).recognizeText("tenant1:user1:session1", "show customer orders for Y11100");
+        verify(openAIService, never()).understandRequest(any(), anyString(), any());
+        verify(lexService).recognizeText("tenant1:user1:session1", "show customer orders for Y11100", ChatPersistenceService.LOCALE_EN_US);
         verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
         ArgumentCaptor<LexRecognizeResult> lexCaptor = ArgumentCaptor.forClass(LexRecognizeResult.class);
         verify(lexFulfillmentService).fulfillOutcome(lexCaptor.capture(), eq("show customer orders for Y11100"), any());
@@ -3169,7 +4150,7 @@ class ComprehendChatServiceTest {
                 Map.of("CustomerNumber", "Y11100"),
                 List.of()
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "fetch customer Y11100")).thenReturn(confused);
+        when(lexService.recognizeText("tenant1:user1:session1", "fetch customer Y11100", ChatPersistenceService.LOCALE_EN_US)).thenReturn(confused);
         ChatResponse fulfillResponse = new ChatResponse("Customer Y11100", false);
         fulfillResponse.setActionTaken("read");
         fulfillResponse.setM3Request(new M3RequestDto(true, "CRS610MI", "GetBasicData", Map.of("CUNO", "Y11100")));
@@ -3202,7 +4183,7 @@ class ComprehendChatServiceTest {
                 Map.of(),
                 List.of("What is the order number?")
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "show customer Y11100")).thenReturn(confused);
+        when(lexService.recognizeText("tenant1:user1:session1", "show customer Y11100", ChatPersistenceService.LOCALE_EN_US)).thenReturn(confused);
 
         ChatResponse response = comprehendChatService.chat(baseRequest("show customer Y11100"));
 
@@ -3228,7 +4209,7 @@ class ComprehendChatServiceTest {
                 Map.of("CustomerNumber", "Y11100"),
                 List.of()
         );
-        when(lexService.recognizeText("tenant1:user1:session1", "fetch customer orders for Y11100"))
+        when(lexService.recognizeText("tenant1:user1:session1", "fetch customer orders for Y11100", ChatPersistenceService.LOCALE_EN_US))
                 .thenReturn(lexResult);
         ChatResponse fulfillResponse = new ChatResponse("Orders", false);
         fulfillResponse.setActionTaken("search");
@@ -3244,7 +4225,7 @@ class ComprehendChatServiceTest {
     }
 
     private void stubUnderstand(String message, RequestUnderstandType type, String response) {
-        when(openAIService.understandRequest(any(), eq(message))).thenReturn(new RequestUnderstandResult(
+        when(openAIService.understandRequest(any(), eq(message), any())).thenReturn(new RequestUnderstandResult(
                 type,
                 response,
                 List.of(),
@@ -3253,7 +4234,7 @@ class ComprehendChatServiceTest {
     }
 
     private void stubUnderstandRag(String message, List<String> queries) {
-        when(openAIService.understandRequest(any(), eq(message))).thenReturn(new RequestUnderstandResult(
+        when(openAIService.understandRequest(any(), eq(message), any())).thenReturn(new RequestUnderstandResult(
                 RequestUnderstandType.RAG,
                 "",
                 queries,
@@ -3262,7 +4243,7 @@ class ComprehendChatServiceTest {
     }
 
     private void stubUnderstandLive(String message) {
-        when(openAIService.understandRequest(any(), eq(message))).thenReturn(new RequestUnderstandResult(
+        when(openAIService.understandRequest(any(), eq(message), any())).thenReturn(new RequestUnderstandResult(
                 RequestUnderstandType.LIVE_M3,
                 "",
                 List.of(),
@@ -3281,7 +4262,7 @@ class ComprehendChatServiceTest {
                 Map.of("CustomerNumber", cuno),
                 List.of()
         );
-        when(lexService.recognizeText("tenant1:user1:session1", message)).thenReturn(lexResult);
+        when(lexService.recognizeText("tenant1:user1:session1", message, ChatPersistenceService.LOCALE_EN_US)).thenReturn(lexResult);
         ChatResponse fulfillResponse = new ChatResponse("Customer " + cuno, false);
         fulfillResponse.setActionTaken("read");
         fulfillResponse.setM3Request(new M3RequestDto(true, "CRS610MI", "GetBasicData", Map.of("CUNO", cuno)));

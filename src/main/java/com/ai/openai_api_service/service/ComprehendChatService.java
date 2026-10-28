@@ -33,6 +33,13 @@ import com.ai.openai_api_service.model.rag.GroundedRagCallResult;
 import com.ai.openai_api_service.model.rag.GroundedRagResult;
 import com.ai.openai_api_service.model.rag.RagStatus;
 import com.ai.openai_api_service.service.guided.GuidedSearchService;
+import com.ai.openai_api_service.service.i18n.AcceptedRomanScript;
+import com.ai.openai_api_service.service.i18n.LanguageDetectionResult;
+import com.ai.openai_api_service.service.i18n.LanguageDetectionService;
+import com.ai.openai_api_service.service.i18n.ResponseLanguageSwitch;
+import com.ai.openai_api_service.service.i18n.RomanScriptClassifier;
+import com.ai.openai_api_service.service.i18n.SupportedResponseLanguages;
+import com.ai.openai_api_service.service.i18n.TranslationService;
 import com.ai.openai_api_service.service.guided.InMemoryGuidedSearchSessionService;
 import com.ai.openai_api_service.service.lex.InMemoryPendingLexSessionService;
 import com.ai.openai_api_service.service.protection.BusinessInformationProtectionService;
@@ -45,6 +52,8 @@ import com.ai.openai_api_service.service.protection.ProtectionSession;
 import com.ai.openai_api_service.service.query.SearchContextService;
 import com.ai.openai_api_service.service.rag.ProgramIdDetector;
 import com.ai.openai_api_service.service.rag.SearchQueryAssembler;
+import com.ai.openai_api_service.service.timing.FlowTrace;
+import com.ai.openai_api_service.service.timing.FlowTraceLog;
 import com.ai.openai_api_service.service.timing.ChatRequestSummaryLog;
 import com.ai.openai_api_service.service.timing.ChatStageSplitTracker;
 import com.ai.openai_api_service.service.timing.RoutingCallTracker;
@@ -69,6 +78,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -120,6 +130,12 @@ public class ComprehendChatService {
             "I'm your Infor M3 live assistant. I can retrieve tenant data such as customer and order details. "
                     + "Try something like \"Show customer Y00111\". For how-to and documentation, switch to Auto or Docs.";
 
+    static final String UNSUPPORTED_LANGUAGE_REPLY =
+            "This language is not supported. The supported languages are English, Hindi, Marathi, German, Spanish, and French. You can search with these languages.";
+
+    static final String LANGUAGE_SWITCH_ACK =
+            "Okay — I will reply in this language for this conversation.";
+
     static final String DEFAULT_AUTO_CONVERSATIONAL_MESSAGE =
             "I'm your Infor M3 assistant. I can look up live tenant data and help with M3 documentation and how-to questions. "
                     + "Ask for a customer or order lookup, or a how-to such as creating a customer order.";
@@ -145,6 +161,10 @@ public class ComprehendChatService {
     private final BusinessInformationProtectionService businessInformationProtectionService;
     private final PiiProtectionService piiProtectionService;
     private final BusinessPlaceholderRestorer businessPlaceholderRestorer;
+    private final LanguageDetectionService languageDetectionService;
+    private final TranslationService translationService;
+    private final RomanScriptClassifier romanScriptClassifier;
+    private final SupportedResponseLanguages supportedResponseLanguages;
     private final ExecutorService suggestionExecutor;
 
     @Value("${openai.response.include-sanitization-debug:false}")
@@ -210,6 +230,10 @@ public class ComprehendChatService {
             BusinessInformationProtectionService businessInformationProtectionService,
             PiiProtectionService piiProtectionService,
             BusinessPlaceholderRestorer businessPlaceholderRestorer,
+            LanguageDetectionService languageDetectionService,
+            TranslationService translationService,
+            RomanScriptClassifier romanScriptClassifier,
+            SupportedResponseLanguages supportedResponseLanguages,
             @Qualifier(SuggestionExecutorConfig.SUGGESTION_EXECUTOR_BEAN) ExecutorService suggestionExecutor
     ) {
         this.chatPersistenceService = chatPersistenceService;
@@ -229,6 +253,10 @@ public class ComprehendChatService {
         this.businessInformationProtectionService = businessInformationProtectionService;
         this.piiProtectionService = piiProtectionService;
         this.businessPlaceholderRestorer = businessPlaceholderRestorer;
+        this.languageDetectionService = languageDetectionService;
+        this.translationService = translationService;
+        this.romanScriptClassifier = romanScriptClassifier;
+        this.supportedResponseLanguages = supportedResponseLanguages;
         this.suggestionExecutor = suggestionExecutor;
     }
 
@@ -271,8 +299,10 @@ public class ComprehendChatService {
         }
 
         RoutingSummaryState routingSummary = new RoutingSummaryState();
+        FlowTrace.begin();
         ChatResponse chatResponse = null;
         String route = null;
+        String resolvedLocale = ChatPersistenceService.LOCALE_EN_US;
         RoutingCallTracker.begin();
         ChatStageSplitTracker.begin();
         try {
@@ -284,7 +314,9 @@ public class ComprehendChatService {
         quotaMs = quotaCheckMs;
         if (!quotaCheck.allowed()) {
             markServiceEnd(timingSnapshot, Instant.now(), requestStartMs);
-            return blockedQuotaResponse(quotaCheck);
+            ChatResponse blocked = blockedQuotaResponse(quotaCheck);
+            blocked.setLocale(resolvedLocale);
+            return blocked;
         }
 
         Instant sessionLimitStart = Instant.now();
@@ -310,22 +342,121 @@ public class ComprehendChatService {
         ChatMode resolvedMode = resolveMode(request);
 
         String originalUserText = request.getUserMessage();
+        FlowTrace.question(originalUserText);
         String sanitizedUserText = null;
         ChatRequest workingRequest = request;
         ProtectionSession protectionSession = null;
 
         log.info(
-                "ComprehendChatService.chat tenantCode={}, userId={}, sessionId={}, mode={}, editOfRequestLogId={}, originalLength={}",
+                "ComprehendChatService.chat tenantCode={}, userId={}, sessionId={}, mode={}, editOfRequestLogId={}, originalLength={}, question='{}'",
                 request.getTenantCode(),
                 request.getUserId(),
                 request.getSessionId(),
                 resolvedMode,
                 editOfRequestLogId,
-                originalUserText != null ? originalUserText.length() : 0
+                originalUserText != null ? originalUserText.length() : 0,
+                RoutingSummaryLog.questionForLog(originalUserText)
         );
-
+        LanguageDetectionResult detectedLanguage = logLanguageDetection(originalUserText);
+        FlowTrace.language(detectedLanguage);
+        // Explicit switch is matched on the original message before translate/BIP.
+        Optional<String> languageSwitchLocale = ResponseLanguageSwitch.resolvePreferredLocale(
+                originalUserText,
+                supportedResponseLanguages
+        );
+        boolean languageSwitchOnly = languageSwitchLocale.isPresent()
+                && ResponseLanguageSwitch.isSwitchOnly(originalUserText);
+        boolean unsupportedLanguageTurn = isUnsupportedLanguageTurn(originalUserText, detectedLanguage);
+        String normalizedEnglishMessage;
         routingSummary.setRequestText(originalUserText);
         routingSummary.setMode(resolvedMode);
+        if (languageSwitchOnly) {
+            resolvedLocale = languageSwitchLocale.get();
+            saveSessionLocale(request, resolvedLocale);
+            FlowTrace.markLanguage("certain", languageCodeFromLocale(resolvedLocale), resolvedLocale);
+            FlowTrace.responseLocale(resolvedLocale);
+            FlowTrace.markTranslation("skipped");
+            normalizedEnglishMessage = originalUserText;
+            unsupportedLanguageTurn = false;
+            routingSummary.setPythonRoute("SKIP");
+            routingSummary.setPlanner("SKIP");
+            routingSummary.setRoute("conversational");
+            routingSummary.setHandler("language-switch");
+            route = "conversational";
+            chatResponse = new ChatResponse(LANGUAGE_SWITCH_ACK, false);
+            chatResponse.setActionTaken("conversational");
+            long piiStartMs = System.currentTimeMillis();
+            sanitizedUserText = anonymizeForPersistence(originalUserText);
+            piiDetectionMs = System.currentTimeMillis() - piiStartMs;
+        } else if (unsupportedLanguageTurn && hasActiveInteractionGate(request)) {
+            // Active guided / pending Lex owns the turn (including cancel) before unsupported reply.
+            resolvedLocale = resolveLocaleForActiveGate(request);
+            FlowTrace.markLanguage("certain", "en", resolvedLocale);
+            FlowTrace.responseLocale(resolvedLocale);
+            FlowTrace.markTranslation("skipped");
+            normalizedEnglishMessage = originalUserText;
+            unsupportedLanguageTurn = false;
+        } else if (unsupportedLanguageTurn) {
+            Optional<AcceptedRomanScript> accepted = romanScriptClassifier == null
+                    ? Optional.empty()
+                    : romanScriptClassifier.classify(originalUserText);
+            if (accepted != null && accepted.isPresent()) {
+                AcceptedRomanScript script = accepted.get();
+                // Romanized hi/mr: Bedrock/LLM only — never Amazon Translate (known corruption).
+                normalizedEnglishMessage = translationService.normalizeRomanized(originalUserText, script);
+                resolvedLocale = script.locale();
+                saveSessionLocale(request, resolvedLocale);
+                FlowTrace.markLanguage("certain", script.languageCode(), resolvedLocale);
+                FlowTrace.responseLocale(resolvedLocale);
+                unsupportedLanguageTurn = false;
+            } else if (shouldTreatUncertainLatinAsEnglish(detectedLanguage, originalUserText)) {
+                // Classifier empty/OTHER + Latin letters only (no strong non-English script) → English.
+                resolvedLocale = ChatPersistenceService.LOCALE_EN_US;
+                saveSessionLocale(request, resolvedLocale);
+                FlowTrace.markLanguage("certain", "en", resolvedLocale);
+                FlowTrace.responseLocale(resolvedLocale);
+                FlowTrace.markTranslation("skipped");
+                normalizedEnglishMessage = originalUserText;
+                unsupportedLanguageTurn = false;
+            } else {
+                String saved = readSavedSessionLocale(request);
+                if (supportedResponseLanguages.isResponseLocale(saved)) {
+                    resolvedLocale = saved;
+                }
+                FlowTrace.markLanguage("uncertain", LanguageDetectionService.NO_LANGUAGE, "unchanged");
+                FlowTrace.markTranslation("skipped");
+                normalizedEnglishMessage = originalUserText;
+                routingSummary.setPythonRoute("SKIP");
+                routingSummary.setPlanner("SKIP");
+                routingSummary.setRoute("skipped");
+                routingSummary.setHandler("unsupported");
+                route = "skipped";
+                chatResponse = new ChatResponse(UNSUPPORTED_LANGUAGE_REPLY, false);
+                long piiStartMs = System.currentTimeMillis();
+                sanitizedUserText = anonymizeForPersistence(originalUserText);
+                piiDetectionMs = System.currentTimeMillis() - piiStartMs;
+            }
+        } else {
+            if (languageSwitchLocale.isPresent()) {
+                // Explicit switch wins for this turn; meaningful remainder still routes normally.
+                resolvedLocale = languageSwitchLocale.get();
+                saveSessionLocale(request, resolvedLocale);
+            } else {
+                resolvedLocale = resolveConversationLocale(request, detectedLanguage);
+            }
+            FlowTrace.markLanguage("certain", languageCodeFromLocale(resolvedLocale), resolvedLocale);
+            FlowTrace.responseLocale(resolvedLocale);
+            log.info(
+                    "ComprehendChatService.responseLocale detectedLanguage={} detectedLocale={} selectedLanguage={} selectedLocale={} responseLocale={} languageSwitch={}",
+                    detectedLanguage.detectedLanguage(),
+                    detectedLanguage.detectedLocale(),
+                    detectedLanguage.selectedLanguage(),
+                    detectedLanguage.selectedLocale(),
+                    resolvedLocale,
+                    languageSwitchLocale.isPresent()
+            );
+            normalizedEnglishMessage = translationService.normalize(originalUserText, detectedLanguage);
+        }
         boolean guidedHandled = false;
         List<SourceItem> sourcesForSuggestions = null;
         List<SourceItem> responseSources = null;
@@ -333,7 +464,8 @@ public class ComprehendChatService {
         Integer retrievalTimeMs = null;
         Float maxScore = null;
 
-        GuidedRouteAttempt guidedAttempt = tryHandleActiveGuidedTurn(request, originalUserText);
+        if (!unsupportedLanguageTurn && !languageSwitchOnly) {
+        GuidedRouteAttempt guidedAttempt = tryHandleActiveGuidedTurn(request, normalizedEnglishMessage);
         if (guidedAttempt.guidedHandled()) {
             guidedHandled = true;
             chatResponse = guidedAttempt.response();
@@ -343,22 +475,22 @@ public class ComprehendChatService {
             routingSummary.setRoute("guided");
             routingSummary.setHandler("guided-search");
             long piiStartMs = System.currentTimeMillis();
-            sanitizedUserText = anonymizeForPersistence(originalUserText);
+            sanitizedUserText = anonymizeForPersistence(normalizedEnglishMessage);
             piiDetectionMs = System.currentTimeMillis() - piiStartMs;
         }
 
         boolean pendingLexHandled = false;
         if (!guidedHandled) {
-            String sanitizedForPending = originalUserText;
+            String sanitizedForPending = normalizedEnglishMessage;
             String lexSessionId = lexService.buildLexSessionId(request);
             if (lexService.isEnabled() && pendingLexSessionService.get(lexSessionId).isPresent()) {
                 long piiStartMs = System.currentTimeMillis();
-                sanitizedForPending = anonymizeForPersistence(originalUserText);
+                sanitizedForPending = anonymizeForPersistence(normalizedEnglishMessage);
                 piiDetectionMs = System.currentTimeMillis() - piiStartMs;
                 sanitizedUserText = sanitizedForPending;
             }
             PendingLexRouteAttempt pendingLexAttempt =
-                    tryHandlePendingLexTurn(request, originalUserText, sanitizedForPending);
+                    tryHandlePendingLexTurn(request, normalizedEnglishMessage, sanitizedForPending);
             if (pendingLexAttempt.pendingHandled()) {
                 pendingLexHandled = true;
                 LexLiveRouteResult lexResult = pendingLexAttempt.lexResult();
@@ -387,7 +519,7 @@ public class ComprehendChatService {
             if (requestRouterEnabled) {
                 if (mode == ChatMode.DOCS) {
                     routingSummary.setPythonRoute("SKIP");
-                    UnderstandRun understandRun = runUnderstandRequest(request, originalUserText);
+                    UnderstandRun understandRun = runUnderstandRequest(request, normalizedEnglishMessage, resolvedLocale);
                     protectionSession = understandRun.protectionSession();
                     sanitizedUserText = understandRun.sanitizedUserText();
                     workingRequest = understandRun.workingRequest();
@@ -402,11 +534,14 @@ public class ComprehendChatService {
                     if (understood != null) {
                         PlannerRouteOutcome docsOutcome = applyDocsPlannerOutcome(
                                 request,
-                                originalUserText,
+                                normalizedEnglishMessage,
                                 workingRequest,
                                 protectionSession,
                                 understood,
-                                routingSummary
+                                routingSummary,
+                                resolvedLocale,
+                                originalUserText,
+                                detectedLanguage.detectedLanguage()
                         );
                         routerHandled = docsOutcome.handled();
                         route = docsOutcome.route();
@@ -442,7 +577,7 @@ public class ComprehendChatService {
                         routingSummary.setHandler("documentation/retrieval");
                     }
                 } else {
-                    String pythonRoute = resolvePythonRouteValue(originalUserText, routingSummary);
+                    String pythonRoute = resolvePythonRouteValue(normalizedEnglishMessage, routingSummary);
                     if (ROUTE_LIVE.equalsIgnoreCase(pythonRoute)) {
                         routingSummary.setPlanner("SKIP");
                         route = ROUTE_LIVE;
@@ -460,7 +595,7 @@ public class ComprehendChatService {
                         if (pythonRoute == null) {
                             routingSummary.setFallback("RAG");
                         }
-                        UnderstandRun understandRun = runUnderstandRequest(request, originalUserText);
+                        UnderstandRun understandRun = runUnderstandRequest(request, normalizedEnglishMessage, resolvedLocale);
                         protectionSession = understandRun.protectionSession();
                         sanitizedUserText = understandRun.sanitizedUserText();
                         workingRequest = understandRun.workingRequest();
@@ -476,11 +611,14 @@ public class ComprehendChatService {
                             if (mode == ChatMode.AUTO) {
                                 PlannerRouteOutcome autoOutcome = applyAutoPlannerOutcome(
                                         request,
-                                        originalUserText,
+                                        normalizedEnglishMessage,
                                         workingRequest,
                                         protectionSession,
                                         understood,
-                                        routingSummary
+                                        routingSummary,
+                                        resolvedLocale,
+                                        originalUserText,
+                                        detectedLanguage.detectedLanguage()
                                 );
                                 routerHandled = autoOutcome.handled();
                                 route = autoOutcome.route();
@@ -513,7 +651,8 @@ public class ComprehendChatService {
                                 PlannerRouteOutcome m3Outcome = applyM3PlannerOutcome(
                                         workingRequest,
                                         understood,
-                                        routingSummary
+                                        routingSummary,
+                                        resolvedLocale
                                 );
                                 routerHandled = m3Outcome.handled();
                                 route = m3Outcome.route();
@@ -541,7 +680,7 @@ public class ComprehendChatService {
                 routingSummary.setRoute("rag");
                 routingSummary.setHandler("documentation/retrieval");
             } else if (mode == ChatMode.M3) {
-                String pythonRoute = resolvePythonRouteValue(originalUserText, routingSummary);
+                String pythonRoute = resolvePythonRouteValue(normalizedEnglishMessage, routingSummary);
                 routingSummary.setPlanner("SKIP");
                 if (ROUTE_LIVE.equalsIgnoreCase(pythonRoute)) {
                     route = ROUTE_LIVE;
@@ -555,7 +694,7 @@ public class ComprehendChatService {
                     routingSummary.setHandler("python-route");
                 }
             } else {
-                PythonRouteResponse routeResponse = pythonRagService.route(originalUserText);
+                PythonRouteResponse routeResponse = pythonRagService.route(normalizedEnglishMessage);
                 route = routeResponse != null ? routeResponse.getRoute() : "rag";
                 if (routeResponse != null && ROUTE_LIVE.equalsIgnoreCase(routeResponse.getRoute())) {
                     routingSummary.setPythonRoute("LIVE");
@@ -572,7 +711,7 @@ public class ComprehendChatService {
             }
             Instant routeEnd = Instant.now();
             RequestTimingLog.logStage("route", routeStart, routeEnd);
-            log.info(
+            log.debug(
                     "Comprehend route decision: mode='{}', route='{}', handler='{}', originalLength={}",
                     mode,
                     route,
@@ -597,7 +736,7 @@ public class ComprehendChatService {
             } else if (ROUTE_LIVE.equalsIgnoreCase(route)) {
                 if (sanitizedUserText == null) {
                     Instant piiStart = Instant.now();
-                    sanitizedUserText = anonymizeForPersistence(originalUserText);
+                    sanitizedUserText = anonymizeForPersistence(normalizedEnglishMessage);
                     Instant piiEnd = Instant.now();
                     piiDetectionMs = RequestTimingLog.durationMs(piiStart, piiEnd);
                     RequestTimingLog.logStage("pii", piiStart, piiEnd);
@@ -605,7 +744,7 @@ public class ComprehendChatService {
                 if (lexService.isEnabled()) {
                     LexLiveRouteResult lexResult = handleLexLiveRoute(
                             request,
-                            originalUserText,
+                            normalizedEnglishMessage,
                             sanitizedUserText
                     );
                     chatResponse = lexResult.chatResponse();
@@ -617,7 +756,7 @@ public class ComprehendChatService {
                         maxScore = lexResult.maxScore();
                     }
                 } else {
-                    chatResponse = handleLiveRoute(request, originalUserText);
+                    chatResponse = handleLiveRoute(request, normalizedEnglishMessage);
                     routingSummary.setHandler("live/python-chat");
                     routingSummary.setRoute(ROUTE_LIVE);
                 }
@@ -626,7 +765,7 @@ public class ComprehendChatService {
                 routingSummary.setHandler("documentation/retrieval");
                 Instant piiStart = Instant.now();
                 protectionSession = ProtectionSession.fromOriginal(
-                        originalUserText,
+                        normalizedEnglishMessage,
                         businessInformationProtectionService.isEnabled()
                 );
                 businessInformationProtectionService.protect(
@@ -651,14 +790,18 @@ public class ComprehendChatService {
                         entityCount,
                         piiChanged
                 );
+                recordProtectionCheckpoint(protectionSession);
 
                 String llmText = protectionSession.textForLlm();
                 sanitizedUserText = llmText;
                 workingRequest = copyRequestWithUserMessage(request, llmText);
                 DocRouteResult docResult = handleDocumentationRoute(
                         workingRequest,
+                        normalizedEnglishMessage,
+                        protectionSession,
+                        resolvedLocale,
                         originalUserText,
-                        protectionSession
+                        detectedLanguage.detectedLanguage()
                 );
                 chatResponse = docResult.chatResponse();
                 sourcesForSuggestions = docResult.sourcesForSuggestions();
@@ -698,9 +841,10 @@ public class ComprehendChatService {
                 }
             }
         }
+        }
 
         if (sanitizedUserText == null) {
-            sanitizedUserText = originalUserText;
+            sanitizedUserText = normalizedEnglishMessage;
         }
 
         if (Boolean.TRUE.equals(chatResponse.getLimitExceeded())) {
@@ -728,11 +872,13 @@ public class ComprehendChatService {
             }
         } catch (TenantQuotaExceededException e) {
             markServiceEnd(timingSnapshot, Instant.now(), requestStartMs);
-            return blockedQuotaExceptionResponse(e);
+            ChatResponse blocked = blockedQuotaExceptionResponse(e);
+            blocked.setLocale(resolvedLocale);
+            return blocked;
         }
         quotaMs = quotaCheckMs + recordUsageMs;
 
-        boolean sanitizedFlag = !Objects.equals(originalUserText, sanitizedUserText);
+        boolean sanitizedFlag = !Objects.equals(normalizedEnglishMessage, sanitizedUserText);
         Instant liveHistoryStart = Instant.now();
         LiveHistoryResult liveHistory = liveHistorySummaryBuilder.build(chatResponse).orElse(null);
         Instant liveHistoryEnd = Instant.now();
@@ -765,7 +911,9 @@ public class ComprehendChatService {
                         replyForPersistence
                 )
                         : null,
-                resolvedMode
+                resolvedMode,
+                detectedLanguage.detectedLanguage(),
+                resolvedLocale
         );
         if (editOfRequestLogId != null && requestLogId != null && editSessionPk != null) {
             boolean superseded = chatPersistenceService.supersedeEditedRequest(
@@ -941,7 +1089,16 @@ public class ComprehendChatService {
         }
 
         return chatResponse;
+        } catch (RuntimeException flowFailure) {
+            FlowTrace.markOutcome("ERROR", flowFailure.getClass().getSimpleName());
+            throw flowFailure;
+        } catch (Error flowFailure) {
+            FlowTrace.markOutcome("ERROR", flowFailure.getClass().getSimpleName());
+            throw flowFailure;
         } finally {
+            if (chatResponse != null) {
+                chatResponse.setLocale(resolvedLocale);
+            }
             if (chatResponse != null && chatResponse.getActionTaken() != null && !chatResponse.getActionTaken().isBlank()) {
                 routingSummary.setAction(chatResponse.getActionTaken());
             }
@@ -952,8 +1109,17 @@ public class ComprehendChatService {
                 routingSummary.setRoute(route);
             }
             long wallMs = RequestTimingLog.durationMs(serviceStart, Instant.now());
+            FlowTrace.markRouting(
+                    routingSummary.getMode(),
+                    routingSummary.getPythonRoute(),
+                    routingSummary.getPlanner(),
+                    routingSummary.getHandler(),
+                    RoutingCallTracker.lexCalled(),
+                    RoutingCallTracker.ragCalled(),
+                    wallMs
+            );
             RoutingSummaryLog.log(routingSummary, wallMs);
-            log.info(ChatRequestSummaryLog.formatTiming(
+            log.debug(ChatRequestSummaryLog.formatTiming(
                     RoutingCallTracker.pythonRouteMs(),
                     piiDetectionMs,
                     openaiMs,
@@ -965,13 +1131,13 @@ public class ComprehendChatService {
                     suggestionsMs,
                     wallMs
             ));
-            log.info(ChatRequestSummaryLog.formatPiiSplit(
+            log.debug(ChatRequestSummaryLog.formatPiiSplit(
                     ChatStageSplitTracker.businessProtectMs(),
                     ChatStageSplitTracker.comprehendMs(),
                     ChatStageSplitTracker.presidioMs(),
                     piiDetectionMs
             ));
-            log.info(ChatRequestSummaryLog.formatPersistSplit(
+            log.debug(ChatRequestSummaryLog.formatPersistSplit(
                     ChatStageSplitTracker.tenantLookupMs(),
                     ChatStageSplitTracker.userLookupMs(),
                     ChatStageSplitTracker.sessionLookupMs(),
@@ -980,7 +1146,7 @@ public class ComprehendChatService {
                     ChatStageSplitTracker.requestLogSaveMs(),
                     persistenceMs
             ));
-            log.info(ChatRequestSummaryLog.formatQuotaSplit(
+            log.debug(ChatRequestSummaryLog.formatQuotaSplit(
                     ChatStageSplitTracker.checkTenantMs(),
                     ChatStageSplitTracker.checkQuotaMs(),
                     quotaCheckMs,
@@ -994,7 +1160,7 @@ public class ComprehendChatService {
             ));
             int suggestionTokens = suggestionPromptTokens + suggestionCompletionTokens;
             int tokenTotal = routerPromptTokens + routerCompletionTokens + groundedTokens + gapFillTokens + suggestionTokens;
-            log.info(ChatRequestSummaryLog.formatTokens(
+            log.debug(ChatRequestSummaryLog.formatTokens(
                     routerPromptTokens + routerCompletionTokens,
                     groundedTokens,
                     gapFillTokens,
@@ -1003,6 +1169,206 @@ public class ComprehendChatService {
             ));
             ChatStageSplitTracker.clear();
             RoutingCallTracker.clear();
+            try {
+                FlowTraceLog.finish();
+            } finally {
+                FlowTrace.clear();
+            }
+        }
+    }
+
+    private LanguageDetectionResult logLanguageDetection(String originalUserText) {
+        LanguageDetectionResult detected;
+        try {
+            detected = languageDetectionService.detect(originalUserText);
+        } catch (RuntimeException ex) {
+            log.warn(
+                    "ComprehendChatService.languageDetection failed errorType={} fallback=true",
+                    ex.getClass().getSimpleName()
+            );
+            detected = LanguageDetectionResult.fallback(0.0);
+        }
+        log.info(
+                "ComprehendChatService.languageDetection detectedLanguage={} detectedLocale={} runnerUpLanguage={} selectedLanguage={} selectedLocale={} winnerConfidence={} runnerUp={} fallback={}",
+                detected.detectedLanguage(),
+                detected.detectedLocale(),
+                detected.runnerUpLanguage(),
+                detected.selectedLanguage(),
+                detected.selectedLocale(),
+                detected.winnerConfidence(),
+                detected.runnerUpConfidence() == null ? LanguageDetectionService.NO_LANGUAGE : detected.runnerUpConfidence(),
+                detected.fallback()
+        );
+        return detected;
+    }
+
+    /**
+     * A meaningful supported language, including English, becomes the answer language and is saved.
+     * Short, numeric, and identifier-only turns keep the saved or recovered locale and do not save a new one.
+     * Meaningful text detected as none or outside the six supported languages is answered by
+     * {@link #UNSUPPORTED_LANGUAGE_REPLY} and does not reach this method. Lex stays on English text and en_US.
+     */
+    private boolean isUnsupportedLanguageTurn(String text, LanguageDetectionResult detected) {
+        if (LanguageDetectionService.skipsTranslation(text)) {
+            return false;
+        }
+        String code = detected == null
+                ? LanguageDetectionService.NO_LANGUAGE
+                : detected.detectedLanguage();
+        return !supportedResponseLanguages.supportsLanguage(code);
+    }
+
+    /**
+     * True when guided search or pending Lex owns this tenant/user/session key.
+     * Used to skip the unsupported-language short-circuit so cancel and short turns reach the gate.
+     */
+    private boolean hasActiveInteractionGate(ChatRequest request) {
+        LexFulfillmentSession fulfillmentSession = LexFulfillmentSession.of(
+                request.getTenantCode(),
+                request.getUserId(),
+                request.getSessionId()
+        );
+        if (guidedSearchSessionService.find(fulfillmentSession).isPresent()) {
+            return true;
+        }
+        if (!lexService.isEnabled()) {
+            return false;
+        }
+        String lexSessionId = lexService.buildLexSessionId(request);
+        return pendingLexSessionService.get(lexSessionId).isPresent();
+    }
+
+    private String resolveLocaleForActiveGate(ChatRequest request) {
+        String saved = readSavedSessionLocale(request);
+        if (supportedResponseLanguages.isResponseLocale(saved)) {
+            return saved;
+        }
+        String recovered = readRecoveredSessionLocale(request);
+        if (supportedResponseLanguages.isResponseLocale(recovered)) {
+            return recovered;
+        }
+        return ChatPersistenceService.LOCALE_EN_US;
+    }
+
+    /**
+     * After RomanScriptClassifier returns empty/OTHER: Latin-letter text with no strong
+     * non-English script is treated as English. Concrete unsupported codes (e.g. {@code zu}) stay unsupported.
+     */
+    static boolean shouldTreatUncertainLatinAsEnglish(LanguageDetectionResult detected, String text) {
+        if (!isNoneOrUnknownDetection(detected)) {
+            return false;
+        }
+        return isLatinLetterOnlyWithoutStrongNonEnglishScript(text);
+    }
+
+    static boolean isNoneOrUnknownDetection(LanguageDetectionResult detected) {
+        if (detected == null) {
+            return true;
+        }
+        if (LanguageDetectionService.isUncertain(detected)) {
+            return true;
+        }
+        String code = detected.detectedLanguage();
+        return code == null
+                || LanguageDetectionService.NO_LANGUAGE.equals(code)
+                || "unknown".equalsIgnoreCase(code);
+    }
+
+    /**
+     * True when the text has at least one letter and every letter is Latin (or common/inherited marks).
+     * Devanagari, CJK, Cyrillic, Arabic, etc. force false.
+     */
+    static boolean isLatinLetterOnlyWithoutStrongNonEnglishScript(String text) {
+        if (text == null || text.isBlank()) {
+            return false;
+        }
+        boolean sawLetter = false;
+        for (int i = 0; i < text.length(); ) {
+            int cp = text.codePointAt(i);
+            i += Character.charCount(cp);
+            if (!Character.isLetter(cp)) {
+                continue;
+            }
+            sawLetter = true;
+            Character.UnicodeScript script = Character.UnicodeScript.of(cp);
+            if (script != Character.UnicodeScript.LATIN
+                    && script != Character.UnicodeScript.COMMON
+                    && script != Character.UnicodeScript.INHERITED) {
+                return false;
+            }
+        }
+        return sawLetter;
+    }
+
+    private String resolveConversationLocale(ChatRequest request, LanguageDetectionResult detected) {
+        if (LanguageDetectionService.skipsTranslation(request.getUserMessage())) {
+            String saved = readSavedSessionLocale(request);
+            if (supportedResponseLanguages.isResponseLocale(saved)) {
+                return saved;
+            }
+            String recovered = readRecoveredSessionLocale(request);
+            if (supportedResponseLanguages.isResponseLocale(recovered)) {
+                saveSessionLocale(request, recovered);
+                return recovered;
+            }
+            return ChatPersistenceService.LOCALE_EN_US;
+        }
+        String language = detected == null
+                ? LanguageDetectionService.NO_LANGUAGE
+                : detected.detectedLanguage();
+        String locale = supportedResponseLanguages.localeForLanguage(language);
+        if (locale == null) {
+            throw new OpenAIException("The message language could not be recognized.", 422);
+        }
+        saveSessionLocale(request, locale);
+        return locale;
+    }
+
+    private String readRecoveredSessionLocale(ChatRequest request) {
+        try {
+            return chatPersistenceService.findRecoveredSessionLocale(
+                    request.getTenantCode(),
+                    request.getUserId(),
+                    request.getSessionId()
+            );
+        } catch (RuntimeException ex) {
+            log.warn(
+                    "ComprehendChatService.localeRecovery failed errorType={}",
+                    ex.getClass().getSimpleName()
+            );
+            return null;
+        }
+    }
+
+    private String readSavedSessionLocale(ChatRequest request) {
+        try {
+            return chatPersistenceService.findSavedSessionLocale(
+                    request.getTenantCode(),
+                    request.getUserId(),
+                    request.getSessionId()
+            );
+        } catch (RuntimeException ex) {
+            log.warn(
+                    "ComprehendChatService.localeLookup failed errorType={}",
+                    ex.getClass().getSimpleName()
+            );
+            return null;
+        }
+    }
+
+    private void saveSessionLocale(ChatRequest request, String locale) {
+        try {
+            chatPersistenceService.saveSessionLocaleIfAbsent(
+                    request.getTenantCode(),
+                    request.getUserId(),
+                    request.getSessionId(),
+                    locale
+            );
+        } catch (RuntimeException ex) {
+            log.warn(
+                    "ComprehendChatService.localeSave failed errorType={}",
+                    ex.getClass().getSimpleName()
+            );
         }
     }
 
@@ -1099,7 +1465,11 @@ public class ComprehendChatService {
         );
 
         try {
-            LexLiveRouteResult lexResult = handleLexLiveRoute(request, originalUserText, sanitizedUserText);
+            LexLiveRouteResult lexResult = handleLexLiveRoute(
+                    request,
+                    originalUserText,
+                    sanitizedUserText
+            );
             return PendingLexRouteAttempt.handled(lexResult);
         } catch (RuntimeException e) {
             pendingLexSessionService.clear(lexSessionId);
@@ -1172,7 +1542,7 @@ public class ComprehendChatService {
         String lexSessionId = lexService.buildLexSessionId(request);
         LexRecognizeResult lexResult = LexCustomerMasterIntentGuard.apply(
                 originalUserText,
-                lexService.recognizeText(lexSessionId, originalUserText)
+                lexService.recognizeText(lexSessionId, originalUserText, ChatPersistenceService.LOCALE_EN_US)
         );
         updatePendingLexState(lexSessionId, lexResult);
 
@@ -1386,7 +1756,7 @@ public class ComprehendChatService {
                 LexRecognizeResult.ATTR_REQUESTED_INFORMATION,
                 requestedInformationResolver.encode(requestedInformation)
         );
-        lexService.putSessionAttributes(lexSessionId, attrs);
+        lexService.putSessionAttributes(lexSessionId, attrs, ChatPersistenceService.LOCALE_EN_US);
     }
 
     private LexLiveRouteResult lexFallbackRouteResult(ChatRequest request, LexRecognizeResult lexResult) {
@@ -1433,9 +1803,14 @@ public class ComprehendChatService {
     private DocRouteResult handleDocumentationRoute(
             ChatRequest request,
             String originalUserText,
-            ProtectionSession session
+            ProtectionSession session,
+            String resolvedLocale,
+            String sourceQuestion,
+            String detectedLanguage
     ) {
-        return handleDocumentationRoute(request, originalUserText, session, null, null);
+        return handleDocumentationRoute(
+                request, originalUserText, session, null, null, resolvedLocale, sourceQuestion, detectedLanguage
+        );
     }
 
     private DocRouteResult handleDocumentationRoute(
@@ -1443,8 +1818,12 @@ public class ComprehendChatService {
             String originalUserText,
             ProtectionSession session,
             List<String> routerQueries,
-            OpenAIUsage routerUsage
+            OpenAIUsage routerUsage,
+            String resolvedLocale,
+            String sourceQuestion,
+            String detectedLanguage
     ) {
+        String protectedOriginalQuestion = protectedOriginalQuestion(sourceQuestion);
         boolean allowExternal = request.getMode() != ChatMode.DOCS
                 || request.getExternalSourceEnabled() == null
                 || Boolean.TRUE.equals(request.getExternalSourceEnabled());
@@ -1491,9 +1870,11 @@ public class ComprehendChatService {
         Instant glueEnd = Instant.now();
         preRetrievalGlueMs = RequestTimingLog.durationMs(glueStart, glueEnd);
         RequestTimingLog.logStage("preRetrievalGlue", glueStart, glueEnd);
+        FlowTrace.retrievalQuery(searchQueries);
         log.info(
-                "Doc retrieval program boost: detectedProgramIds={}",
-                boostProgramIds.isEmpty() ? "none" : boostProgramIds
+                "Doc retrieval program boost: detectedProgramIds={} | retrievalQueries={}",
+                boostProgramIds.isEmpty() ? "none" : boostProgramIds,
+                FlowTrace.formatNumberedQueries(searchQueries, 4)
         );
 
         PythonRetrievalResponse retrieval;
@@ -1557,7 +1938,7 @@ public class ComprehendChatService {
                 );
             }
             Instant generalStart = Instant.now();
-            ChatResponse chatResponse = openAIService.chatWithoutPersistence(request, session);
+            ChatResponse chatResponse = openAIService.chatWithoutPersistence(request, session, resolvedLocale);
             Instant generalEnd = Instant.now();
             generalGptMs = RequestTimingLog.durationMs(generalStart, generalEnd);
             RequestTimingLog.logStage("generalGPT", generalStart, generalEnd);
@@ -1627,12 +2008,19 @@ public class ComprehendChatService {
                     startParallelChunkSuggestions(request, promptChunks);
             try {
                 Instant groundedStart = Instant.now();
-                GroundedRagCallResult groundedCall = openAIService.chatWithRagContext(request, promptChunks, session);
+                GroundedRagCallResult groundedCall = openAIService.chatWithRagContext(
+                        request,
+                        promptChunks,
+                        session,
+                        resolvedLocale,
+                        protectedOriginalQuestion,
+                        detectedLanguage
+                );
                 Instant groundedEnd = Instant.now();
                 groundedMs = RequestTimingLog.durationMs(groundedStart, groundedEnd);
                 RequestTimingLog.logStage("grounded", groundedStart, groundedEnd);
                 logUsage("Grounded", groundedCall.usage(), groundedMs);
-                log.info(
+                log.debug(
                         "Grounded Stage Timing | promptBuildMs={} | openAiWaitMs={} | responseParseMs={} | "
                                 + "chunkCount={} | promptContextChars={} | promptTokens={} | completionTokens={} | totalGroundedMs={}",
                         groundedCall.promptBuildMs(),
@@ -1659,7 +2047,7 @@ public class ComprehendChatService {
                 log.debug("Grounded Response (raw): {}", groundedCall.rawContent());
 
                 DocAnswerOutcome outcome = orchestrateGroundedStatus(
-                        request, grounded, groundedUsage, session, allowExternal
+                        request, grounded, groundedUsage, session, allowExternal, resolvedLocale
                 );
                 chatResponse = outcome.chatResponse();
                 reason = outcome.retrievalReason();
@@ -1668,7 +2056,7 @@ public class ComprehendChatService {
                 gapFillTokens = outcome.gapFillTokens();
                 generalGptTokens = outcome.generalGptTokens();
                 if (gapFillMs > 0) {
-                    log.info(
+                    log.debug(
                             "Stage Timing | stage=gapFill | start={} | end={} | durationMs={}",
                             groundedEnd,
                             Instant.ofEpochMilli(groundedEnd.toEpochMilli() + gapFillMs),
@@ -1676,7 +2064,7 @@ public class ComprehendChatService {
                     );
                 }
                 if (generalGptMs > 0) {
-                    log.info(
+                    log.debug(
                             "Stage Timing | stage=generalGPT | start={} | end={} | durationMs={}",
                             groundedEnd,
                             Instant.ofEpochMilli(groundedEnd.toEpochMilli() + generalGptMs),
@@ -1704,7 +2092,7 @@ public class ComprehendChatService {
                     );
                 } else {
                 Instant generalStart = Instant.now();
-                chatResponse = openAIService.chatWithoutPersistence(request, session);
+                chatResponse = openAIService.chatWithoutPersistence(request, session, resolvedLocale);
                 Instant generalEnd = Instant.now();
                 generalGptMs = RequestTimingLog.durationMs(generalStart, generalEnd);
                 RequestTimingLog.logStage("generalGPT", generalStart, generalEnd);
@@ -1743,7 +2131,14 @@ public class ComprehendChatService {
         } else if (RETRIEVAL_READY.equals(reason)) {
             try {
                 Instant groundedStart = Instant.now();
-                GroundedRagCallResult groundedCall = openAIService.chatWithRagContext(request, promptChunks, session);
+                GroundedRagCallResult groundedCall = openAIService.chatWithRagContext(
+                        request,
+                        promptChunks,
+                        session,
+                        resolvedLocale,
+                        protectedOriginalQuestion,
+                        detectedLanguage
+                );
                 Instant groundedEnd = Instant.now();
                 groundedMs = RequestTimingLog.durationMs(groundedStart, groundedEnd);
                 RequestTimingLog.logStage("grounded", groundedStart, groundedEnd);
@@ -1755,7 +2150,7 @@ public class ComprehendChatService {
                 }
                 GroundedRagResult grounded = groundedCall.grounded();
                 DocAnswerOutcome outcome = orchestrateGroundedStatus(
-                        request, grounded, groundedUsage, session, allowExternal
+                        request, grounded, groundedUsage, session, allowExternal, resolvedLocale
                 );
                 chatResponse = outcome.chatResponse();
                 reason = outcome.retrievalReason();
@@ -1774,7 +2169,7 @@ public class ComprehendChatService {
                     reason = RETRIEVAL_RAG_NO_ANSWER;
                 } else {
                     Instant generalStart = Instant.now();
-                    chatResponse = openAIService.chatWithoutPersistence(request, session);
+                    chatResponse = openAIService.chatWithoutPersistence(request, session, resolvedLocale);
                     Instant generalEnd = Instant.now();
                     generalGptMs = RequestTimingLog.durationMs(generalStart, generalEnd);
                     generalGptTokens = nullSafeInt(chatResponse.getOpenAiUsage() != null ? chatResponse.getOpenAiUsage().getTotalTokens() : null);
@@ -1792,7 +2187,7 @@ public class ComprehendChatService {
                 chatResponse = buildDocsOnlyInsufficientResponse(request, rewriteUsage);
             } else {
             Instant generalStart = Instant.now();
-            chatResponse = openAIService.chatWithoutPersistence(request, session);
+            chatResponse = openAIService.chatWithoutPersistence(request, session, resolvedLocale);
             Instant generalEnd = Instant.now();
             generalGptMs = RequestTimingLog.durationMs(generalStart, generalEnd);
             RequestTimingLog.logStage("generalGPT", generalStart, generalEnd);
@@ -1848,16 +2243,32 @@ public class ComprehendChatService {
         context.setUserMessage(request.getUserMessage());
         context.setHistory(request.getHistory());
         context.setDocumentationExcerpts(excerpts);
+        FlowTrace suggestionTrace = FlowTrace.current();
         return CompletableFuture.supplyAsync(
                 () -> {
-                    Instant started = Instant.now();
+                    FlowTrace previous = FlowTrace.current();
+                    boolean attached = previous != suggestionTrace;
+                    if (attached) {
+                        FlowTrace.attach(suggestionTrace);
+                    }
                     try {
-                        SuggestionResult result = suggestionEngineService.generateSuggestions(context);
-                        long elapsed = RequestTimingLog.durationMs(started, Instant.now());
-                        return new TimedSuggestionResult(result, elapsed, null);
-                    } catch (Exception e) {
-                        long elapsed = RequestTimingLog.durationMs(started, Instant.now());
-                        return new TimedSuggestionResult(new SuggestionResult(List.of(), List.of()), elapsed, e);
+                        Instant started = Instant.now();
+                        try {
+                            SuggestionResult result = suggestionEngineService.generateSuggestions(context);
+                            long elapsed = RequestTimingLog.durationMs(started, Instant.now());
+                            return new TimedSuggestionResult(result, elapsed, null);
+                        } catch (Exception e) {
+                            long elapsed = RequestTimingLog.durationMs(started, Instant.now());
+                            return new TimedSuggestionResult(new SuggestionResult(List.of(), List.of()), elapsed, e);
+                        }
+                    } finally {
+                        if (attached) {
+                            if (previous == null) {
+                                FlowTrace.detach();
+                            } else {
+                                FlowTrace.attach(previous);
+                            }
+                        }
                     }
                 },
                 suggestionExecutor
@@ -1918,12 +2329,14 @@ public class ComprehendChatService {
             GroundedRagResult grounded,
             OpenAIUsage usageSoFar,
             ProtectionSession session,
-            boolean allowExternal
+            boolean allowExternal,
+            String resolvedLocale
     ) {
         RagStatus status = grounded.getStatus() != null ? grounded.getStatus() : RagStatus.INSUFFICIENT;
         String docAnswer = grounded.getAnswer() != null ? grounded.getAnswer() : "";
 
         if (status == RagStatus.FULL) {
+            FlowTrace.markGapFill("skipped", "full");
             ChatResponse response = buildRagChatResponse(request, docAnswer, usageSoFar);
             log.info(
                     "RAG Decision | status={} | retrievalReason={} | grounded={} | gapFill={} | generalGPT={} | finalAction={}",
@@ -1942,6 +2355,7 @@ public class ComprehendChatService {
                     ? grounded.getMissingTopics()
                     : List.of();
             if (!allowExternal) {
+                FlowTrace.markGapFill("skipped", "docs_only");
                 ChatResponse response = buildDocsOnlyPartialResponse(request, docAnswer, usageSoFar);
                 log.info(
                         "RAG Decision | status={} | retrievalReason={} | grounded={} | gapFill={} | generalGPT={} | finalAction={} | missingTopics={}",
@@ -1956,8 +2370,11 @@ public class ComprehendChatService {
                 return new DocAnswerOutcome(response, RETRIEVAL_READY, 0, 0, 0, 0);
             }
             if (ragPartialGapFillEnabled && !missingTopics.isEmpty()) {
+                FlowTrace.markGapFill("called", null);
                 long gapFillStartMs = System.currentTimeMillis();
-                ChatResponse gapFill = openAIService.chatGapFill(request, docAnswer, missingTopics, session);
+                ChatResponse gapFill = openAIService.chatGapFill(
+                        request, docAnswer, missingTopics, session, resolvedLocale
+                );
                 int gapFillTimeMs = (int) (System.currentTimeMillis() - gapFillStartMs);
                 logUsage("GapFill", gapFill.getOpenAiUsage(), gapFillTimeMs);
                 int gapFillTokens = nullSafeInt(gapFill.getOpenAiUsage() != null ? gapFill.getOpenAiUsage().getTotalTokens() : null);
@@ -1985,6 +2402,7 @@ public class ComprehendChatService {
                         0
                 );
             }
+            FlowTrace.markGapFill("skipped", ragPartialGapFillEnabled ? "no_missing_topics" : "disabled");
             ChatResponse response = buildRagChatResponse(request, docAnswer, usageSoFar);
             log.info(
                     "RAG Decision | status={} | retrievalReason={} | grounded={} | gapFill={} | generalGPT={} | finalAction={} | missingTopics={}",
@@ -2000,6 +2418,7 @@ public class ComprehendChatService {
         }
 
         if (!allowExternal) {
+            FlowTrace.markGapFill("skipped", "docs_only");
             ChatResponse response = buildDocsOnlyInsufficientResponse(request, usageSoFar);
             log.info(
                     "RAG Decision | status={} | retrievalReason={} | grounded={} | gapFill={} | generalGPT={} | finalAction={}",
@@ -2013,8 +2432,9 @@ public class ComprehendChatService {
             return new DocAnswerOutcome(response, RETRIEVAL_RAG_NO_ANSWER, 0, 0, 0, 0);
         }
 
+        FlowTrace.markGapFill("skipped", "not_applicable");
         long generalStartMs = System.currentTimeMillis();
-        ChatResponse general = openAIService.chatWithoutPersistence(request, session);
+        ChatResponse general = openAIService.chatWithoutPersistence(request, session, resolvedLocale);
         int generalTimeMs = (int) (System.currentTimeMillis() - generalStartMs);
         logUsage("General", general.getOpenAiUsage(), generalTimeMs);
         general.setOpenAiUsage(mergeUsage(usageSoFar, general.getOpenAiUsage()));
@@ -2035,11 +2455,50 @@ public class ComprehendChatService {
         if (understood != null) {
             summary.setPlanner(understood.type().name());
             summary.setType(understood.type());
+            List<String> queries = understood.queries() != null ? understood.queries() : List.of();
+            FlowTrace.plannerQueries(understood.type().name(), queries);
+            log.info(
+                    "Planner queries | type={} | {}",
+                    understood.type().name(),
+                    FlowTrace.formatNumberedQueries(queries, 3)
+            );
             logUsage("Planner", understood.usage(), openaiMs);
         } else {
             summary.setPlanner("ERROR");
             summary.setTypeRaw("-");
+            FlowTrace.plannerQueries("ERROR", List.of());
         }
+    }
+
+    private void recordProtectionCheckpoint(ProtectionSession session) {
+        if (session == null) {
+            return;
+        }
+        String bip = session.businessProtectedText() != null
+                ? session.businessProtectedText()
+                : session.originalText();
+        String llm = session.textForLlm();
+        FlowTrace.protectionCheckpoint(
+                bip,
+                llm,
+                session.businessProtectionApplied(),
+                bipPlaceholderTypes(session)
+        );
+    }
+
+    /** Placeholder type labels only — never original protected values. */
+    private static String bipPlaceholderTypes(ProtectionSession session) {
+        if (session == null || session.actions() == null || session.actions().isEmpty()) {
+            return "-";
+        }
+        LinkedHashSet<String> types = new LinkedHashSet<>();
+        for (ProtectionAction action : session.actions()) {
+            if (action == null || action.placeholderType() == null || action.placeholderType().isBlank()) {
+                continue;
+            }
+            types.add(action.placeholderType().trim().replaceAll("\\s+", "_"));
+        }
+        return types.isEmpty() ? "-" : String.join(",", types);
     }
 
     private String resolvePythonRouteValue(String message, RoutingSummaryState summary) {
@@ -2068,7 +2527,10 @@ public class ComprehendChatService {
             ChatRequest workingRequest,
             ProtectionSession protectionSession,
             RequestUnderstandResult understood,
-            RoutingSummaryState routingSummary
+            RoutingSummaryState routingSummary,
+            String resolvedLocale,
+            String sourceQuestion,
+            String detectedLanguage
     ) {
         RequestUnderstandType type = understood.type();
         return switch (type) {
@@ -2081,7 +2543,8 @@ public class ComprehendChatService {
                         buildConversationalOutcomeResponse(
                                 workingRequest,
                                 understood,
-                                resolveConversationalMessage(autoConversationalMessage, DEFAULT_AUTO_CONVERSATIONAL_MESSAGE)
+                                resolveConversationalMessage(autoConversationalMessage, DEFAULT_AUTO_CONVERSATIONAL_MESSAGE),
+                                resolvedLocale
                         ),
                         null
                 );
@@ -2110,7 +2573,10 @@ public class ComprehendChatService {
                         originalUserText,
                         protectionSession,
                         understood.queries() != null ? understood.queries() : List.of(),
-                        understood.usage()
+                        understood.usage(),
+                        resolvedLocale,
+                        sourceQuestion,
+                        detectedLanguage
                 );
                 yield new PlannerRouteOutcome(true, "rag", docResult.chatResponse(), docResult);
             }
@@ -2122,7 +2588,10 @@ public class ComprehendChatService {
                         originalUserText,
                         protectionSession,
                         understood.queries() != null ? understood.queries() : List.of(),
-                        understood.usage()
+                        understood.usage(),
+                        resolvedLocale,
+                        sourceQuestion,
+                        detectedLanguage
                 );
                 yield new PlannerRouteOutcome(true, "rag", docResult.chatResponse(), docResult);
             }
@@ -2132,7 +2601,8 @@ public class ComprehendChatService {
     private PlannerRouteOutcome applyM3PlannerOutcome(
             ChatRequest workingRequest,
             RequestUnderstandResult understood,
-            RoutingSummaryState routingSummary
+            RoutingSummaryState routingSummary,
+            String resolvedLocale
     ) {
         RequestUnderstandType type = understood.type();
         return switch (type) {
@@ -2145,7 +2615,8 @@ public class ComprehendChatService {
                         buildConversationalOutcomeResponse(
                                 workingRequest,
                                 understood,
-                                resolveConversationalMessage(m3ConversationalMessage, DEFAULT_M3_CONVERSATIONAL_MESSAGE)
+                                resolveConversationalMessage(m3ConversationalMessage, DEFAULT_M3_CONVERSATIONAL_MESSAGE),
+                                resolvedLocale
                         ),
                         null
                 );
@@ -2183,7 +2654,10 @@ public class ComprehendChatService {
             ChatRequest workingRequest,
             ProtectionSession protectionSession,
             RequestUnderstandResult understood,
-            RoutingSummaryState routingSummary
+            RoutingSummaryState routingSummary,
+            String resolvedLocale,
+            String sourceQuestion,
+            String detectedLanguage
     ) {
         RequestUnderstandType type = understood.type();
         return switch (type) {
@@ -2196,7 +2670,8 @@ public class ComprehendChatService {
                         buildConversationalOutcomeResponse(
                                 workingRequest,
                                 understood,
-                                resolveConversationalMessage(docsConversationalMessage, DEFAULT_DOCS_CONVERSATIONAL_MESSAGE)
+                                resolveConversationalMessage(docsConversationalMessage, DEFAULT_DOCS_CONVERSATIONAL_MESSAGE),
+                                resolvedLocale
                         ),
                         null
                 );
@@ -2230,7 +2705,10 @@ public class ComprehendChatService {
                         originalUserText,
                         protectionSession,
                         understood.queries() != null ? understood.queries() : List.of(),
-                        understood.usage()
+                        understood.usage(),
+                        resolvedLocale,
+                        sourceQuestion,
+                        detectedLanguage
                 );
                 yield new PlannerRouteOutcome(true, "rag", docResult.chatResponse(), docResult);
             }
@@ -2266,7 +2744,7 @@ public class ComprehendChatService {
         );
     }
 
-    private UnderstandRun runUnderstandRequest(ChatRequest request, String originalUserText) {
+    private UnderstandRun runUnderstandRequest(ChatRequest request, String originalUserText, String resolvedLocale) {
         Instant understandStart = Instant.now();
         ProtectionSession session = ProtectionSession.fromOriginal(
                 originalUserText,
@@ -2286,13 +2764,14 @@ public class ComprehendChatService {
         Instant piiEnd = Instant.now();
         long piiMs = RequestTimingLog.durationMs(understandStart, piiEnd);
         RequestTimingLog.logStage("pii", understandStart, piiEnd);
+        recordProtectionCheckpoint(session);
 
         String llmText = session.textForLlm();
         ChatRequest llmRequest = copyRequestWithUserMessage(request, llmText);
         Instant openaiStart = Instant.now();
         RequestUnderstandResult understood = null;
         try {
-            understood = openAIService.understandRequest(llmRequest, llmText);
+            understood = openAIService.understandRequest(llmRequest, llmText, resolvedLocale);
         } catch (OpenAIException e) {
             if (e.isAiServiceUnavailable()) {
                 throw e;
@@ -2369,13 +2848,31 @@ public class ComprehendChatService {
     private ChatResponse buildConversationalOutcomeResponse(
             ChatRequest request,
             RequestUnderstandResult understood,
-            String fallbackMessage
+            String fallbackMessage,
+            String resolvedLocale
     ) {
         String plannerReply = understood != null ? understood.response() : null;
         if (plannerReply != null && !plannerReply.isBlank()) {
             return buildRouterUserResponse(request, understood, "conversational");
         }
+        // Non-English: never substitute the English canned steer when the planner left response blank.
+        if (resolvedLocale != null && !resolvedLocale.startsWith("en")) {
+            ChatResponse blank = new ChatResponse(plannerReply == null ? "" : plannerReply, false);
+            blank.setActionTaken("conversational");
+            return blank;
+        }
         return buildSteerResponse(request, understood, fallbackMessage, "conversational");
+    }
+
+    static String languageCodeFromLocale(String locale) {
+        if (locale == null || locale.isBlank()) {
+            return LanguageDetectionService.NO_LANGUAGE;
+        }
+        int underscore = locale.indexOf('_');
+        if (underscore <= 0) {
+            return locale.toLowerCase(java.util.Locale.ROOT);
+        }
+        return locale.substring(0, underscore).toLowerCase(java.util.Locale.ROOT);
     }
 
     private ChatResponse buildSteerResponse(
@@ -2551,6 +3048,25 @@ public class ComprehendChatService {
             log.warn("PII anonymization failed, using original text: {}", e.getMessage());
             return text;
         }
+    }
+
+    private String protectedOriginalQuestion(String sourceQuestion) {
+        if (sourceQuestion == null || sourceQuestion.isBlank()) {
+            return sourceQuestion;
+        }
+        return TranslationService.preserveIdentifiers(sourceQuestion, shielded -> {
+            ProtectionSession session = ProtectionSession.fromOriginal(
+                    shielded,
+                    businessInformationProtectionService.isEnabled()
+            );
+            businessInformationProtectionService.protect(
+                    session,
+                    ProtectionContext.forPurpose(ProtectionPurpose.ANSWER, true)
+            );
+            protectPiiSafely(session);
+            String protectedText = session.textForLlm();
+            return protectedText != null ? protectedText : shielded;
+        });
     }
 
     private void protectPiiSafely(ProtectionSession session) {

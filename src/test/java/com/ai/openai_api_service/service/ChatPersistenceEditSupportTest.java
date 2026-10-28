@@ -10,6 +10,7 @@ import com.ai.openai_api_service.repository.RequestLogRepository;
 import com.ai.openai_api_service.repository.SessionRepository;
 import com.ai.openai_api_service.repository.TenantRepository;
 import com.ai.openai_api_service.repository.UserRepository;
+import com.ai.openai_api_service.service.i18n.SupportedResponseLanguages;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -58,6 +59,7 @@ class ChatPersistenceEditSupportTest {
                 requestLogRepository,
                 tenantRepository,
                 userRepository,
+                new SupportedResponseLanguages(""),
                 50
         );
 

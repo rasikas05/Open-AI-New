@@ -10,6 +10,7 @@ import com.ai.openai_api_service.service.repair.rules.MergedStatusSplitRule;
 import com.ai.openai_api_service.service.repair.rules.MergedTextSplitRule;
 import com.ai.openai_api_service.service.repair.rules.MisassignmentRepairRule;
 import com.ai.openai_api_service.service.slots.GenericSlotInterpreter;
+import com.ai.openai_api_service.service.timing.FlowTrace;
 import com.ai.openai_api_service.service.validation.SlotValidator;
 import com.ai.openai_api_service.service.validation.ValidatedSlot;
 import org.slf4j.Logger;
@@ -89,6 +90,10 @@ public class SlotRepairService {
                 break;
             }
 
+            for (RepairAction action : actions) {
+                FlowTrace.slotRejected(action.lexSlotName(), action.oldValue());
+                FlowTrace.slotRepaired(action.lexSlotName(), action.newValue());
+            }
             current = applyActions(current, actions);
             log.info(
                     "Repair [iter={}, confidence={}]: {}",

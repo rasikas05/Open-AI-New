@@ -7,6 +7,7 @@ import com.ai.openai_api_service.repository.RequestLogRepository;
 import com.ai.openai_api_service.repository.SessionRepository;
 import com.ai.openai_api_service.repository.TenantRepository;
 import com.ai.openai_api_service.repository.UserRepository;
+import com.ai.openai_api_service.service.i18n.SupportedResponseLanguages;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -15,9 +16,11 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
@@ -52,6 +55,7 @@ class ChatPersistenceSessionOwnershipTest {
                 requestLogRepository,
                 tenantRepository,
                 userRepository,
+                new SupportedResponseLanguages(""),
                 100
         );
     }
@@ -125,6 +129,120 @@ class ChatPersistenceSessionOwnershipTest {
                 () -> service.requireSessionForTenantUser(TENANT_A, USER_A, "missing")
         );
         assertEquals(HttpStatus.NOT_FOUND, ex.getStatusCode());
+    }
+
+    @Test
+    void findRecoveredSessionLocale_returnsNewestValidOwnedLocale() {
+        Tenant tenant = tenant(TENANT_A);
+        User userA = user(tenant, USER_A);
+        Session session = session(tenant, userA, SESSION_A);
+        when(tenantRepository.findByTenantCode(TENANT_A)).thenReturn(Optional.of(tenant));
+        when(userRepository.findByTenantAndUsername(tenant, USER_A)).thenReturn(Optional.of(userA));
+        when(sessionRepository.findByTenantAndUserAndSessionId(tenant, userA, SESSION_A))
+                .thenReturn(Optional.of(session));
+        when(requestLogRepository.findActiveResolvedLocales(eq(tenant), eq(userA), eq(SESSION_A), any()))
+                .thenReturn(List.of("mi_NZ", ChatPersistenceService.LOCALE_DE_DE));
+
+        assertEquals(
+                ChatPersistenceService.LOCALE_DE_DE,
+                service.findRecoveredSessionLocale(TENANT_A, USER_A, SESSION_A)
+        );
+        verify(requestLogRepository, never()).findBySession_SessionId(any());
+        verify(requestLogRepository, never()).findFirstBySession_SessionIdOrderByIdAsc(any());
+    }
+
+    @Test
+    void findRecoveredSessionLocale_wrongUser_doesNotReadLogs() {
+        Tenant tenant = tenant(TENANT_A);
+        when(tenantRepository.findByTenantCode(TENANT_A)).thenReturn(Optional.of(tenant));
+        when(userRepository.findByTenantAndUsername(tenant, USER_B)).thenReturn(Optional.empty());
+
+        assertNull(service.findRecoveredSessionLocale(TENANT_A, USER_B, SESSION_A));
+        verify(requestLogRepository, never()).findActiveResolvedLocales(any(), any(), any(), any());
+        verify(requestLogRepository, never()).findBySession_SessionId(any());
+    }
+
+    @Test
+    void findRecoveredSessionLocale_invalidHistory_returnsNull() {
+        Tenant tenant = tenant(TENANT_A);
+        User userA = user(tenant, USER_A);
+        Session session = session(tenant, userA, SESSION_A);
+        when(tenantRepository.findByTenantCode(TENANT_A)).thenReturn(Optional.of(tenant));
+        when(userRepository.findByTenantAndUsername(tenant, USER_A)).thenReturn(Optional.of(userA));
+        when(sessionRepository.findByTenantAndUserAndSessionId(tenant, userA, SESSION_A))
+                .thenReturn(Optional.of(session));
+        when(requestLogRepository.findActiveResolvedLocales(eq(tenant), eq(userA), eq(SESSION_A), any()))
+                .thenReturn(List.of("mi_NZ"));
+
+        assertNull(service.findRecoveredSessionLocale(TENANT_A, USER_A, SESSION_A));
+    }
+
+    @Test
+    void findRecoveredSessionLocale_returnsFrenchWhenItIsNewest() {
+        Tenant tenant = tenant(TENANT_A);
+        User userA = user(tenant, USER_A);
+        Session session = session(tenant, userA, SESSION_A);
+        when(tenantRepository.findByTenantCode(TENANT_A)).thenReturn(Optional.of(tenant));
+        when(userRepository.findByTenantAndUsername(tenant, USER_A)).thenReturn(Optional.of(userA));
+        when(sessionRepository.findByTenantAndUserAndSessionId(tenant, userA, SESSION_A))
+                .thenReturn(Optional.of(session));
+        when(requestLogRepository.findActiveResolvedLocales(eq(tenant), eq(userA), eq(SESSION_A), any()))
+                .thenReturn(List.of("fr_FR", ChatPersistenceService.LOCALE_DE_DE));
+
+        assertEquals("fr_FR", service.findRecoveredSessionLocale(TENANT_A, USER_A, SESSION_A));
+    }
+
+    @Test
+    void saveSessionLocale_updatesOwnedLocale() {
+        Tenant tenant = tenant(TENANT_A);
+        User userA = user(tenant, USER_A);
+        Session session = session(tenant, userA, SESSION_A);
+        session.setLocale(ChatPersistenceService.LOCALE_DE_DE);
+        when(tenantRepository.findByTenantCode(TENANT_A)).thenReturn(Optional.of(tenant));
+        when(userRepository.findByTenantAndUsername(tenant, USER_A)).thenReturn(Optional.of(userA));
+        when(sessionRepository.findByTenantAndUserAndSessionId(tenant, userA, SESSION_A))
+                .thenReturn(Optional.of(session));
+        when(sessionRepository.save(any(Session.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        service.saveSessionLocaleIfAbsent(TENANT_A, USER_A, SESSION_A, "fr_FR");
+
+        assertEquals("fr_FR", session.getLocale());
+        verify(sessionRepository).save(session);
+        verify(sessionRepository, never()).findBySessionId(any());
+    }
+
+    @Test
+    void saveSessionLocale_wrongUser_doesNotUpdate() {
+        Tenant tenant = tenant(TENANT_A);
+        User userA = user(tenant, USER_A);
+        Session session = session(tenant, userA, SESSION_A);
+        session.setLocale(ChatPersistenceService.LOCALE_DE_DE);
+        when(tenantRepository.findByTenantCode(TENANT_A)).thenReturn(Optional.of(tenant));
+        when(userRepository.findByTenantAndUsername(tenant, USER_B)).thenReturn(Optional.empty());
+
+        service.saveSessionLocaleIfAbsent(TENANT_A, USER_B, SESSION_A, "fr_FR");
+
+        assertEquals(ChatPersistenceService.LOCALE_DE_DE, session.getLocale());
+        verify(sessionRepository, never()).save(any());
+        verify(sessionRepository, never()).findBySessionId(any());
+    }
+
+    @Test
+    void responseLanguages_requireEnglishAndRejectCodesOutsideTheIntersection() {
+        SupportedResponseLanguages languages = new SupportedResponseLanguages("");
+        assertEquals("en_US", languages.localeForLanguage("en"));
+        assertEquals("fr_FR", languages.localeForLanguage("fr"));
+        assertEquals("hi_IN", languages.localeForLanguage("hi"));
+        assertEquals("es_ES", languages.localeForLanguage("es"));
+        assertEquals("de_DE", languages.localeForLanguage("de"));
+        assertNull(languages.localeForLanguage("mi"));
+
+        SupportedResponseLanguages narrowed = new SupportedResponseLanguages("en,fr");
+        assertEquals("fr_FR", narrowed.localeForLanguage("fr"));
+        assertNull(narrowed.localeForLanguage("de"));
+
+        assertThrows(IllegalStateException.class, () -> new SupportedResponseLanguages("fr,de"));
+        assertThrows(IllegalStateException.class, () -> new SupportedResponseLanguages("en,mi"));
     }
 
     @Test

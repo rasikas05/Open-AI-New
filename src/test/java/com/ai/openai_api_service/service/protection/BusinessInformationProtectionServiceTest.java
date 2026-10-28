@@ -65,14 +65,54 @@ class BusinessInformationProtectionServiceTest {
                 true
         );
 
-        String input = "How can I change payment terms for supplier ABC001?";
+        String input = "How can I change payment terms for supplier SUP99?";
         ProtectionSession session = ProtectionSession.fromPiiSanitized(input);
         service.protect(session, ProtectionContext.forPurpose(ProtectionPurpose.ANSWER, true));
 
         String openaiBound = session.textForLlm();
         assertEquals("How can I change payment terms for supplier <SUPPLIER_NUMBER>?", openaiBound);
         assertTrue(openaiBound.contains("<SUPPLIER_NUMBER>"));
-        assertEquals("ABC001", session.replacementMap().get("<SUPPLIER_NUMBER>"));
+        assertEquals("SUP99", session.replacementMap().get("<SUPPLIER_NUMBER>"));
+    }
+
+    @Test
+    void protect_preservesM3AndProgramIds_masksRealProductAndCustomer() {
+        FieldClassificationCatalog catalog = new FieldClassificationCatalog();
+        BusinessInformationProtectionService service = new BusinessInformationProtectionService(
+                new BusinessInformationDetector(catalog, new ValueShapeValidator()),
+                catalog,
+                new LLMPolicyApplier(new PlaceholderFormatter()),
+                true
+        );
+
+        assertEquals(
+                "How to create a new item in M3?",
+                service.protectText("How to create a new item in M3?", ProtectionPurpose.ANSWER)
+        );
+        assertEquals(
+                "create a new item in m3",
+                service.protectText("create a new item in m3", ProtectionPurpose.ANSWER)
+        );
+        assertEquals(
+                "How can I register a customer in Infor M3?",
+                service.protectText("How can I register a customer in Infor M3?", ProtectionPurpose.ANSWER)
+        );
+        assertEquals(
+                "Open item MMS001",
+                service.protectText("Open item MMS001", ProtectionPurpose.ANSWER)
+        );
+        assertEquals(
+                "Register customer CRS610",
+                service.protectText("Register customer CRS610", ProtectionPurpose.ANSWER)
+        );
+        assertEquals(
+                "product <PRODUCT_NUMBER>",
+                service.protectText("product P1001", ProtectionPurpose.ANSWER)
+        );
+        assertEquals(
+                "customer <CUSTOMER_NUMBER>",
+                service.protectText("customer Y00111", ProtectionPurpose.ANSWER)
+        );
     }
 
     /**

@@ -75,7 +75,7 @@ public class BusinessInformationProtectionService {
                 ? context
                 : ProtectionContext.forPurpose(ProtectionPurpose.ANSWER, true);
 
-        List<DetectedSpan> spans = detector.detect(text);
+        List<DetectedSpan> spans = filterAllowlistedSpans(text, detector.detect(text));
 
         List<SpanClassification> classified = new ArrayList<>();
         for (DetectedSpan span : spans) {
@@ -83,6 +83,28 @@ public class BusinessInformationProtectionService {
             classified.add(new SpanClassification(span, classification));
         }
         return policyApplier.apply(text, classified, effectiveContext);
+    }
+
+    /**
+     * Defense in depth: drop product/program spans before classify/wrap without rewriting
+     * {@code text} (offsets stay valid relative to the original string).
+     */
+    static List<DetectedSpan> filterAllowlistedSpans(String text, List<DetectedSpan> spans) {
+        if (spans == null || spans.isEmpty() || text == null) {
+            return spans == null ? List.of() : spans;
+        }
+        List<DetectedSpan> kept = new ArrayList<>();
+        for (DetectedSpan span : spans) {
+            if (span == null || span.start() < 0 || span.end() > text.length() || span.start() >= span.end()) {
+                continue;
+            }
+            String value = text.substring(span.start(), span.end());
+            if (BusinessIdentifierAllowlist.shouldSkipMasking(value)) {
+                continue;
+            }
+            kept.add(span);
+        }
+        return List.copyOf(kept);
     }
 
     /**

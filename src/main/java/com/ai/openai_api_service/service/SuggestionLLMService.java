@@ -1,6 +1,7 @@
 package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.model.SuggestionCategory;
+import com.ai.openai_api_service.service.timing.FlowTrace;
 import com.ai.openai_api_service.model.SuggestionContext;
 import com.ai.openai_api_service.model.SuggestionItem;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -84,6 +85,7 @@ public class SuggestionLLMService {
                             llmClient.activeReasoningEffort()
                     )
             );
+            FlowTrace.recordLlmCall();
             LlmChatCompletionsClient.ChatCompletionResult result = llmClient.complete(
                     messages,
                     0.3,
@@ -95,6 +97,7 @@ public class SuggestionLLMService {
             List<SuggestionItem> items = parseSuggestionContent(result.content(), maxCount);
             if (items.isEmpty() && result.truncated() && tokenCap < SUGGESTION_COMPLETION_RETRY_TOKENS) {
                 log.debug("Suggestion JSON truncated; retrying with max_completion_tokens={}", SUGGESTION_COMPLETION_RETRY_TOKENS);
+                FlowTrace.recordLlmCall();
                 result = llmClient.complete(
                         messages,
                         0.3,

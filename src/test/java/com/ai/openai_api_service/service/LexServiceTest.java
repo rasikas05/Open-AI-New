@@ -1,6 +1,7 @@
 package com.ai.openai_api_service.service;
 
 import com.ai.openai_api_service.config.LexProperties;
+import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.ChatRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,8 +19,10 @@ import software.amazon.awssdk.services.lexruntimev2.model.SessionState;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -88,7 +91,20 @@ class LexServiceTest {
 
         assertEquals("GetCustomer", result.getIntentName());
         assertEquals("CustomerNumber", result.getSlotToElicit());
-        verify(lexClient).recognizeText(any(RecognizeTextRequest.class));
+        verify(lexClient).recognizeText(argThat((RecognizeTextRequest req) ->
+                "en_US".equals(req.localeId())
+                        && "t1:u1:s1".equals(req.sessionId())
+                        && "show customer".equals(req.text())
+        ));
+    }
+
+    @Test
+    void recognizeText_rejectsGermanAndFrenchLocales() {
+        assertThrows(OpenAIException.class, () ->
+                lexService.recognizeText("t1:u1:s1", "Kundendaten", ChatPersistenceService.LOCALE_DE_DE));
+        assertThrows(OpenAIException.class, () ->
+                lexService.recognizeText("t1:u1:s1", "show customer", "fr_FR"));
+        verify(lexClient, never()).recognizeText(any(RecognizeTextRequest.class));
     }
 
     @Test
@@ -100,8 +116,22 @@ class LexServiceTest {
 
         verify(lexClient).putSession(argThat((PutSessionRequest req) ->
                 "t1:u1:s1".equals(req.sessionId())
+                        && "en_US".equals(req.localeId())
                         && req.sessionState() != null
                         && "ADDRESS".equals(req.sessionState().sessionAttributes().get("requestedInformation"))
         ));
+    }
+
+    @Test
+    void putSessionAttributes_rejectsGermanAndFrenchLocales() {
+        assertThrows(OpenAIException.class, () ->
+                lexService.putSessionAttributes(
+                        "t1:u1:s1",
+                        Map.of("requestedInformation", "ADDRESS"),
+                        ChatPersistenceService.LOCALE_DE_DE
+                ));
+        assertThrows(OpenAIException.class, () ->
+                lexService.putSessionAttributes("t1:u1:s1", Map.of("requestedInformation", "ADDRESS"), "fr_FR"));
+        verify(lexClient, never()).putSession(any(PutSessionRequest.class));
     }
 }

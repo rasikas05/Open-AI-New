@@ -70,7 +70,7 @@ class BusinessInformationDetectorCoverageTest {
                 Arguments.of("cuno 45678", "CUNO", "45678"),
                 Arguments.of("How can I edit customer 67890?", "CUNO", "67890"),
                 Arguments.of("Show status for customer 1001", "CUNO", "1001"),
-                Arguments.of("customer ABC001", "CUNO", "ABC001"),
+                Arguments.of("customer Y00111", "CUNO", "Y00111"),
                 // SUNO
                 Arguments.of("supplier SUP99", "SUNO", "SUP99"),
                 Arguments.of("supplier number SUP99", "SUNO", "SUP99"),

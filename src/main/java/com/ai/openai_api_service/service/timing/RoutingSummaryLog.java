@@ -23,7 +23,7 @@ public final class RoutingSummaryLog {
         if (state == null) {
             return;
         }
-        log.info("{}", format(state, RoutingCallTracker.lexCalled(), RoutingCallTracker.ragCalled(), serviceWallMs));
+        log.debug("{}", format(state, RoutingCallTracker.lexCalled(), RoutingCallTracker.ragCalled(), serviceWallMs));
     }
 
     public static String format(
@@ -64,6 +64,10 @@ public final class RoutingSummaryLog {
 
     static String formatSeconds(long millis) {
         return String.format(Locale.ROOT, "%.2fs", Math.max(0L, millis) / 1000.0);
+    }
+
+    public static String questionForLog(String text) {
+        return oneLine(text, MAX_REQUEST_CHARS);
     }
 
     static String oneLine(String text, int maxChars) {

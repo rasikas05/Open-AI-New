@@ -45,6 +45,7 @@ public class ChatResponse {
     private String searchContextId;
     private PaginationMetadataDto pagination;
     private Long requestLogId;
+    private String locale;
 
     public ChatResponse() {
     }
@@ -348,6 +349,14 @@ public class ChatResponse {
 
     public void setRequestLogId(Long requestLogId) {
         this.requestLogId = requestLogId;
+    }
+
+    public String getLocale() {
+        return locale;
+    }
+
+    public void setLocale(String locale) {
+        this.locale = locale;
     }
 }
 

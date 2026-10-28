@@ -27,6 +27,7 @@ import com.ai.openai_api_service.service.slots.GenericSlotInterpreter;
 import com.ai.openai_api_service.service.repair.SlotRepairService;
 import com.ai.openai_api_service.service.validation.SlotValidator;
 import com.ai.openai_api_service.service.validation.SearchCriteriaValidator;
+import com.ai.openai_api_service.service.timing.FlowTrace;
 import com.ai.openai_api_service.service.validation.M3RequestExecutionValidator;
 import com.ai.openai_api_service.service.validation.ValidatedSlot;
 import org.slf4j.Logger;
@@ -209,6 +210,8 @@ public class LexFulfillmentService {
         ChatResponse chatResponse = new ChatResponse(reply, false);
         chatResponse.setActionTaken(mapped.actionTaken());
         chatResponse.setM3Request(m3Request);
+        FlowTrace.mi(mapped.program(), mapped.transaction(), formatParams(mapped.params()));
+        FlowTrace.m3Handoff();
         chatResponse.setLexIntent(intentName);
 
         SearchContext searchContext = pipeline.searchContext();
@@ -393,6 +396,20 @@ public class LexFulfillmentService {
                 slotMappings,
                 criteria
         );
+    }
+
+    private static String formatParams(Map<String, ?> params) {
+        if (params == null || params.isEmpty()) {
+            return "";
+        }
+        StringBuilder joined = new StringBuilder();
+        for (Map.Entry<String, ?> entry : params.entrySet()) {
+            if (!joined.isEmpty()) {
+                joined.append(' ');
+            }
+            joined.append(entry.getKey()).append('=').append(entry.getValue());
+        }
+        return joined.toString();
     }
 
     private Map<String, String> toValidSlotStrings(String intentName, Map<String, SlotValue> slots) {

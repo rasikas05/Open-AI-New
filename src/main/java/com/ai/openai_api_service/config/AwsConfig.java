@@ -12,6 +12,7 @@ import software.amazon.awssdk.http.apache.ApacheHttpClient;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.comprehend.ComprehendClient;
 import software.amazon.awssdk.services.lexruntimev2.LexRuntimeV2Client;
+import software.amazon.awssdk.services.translate.TranslateClient;
 
 import java.time.Duration;
 
@@ -40,6 +41,15 @@ public class AwsConfig {
 
     @Value("${aws.lex.connection-timeout-ms:5000}")
     private long lexConnectionTimeoutMs;
+
+    @Value("${aws.translate.api-call-timeout-ms:15000}")
+    private long translateApiCallTimeoutMs;
+
+    @Value("${aws.translate.api-call-attempt-timeout-ms:10000}")
+    private long translateApiCallAttemptTimeoutMs;
+
+    @Value("${aws.translate.connection-timeout-ms:5000}")
+    private long translateConnectionTimeoutMs;
 
     @Bean
     public AwsCredentialsProvider awsCredentialsProvider() {
@@ -103,6 +113,27 @@ public class AwsConfig {
                 ))
                 .httpClientBuilder(ApacheHttpClient.builder()
                         .connectionTimeout(Duration.ofMillis(lexConnectionTimeoutMs)))
+                .build();
+    }
+
+    @Bean
+    public TranslateClient translateClient(AwsCredentialsProvider awsCredentialsProvider) {
+        log.info(
+                "Translate client: region={} apiCall={}ms apiCallAttempt={}ms connection={}ms",
+                awsRegion,
+                translateApiCallTimeoutMs,
+                translateApiCallAttemptTimeoutMs,
+                translateConnectionTimeoutMs
+        );
+        return TranslateClient.builder()
+                .region(Region.of(awsRegion))
+                .credentialsProvider(awsCredentialsProvider)
+                .overrideConfiguration(overrideConfiguration(
+                        translateApiCallTimeoutMs,
+                        translateApiCallAttemptTimeoutMs
+                ))
+                .httpClientBuilder(ApacheHttpClient.builder()
+                        .connectionTimeout(Duration.ofMillis(translateConnectionTimeoutMs)))
                 .build();
     }
 
