@@ -1,8 +1,10 @@
 package com.ai.openai_api_service.exception;
 
+import com.ai.openai_api_service.config.RequestBodyTooLargeException;
 import org.junit.jupiter.api.Test;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.BeanPropertyBindingResult;
 import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
@@ -113,6 +115,77 @@ class GlobalExceptionHandlerTest {
         @SuppressWarnings("unchecked")
         Map<String, String> details = (Map<String, String>) body.get("details");
         assertEquals("must not be blank", details.get("tenantCode"));
+        assertFalse(body.containsKey("traceId"));
+    }
+
+    @Test
+    void responseStatusException_payloadTooLarge_returns413SafeMessage() {
+        ResponseStatusException ex = new ResponseStatusException(
+                HttpStatus.PAYLOAD_TOO_LARGE,
+                RequestBodyTooLargeException.SAFE_MESSAGE
+        );
+
+        ResponseEntity<Map<String, Object>> response = handler.handleResponseStatusException(ex);
+
+        assertEquals(HttpStatus.PAYLOAD_TOO_LARGE, response.getStatusCode());
+        Map<String, Object> body = response.getBody();
+        assertNotNull(body);
+        assertEquals(RequestBodyTooLargeException.SAFE_MESSAGE, body.get("error"));
+        assertEquals(413, body.get("status"));
+        assertFalse(String.valueOf(body.get("error")).contains("base64"));
+    }
+
+    @Test
+    void httpMessageNotReadable_withBodyTooLargeCause_returns413SafeMessage() {
+        HttpMessageNotReadableException ex = new HttpMessageNotReadableException(
+                "JSON parse error",
+                new RequestBodyTooLargeException(),
+                null
+        );
+
+        ResponseEntity<Map<String, Object>> response = handler.handleHttpMessageNotReadable(ex);
+
+        assertEquals(HttpStatus.PAYLOAD_TOO_LARGE, response.getStatusCode());
+        Map<String, Object> body = response.getBody();
+        assertNotNull(body);
+        assertEquals(RequestBodyTooLargeException.SAFE_MESSAGE, body.get("error"));
+        assertEquals(413, body.get("status"));
+        assertFalse(body.containsKey("traceId"));
+        assertFalse(String.valueOf(body).toLowerCase().contains("base64"));
+    }
+
+    @Test
+    void httpMessageNotReadable_withoutBodyTooLarge_returns400Not500() {
+        HttpMessageNotReadableException ex = new HttpMessageNotReadableException(
+                "Unexpected character",
+                new RuntimeException("bad json token"),
+                null
+        );
+
+        ResponseEntity<Map<String, Object>> response = handler.handleHttpMessageNotReadable(ex);
+
+        assertEquals(HttpStatus.BAD_REQUEST, response.getStatusCode());
+        Map<String, Object> body = response.getBody();
+        assertNotNull(body);
+        assertEquals(GlobalExceptionHandler.MALFORMED_BODY_ERROR, body.get("error"));
+        assertEquals(400, body.get("status"));
+        assertFalse(String.valueOf(body).contains("bad json token"));
+    }
+
+    @Test
+    void unexpectedException_withBodyTooLargeCause_returns413Not500() {
+        RuntimeException wrapped = new RuntimeException(
+                "wrapper",
+                new RequestBodyTooLargeException()
+        );
+
+        ResponseEntity<Map<String, Object>> response = handler.handleUnexpectedException(wrapped);
+
+        assertEquals(HttpStatus.PAYLOAD_TOO_LARGE, response.getStatusCode());
+        Map<String, Object> body = response.getBody();
+        assertNotNull(body);
+        assertEquals(RequestBodyTooLargeException.SAFE_MESSAGE, body.get("error"));
+        assertEquals(413, body.get("status"));
         assertFalse(body.containsKey("traceId"));
     }
 }

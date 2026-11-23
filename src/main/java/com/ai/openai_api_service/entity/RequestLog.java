@@ -96,6 +96,13 @@ public class RequestLog {
     @Column(name = "mode", length = 10)
     private String mode;
 
+    /**
+     * Server-issued chat message id from prepare API (IDM / attachment association).
+     * Null for legacy text-only turns without prepare.
+     */
+    @Column(name = "message_id", length = 100)
+    private String messageId;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt = LocalDateTime.now();
     // getters/setters
@@ -321,6 +328,14 @@ public class RequestLog {
 
     public void setMode(String mode) {
         this.mode = mode;
+    }
+
+    public String getMessageId() {
+        return messageId;
+    }
+
+    public void setMessageId(String messageId) {
+        this.messageId = messageId;
     }
 
     public LocalDateTime getCreatedAt() {

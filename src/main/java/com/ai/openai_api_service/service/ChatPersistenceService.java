@@ -4,6 +4,7 @@ import com.ai.openai_api_service.entity.RequestLog;
 import com.ai.openai_api_service.entity.Session;
 import com.ai.openai_api_service.entity.Tenant;
 import com.ai.openai_api_service.entity.User;
+import com.ai.openai_api_service.model.ChatAttachmentDto;
 import com.ai.openai_api_service.model.ChatMode;
 import com.ai.openai_api_service.model.HistoryMessageDto;
 import com.ai.openai_api_service.model.LiveHistoryAuditMetadata;
@@ -33,6 +34,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
@@ -49,6 +51,7 @@ public class ChatPersistenceService {
     private final TenantRepository tenantRepository;
     private final UserRepository userRepository;
     private final SupportedResponseLanguages supportedResponseLanguages;
+    private final ChatAttachmentService chatAttachmentService;
     private final int maxRequestsPerSession;
 
     public ChatPersistenceService(
@@ -57,6 +60,7 @@ public class ChatPersistenceService {
             TenantRepository tenantRepository,
             UserRepository userRepository,
             SupportedResponseLanguages supportedResponseLanguages,
+            ChatAttachmentService chatAttachmentService,
             @Value("${chat.session.max-requests:50}") int maxRequestsPerSession
     ) {
         this.sessionRepository = sessionRepository;
@@ -64,6 +68,7 @@ public class ChatPersistenceService {
         this.tenantRepository = tenantRepository;
         this.userRepository = userRepository;
         this.supportedResponseLanguages = supportedResponseLanguages;
+        this.chatAttachmentService = chatAttachmentService;
         this.maxRequestsPerSession = maxRequestsPerSession;
         log.info("ChatPersistenceService bean initialized: {}", this.getClass().getName());
     }
@@ -276,6 +281,7 @@ public class ChatPersistenceService {
                 protectionAudit,
                 null,
                 null,
+                null,
                 null
         );
     }
@@ -298,6 +304,47 @@ public class ChatPersistenceService {
             ChatMode resolvedMode,
             String detectedLanguage,
             String resolvedLocale
+    ) {
+        return persistChat(
+                tenantId,
+                userId,
+                sessionId,
+                originalText,
+                sanitizedText,
+                openAiResponse,
+                openAiUsage,
+                actionTaken,
+                sanitizedFlag,
+                retrievalReason,
+                retrievalTimeMs,
+                auditMetadata,
+                protectionAudit,
+                resolvedMode,
+                detectedLanguage,
+                resolvedLocale,
+                null
+        );
+    }
+
+    @Transactional
+    public Long persistChat(
+            String tenantId,
+            String userId,
+            String sessionId,
+            String originalText,
+            String sanitizedText,
+            String openAiResponse,
+            OpenAIUsage openAiUsage,
+            String actionTaken,
+            Boolean sanitizedFlag,
+            String retrievalReason,
+            Integer retrievalTimeMs,
+            LiveHistoryAuditMetadata auditMetadata,
+            com.ai.openai_api_service.service.protection.ProtectionAuditSnapshot protectionAudit,
+            ChatMode resolvedMode,
+            String detectedLanguage,
+            String resolvedLocale,
+            String messageId
     ) {
         try {
             int consumed = resolveConsumedTokens(openAiUsage, null);
@@ -435,6 +482,9 @@ public class ChatPersistenceService {
             message.setOpenaiResponse(openAiResponse);
             message.setTokensUsed(consumed);
             message.setMode(resolvedMode != null ? resolvedMode.name() : ChatMode.AUTO.name());
+            if (messageId != null && !messageId.isBlank()) {
+                message.setMessageId(messageId.trim());
+            }
             if (openAiUsage != null) {
                 message.setPromptTokens(openAiUsage.getPromptTokens());
                 message.setCompletionTokens(openAiUsage.getCompletionTokens());
@@ -704,16 +754,28 @@ public class ChatPersistenceService {
             return List.of();
         }
 
-        List<RequestLog> rows =
+        List<RequestLog> rows = new ArrayList<>(
                 requestLogRepository
                         .findActiveBySessionOrderByCreatedAtDesc(
                                 tenant,
                                 user,
                                 sessionId,
                                 PageRequest.of(0, maxExchanges)
-                        );
+                        )
+        );
 
         Collections.reverse(rows);
+
+        List<Long> requestLogIds = new ArrayList<>(rows.size());
+        for (RequestLog row : rows) {
+            if (row.getId() != null) {
+                requestLogIds.add(row.getId());
+            }
+        }
+        Map<Long, List<ChatAttachmentDto>> attachmentsByRequestLogId =
+                requestLogIds.isEmpty()
+                        ? Map.of()
+                        : chatAttachmentService.mapByRequestLogIds(tenantId, requestLogIds);
 
         List<HistoryMessageDto> messages = new ArrayList<>();
         for (RequestLog row : rows) {
@@ -723,14 +785,21 @@ public class ChatPersistenceService {
             String modeWire = toModeWireValue(row.getMode());
 
             if (userMessageContent != null && !userMessageContent.isBlank()) {
-                messages.add(new HistoryMessageDto(
+                HistoryMessageDto userTurn = new HistoryMessageDto(
                         "user",
                         userMessageContent,
                         row.getSanitizedFlag(),
                         null,
                         row.getId(),
                         modeWire
-                ));
+                );
+                userTurn.setMessageId(row.getMessageId());
+                List<ChatAttachmentDto> attachments = attachmentsByRequestLogId.getOrDefault(
+                        row.getId(),
+                        List.of()
+                );
+                userTurn.setAttachments(attachments);
+                messages.add(userTurn);
             }
 
             if (row.getOpenaiResponse() != null && !row.getOpenaiResponse().isBlank()) {

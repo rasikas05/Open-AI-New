@@ -46,6 +46,8 @@ public class ChatResponse {
     private PaginationMetadataDto pagination;
     private Long requestLogId;
     private String locale;
+    private String messageId;
+    private List<ChatAttachmentDto> attachments;
 
     public ChatResponse() {
     }
@@ -349,6 +351,22 @@ public class ChatResponse {
 
     public void setRequestLogId(Long requestLogId) {
         this.requestLogId = requestLogId;
+    }
+
+    public String getMessageId() {
+        return messageId;
+    }
+
+    public void setMessageId(String messageId) {
+        this.messageId = messageId;
+    }
+
+    public List<ChatAttachmentDto> getAttachments() {
+        return attachments;
+    }
+
+    public void setAttachments(List<ChatAttachmentDto> attachments) {
+        this.attachments = attachments;
     }
 
     public String getLocale() {

@@ -5,6 +5,7 @@ import com.ai.openai_api_service.exception.AiServiceErrors;
 import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.config.CorrelationIdSupport;
 import com.ai.openai_api_service.model.BusinessProtectedEntityDto;
+import com.ai.openai_api_service.model.ChatAttachmentDto;
 import com.ai.openai_api_service.model.ChatMode;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
@@ -62,6 +63,12 @@ import com.ai.openai_api_service.service.timing.RoutingSummaryState;
 import com.ai.openai_api_service.service.timing.ComprehendChatTimingSnapshot;
 import com.ai.openai_api_service.service.timing.RequestTimingLog;
 import com.ai.openai_api_service.service.validation.SearchCriteriaValidator;
+import com.ai.openai_api_service.service.vision.ImageAttachmentValidator;
+import com.ai.openai_api_service.service.vision.ValidatedImageAttachment;
+import com.ai.openai_api_service.service.vision.VisionDirectAnswerResult;
+import com.ai.openai_api_service.service.vision.VisionDirectAnswerService;
+import com.ai.openai_api_service.service.vision.VisionQueryGenerationResult;
+import com.ai.openai_api_service.service.vision.VisionQueryGenerationService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -166,9 +173,19 @@ public class ComprehendChatService {
     private final RomanScriptClassifier romanScriptClassifier;
     private final SupportedResponseLanguages supportedResponseLanguages;
     private final ExecutorService suggestionExecutor;
+    private final ImageAttachmentValidator imageAttachmentValidator;
+    private final VisionQueryGenerationService visionQueryGenerationService;
+    private final VisionDirectAnswerService visionDirectAnswerService;
+    private final ChatAttachmentService chatAttachmentService;
 
     @Value("${openai.response.include-sanitization-debug:false}")
     private boolean includeSanitizationDebug;
+
+    @Value("${chat.vision.rag-pipeline.enabled:true}")
+    private boolean visionRagPipelineEnabled;
+
+    @Value("${rag.prompt-threshold:0.45}")
+    private float ragPromptThreshold;
 
     @Value("${rag.query-rewrite.enabled:false}")
     private boolean queryRewriteEnabled;
@@ -234,7 +251,11 @@ public class ComprehendChatService {
             TranslationService translationService,
             RomanScriptClassifier romanScriptClassifier,
             SupportedResponseLanguages supportedResponseLanguages,
-            @Qualifier(SuggestionExecutorConfig.SUGGESTION_EXECUTOR_BEAN) ExecutorService suggestionExecutor
+            @Qualifier(SuggestionExecutorConfig.SUGGESTION_EXECUTOR_BEAN) ExecutorService suggestionExecutor,
+            ImageAttachmentValidator imageAttachmentValidator,
+            VisionQueryGenerationService visionQueryGenerationService,
+            VisionDirectAnswerService visionDirectAnswerService,
+            ChatAttachmentService chatAttachmentService
     ) {
         this.chatPersistenceService = chatPersistenceService;
         this.tenantQuotaService = tenantQuotaService;
@@ -258,12 +279,26 @@ public class ComprehendChatService {
         this.romanScriptClassifier = romanScriptClassifier;
         this.supportedResponseLanguages = supportedResponseLanguages;
         this.suggestionExecutor = suggestionExecutor;
+        this.imageAttachmentValidator = imageAttachmentValidator;
+        this.visionQueryGenerationService = visionQueryGenerationService;
+        this.visionDirectAnswerService = visionDirectAnswerService;
+        this.chatAttachmentService = chatAttachmentService;
     }
 
     public ChatResponse chat(ChatRequest request) {
         if (request == null || request.getUserMessage() == null || request.getUserMessage().isBlank()) {
             throw new OpenAIException("User message cannot be empty", 400);
         }
+        // Reject invalid image payloads before quota, language, BIP, or routing.
+        List<ValidatedImageAttachment> imageAttachments = imageAttachmentValidator.validateAll(request);
+        if (!imageAttachments.isEmpty() && resolveMode(request) == ChatMode.M3) {
+            throw new OpenAIException(
+                    "Live M3 mode does not support image uploads. Switch to Auto or Docs, or send text only.",
+                    400
+            );
+        }
+        // IDM attachment metadata + prepare ownership (Option A: no Spring→IDM).
+        chatAttachmentService.validateForChat(request);
         Instant serviceStart = Instant.now();
         long requestStartMs = serviceStart.toEpochMilli();
         long piiDetectionMs = 0L;
@@ -458,6 +493,7 @@ public class ComprehendChatService {
             normalizedEnglishMessage = translationService.normalize(originalUserText, detectedLanguage);
         }
         boolean guidedHandled = false;
+        boolean visionHandled = false;
         List<SourceItem> sourcesForSuggestions = null;
         List<SourceItem> responseSources = null;
         String retrievalReason = null;
@@ -465,8 +501,53 @@ public class ComprehendChatService {
         Float maxScore = null;
 
         if (!unsupportedLanguageTurn && !languageSwitchOnly) {
-        GuidedRouteAttempt guidedAttempt = tryHandleActiveGuidedTurn(request, normalizedEnglishMessage);
-        if (guidedAttempt.guidedHandled()) {
+        if (!imageAttachments.isEmpty()) {
+            if (!visionRagPipelineEnabled) {
+                throw new OpenAIException("Vision documentation pipeline is disabled.", 503);
+            }
+            long piiStartMs = System.currentTimeMillis();
+            ProtectionSession visionSession = ProtectionSession.fromOriginal(
+                    normalizedEnglishMessage,
+                    businessInformationProtectionService.isEnabled()
+            );
+            businessInformationProtectionService.protect(
+                    visionSession,
+                    ProtectionContext.forPurpose(ProtectionPurpose.ANSWER, true)
+            );
+            protectPiiSafely(visionSession);
+            sanitizedUserText = anonymizeForPersistence(normalizedEnglishMessage);
+            piiDetectionMs = System.currentTimeMillis() - piiStartMs;
+            protectionSession = visionSession;
+            workingRequest = copyRequestWithUserMessage(request, visionSession.textForLlm());
+
+            VisionDocTurnResult visionTurn = handleVisionDocumentationTurn(
+                    workingRequest,
+                    originalUserText,
+                    visionSession,
+                    imageAttachments,
+                    resolvedLocale,
+                    detectedLanguage.detectedLanguage()
+            );
+            chatResponse = visionTurn.chatResponse();
+            chatResponse.setLocale(resolvedLocale);
+            applyProtectionSessionToResponse(chatResponse, protectionSession);
+            responseSources = visionTurn.responseSources();
+            retrievalReason = visionTurn.retrievalReason();
+            retrievalTimeMs = visionTurn.retrievalTimeMs();
+            maxScore = visionTurn.maxScore();
+            route = "vision";
+            routingSummary.setPythonRoute("SKIP");
+            routingSummary.setPlanner("SKIP");
+            routingSummary.setRoute("vision");
+            routingSummary.setHandler(visionTurn.chatResponse().getActionTaken());
+            visionHandled = true;
+            guidedHandled = true; // skip guided / Lex / router
+        }
+
+        GuidedRouteAttempt guidedAttempt = visionHandled
+                ? GuidedRouteAttempt.notHandled()
+                : tryHandleActiveGuidedTurn(request, normalizedEnglishMessage);
+        if (!visionHandled && guidedAttempt.guidedHandled()) {
             guidedHandled = true;
             chatResponse = guidedAttempt.response();
             route = "guided";
@@ -913,7 +994,8 @@ public class ComprehendChatService {
                         : null,
                 resolvedMode,
                 detectedLanguage.detectedLanguage(),
-                resolvedLocale
+                resolvedLocale,
+                request.getMessageId()
         );
         if (editOfRequestLogId != null && requestLogId != null && editSessionPk != null) {
             boolean superseded = chatPersistenceService.supersedeEditedRequest(
@@ -929,6 +1011,14 @@ public class ComprehendChatService {
             }
         }
         chatResponse.setRequestLogId(requestLogId);
+        if (chatAttachmentService.requiresMessageId(request)) {
+            List<ChatAttachmentDto> attachmentDtos = chatAttachmentService.persistAndFinalize(
+                    request,
+                    requestLogId
+            );
+            chatResponse.setMessageId(request.getMessageId() != null ? request.getMessageId().trim() : null);
+            chatResponse.setAttachments(attachmentDtos);
+        }
         Instant persistenceEnd = Instant.now();
         persistenceMs = RequestTimingLog.durationMs(persistenceStart, persistenceEnd);
         RequestTimingLog.logStage("persistence", persistenceStart, persistenceEnd);
@@ -3138,6 +3228,195 @@ public class ComprehendChatService {
         return request.getMode() == null ? ChatMode.AUTO : request.getMode();
     }
 
+    /**
+     * Image documentation path: vision query-gen → Qdrant retrieve → grounded RAG or vision fallback.
+     * Does not call Lex/MI. Does not call {@code recordUsage} (existing chat tail owns that).
+     */
+    private VisionDocTurnResult handleVisionDocumentationTurn(
+            ChatRequest workingRequest,
+            String originalUserText,
+            ProtectionSession session,
+            List<ValidatedImageAttachment> attachments,
+            String resolvedLocale,
+            String detectedLanguage
+    ) {
+        OpenAIUsage usageSoFar = null;
+        VisionQueryGenerationResult queryGen = null;
+        try {
+            queryGen = visionQueryGenerationService.generate(originalUserText, attachments);
+            usageSoFar = mergeUsage(usageSoFar, queryGen.usage());
+        } catch (OpenAIException queryGenError) {
+            if (queryGenError.isAiServiceUnavailable()) {
+                throw queryGenError;
+            }
+            log.warn("Vision query generation failed; attempting direct vision fallback: {}", queryGenError.getMessage());
+            return visionFallbackTurn(workingRequest, originalUserText, attachments, resolvedLocale, usageSoFar, null, null, null);
+        }
+
+        String retrieveQuery = VisionQueryGenerationService.isImageOnlySentinel(originalUserText)
+                ? VisionQueryGenerationService.IMAGE_ONLY_USER_INSTRUCTION
+                : session.textForLlm();
+        if (retrieveQuery == null || retrieveQuery.isBlank()) {
+            retrieveQuery = VisionQueryGenerationService.IMAGE_ONLY_USER_INSTRUCTION;
+        }
+
+        String boostSource = joinNonBlank(
+                queryGen.imageSummary(),
+                queryGen.visibleTextHints() != null ? String.join(" ", queryGen.visibleTextHints()) : null,
+                originalUserText
+        );
+        List<String> boostProgramIds = ProgramIdDetector.detect(boostSource, originalUserText);
+
+        PythonQueryRequest ragRequest = new PythonQueryRequest();
+        ragRequest.setMessage(retrieveQuery);
+        ragRequest.setHistory(workingRequest.getHistory());
+
+        PythonRetrievalResponse retrieval;
+        try {
+            Instant retrievalStart = Instant.now();
+            retrieval = pythonRagService.retrieve(
+                    retrieveQuery,
+                    queryGen.searchQueries(),
+                    ragRequest,
+                    boostProgramIds,
+                    CorrelationIdSupport.current(),
+                    workingRequest.getSessionId()
+            );
+            Instant retrievalEnd = Instant.now();
+            int retrievalMs = (int) RequestTimingLog.durationMs(retrievalStart, retrievalEnd);
+            abortIfPythonAiUnavailable(retrieval);
+
+            String reason = retrieval.getRetrievalReason();
+            List<ChunkItem> promptChunks = retrieval.getPromptChunks() != null
+                    ? retrieval.getPromptChunks()
+                    : List.of();
+            Float score = retrieval.getMaxScore();
+            boolean strongEvidence = RETRIEVAL_READY.equals(reason)
+                    && !promptChunks.isEmpty()
+                    && (score == null || score >= ragPromptThreshold);
+
+            if (!strongEvidence) {
+                log.info(
+                        "Vision retrieval evidence weak reason={} chunks={} maxScore={}; using vision fallback",
+                        reason,
+                        promptChunks.size(),
+                        score
+                );
+                return visionFallbackTurn(
+                        workingRequest,
+                        originalUserText,
+                        attachments,
+                        resolvedLocale,
+                        usageSoFar,
+                        reason,
+                        retrievalMs,
+                        score
+                );
+            }
+
+            GroundedRagCallResult groundedCall = openAIService.chatWithRagContext(
+                    workingRequest,
+                    promptChunks,
+                    session,
+                    resolvedLocale,
+                    protectedOriginalQuestion(originalUserText),
+                    detectedLanguage
+            );
+            usageSoFar = mergeUsage(usageSoFar, groundedCall.usage());
+            GroundedRagResult grounded = groundedCall.grounded();
+            RagStatus status = grounded.getStatus() != null ? grounded.getStatus() : RagStatus.INSUFFICIENT;
+            String answer = grounded.getAnswer() != null ? grounded.getAnswer().strip() : "";
+            boolean acceptable = (status == RagStatus.FULL || status == RagStatus.PARTIAL) && !answer.isEmpty();
+            if (!acceptable) {
+                log.info("Vision grounding inadequate status={}; using vision fallback", status);
+                return visionFallbackTurn(
+                        workingRequest,
+                        originalUserText,
+                        attachments,
+                        resolvedLocale,
+                        usageSoFar,
+                        reason,
+                        retrievalMs,
+                        score
+                );
+            }
+
+            ChatResponse response = new ChatResponse(answer, false);
+            response.setHistory(workingRequest.getHistory());
+            response.setActionTaken("vision_rag");
+            response.setOpenAiUsage(usageSoFar);
+            response.setSources(toChunkSources(promptChunks));
+            return new VisionDocTurnResult(response, reason, retrievalMs, score, toChunkSources(promptChunks));
+        } catch (OpenAIException retrievalOrGroundError) {
+            if (retrievalOrGroundError.isAiServiceUnavailable()) {
+                throw retrievalOrGroundError;
+            }
+            log.warn(
+                    "Vision retrieval/grounding failed; attempting direct vision fallback: {}",
+                    retrievalOrGroundError.getMessage()
+            );
+            return visionFallbackTurn(
+                    workingRequest,
+                    originalUserText,
+                    attachments,
+                    resolvedLocale,
+                    usageSoFar,
+                    "retrieval_error",
+                    null,
+                    null
+            );
+        }
+    }
+
+    private VisionDocTurnResult visionFallbackTurn(
+            ChatRequest workingRequest,
+            String originalUserText,
+            List<ValidatedImageAttachment> attachments,
+            String resolvedLocale,
+            OpenAIUsage usageSoFar,
+            String retrievalReason,
+            Integer retrievalTimeMs,
+            Float maxScore
+    ) {
+        VisionDirectAnswerResult direct = visionDirectAnswerService.answer(
+                originalUserText,
+                attachments,
+                resolvedLocale
+        );
+        OpenAIUsage merged = mergeUsage(usageSoFar, direct.usage());
+        ChatResponse response = new ChatResponse(direct.reply(), false);
+        response.setHistory(workingRequest.getHistory());
+        response.setActionTaken("vision_fallback");
+        response.setOpenAiUsage(merged);
+        return new VisionDocTurnResult(response, retrievalReason, retrievalTimeMs, maxScore, List.of());
+    }
+
+    private static String joinNonBlank(String... parts) {
+        StringBuilder sb = new StringBuilder();
+        if (parts == null) {
+            return "";
+        }
+        for (String part : parts) {
+            if (part == null || part.isBlank()) {
+                continue;
+            }
+            if (!sb.isEmpty()) {
+                sb.append(' ');
+            }
+            sb.append(part.strip());
+        }
+        return sb.toString();
+    }
+
+    private record VisionDocTurnResult(
+            ChatResponse chatResponse,
+            String retrievalReason,
+            Integer retrievalTimeMs,
+            Float maxScore,
+            List<SourceItem> responseSources
+    ) {
+    }
+
     private ChatRequest copyRequestWithUserMessage(ChatRequest originalRequest, String newUserMessage) {
         ChatRequest copy = new ChatRequest();
         copy.setTenantCode(originalRequest.getTenantCode());
@@ -3149,6 +3428,16 @@ public class ComprehendChatService {
         copy.setEditOfRequestLogId(originalRequest.getEditOfRequestLogId());
         copy.setHistory(originalRequest.getHistory());
         copy.setM3ClientReport(originalRequest.getM3ClientReport());
+        copy.setImageBase64(originalRequest.getImageBase64());
+        copy.setImageMediaType(originalRequest.getImageMediaType());
+        copy.setImageFileName(originalRequest.getImageFileName());
+        if (originalRequest.getImages() != null) {
+            copy.setImages(List.copyOf(originalRequest.getImages()));
+        }
+        copy.setMessageId(originalRequest.getMessageId());
+        if (originalRequest.getAttachments() != null) {
+            copy.setAttachments(List.copyOf(originalRequest.getAttachments()));
+        }
         return copy;
     }
 

@@ -45,6 +45,8 @@ class ChatPersistenceSessionOwnershipTest {
     private TenantRepository tenantRepository;
     @Mock
     private UserRepository userRepository;
+    @Mock
+    private ChatAttachmentService chatAttachmentService;
 
     private ChatPersistenceService service;
 
@@ -56,6 +58,7 @@ class ChatPersistenceSessionOwnershipTest {
                 tenantRepository,
                 userRepository,
                 new SupportedResponseLanguages(""),
+                chatAttachmentService,
                 100
         );
     }

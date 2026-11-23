@@ -43,6 +43,12 @@ import com.ai.openai_api_service.service.i18n.SupportedResponseLanguages;
 import com.ai.openai_api_service.service.i18n.TranslationService;
 import com.ai.openai_api_service.service.lex.InMemoryPendingLexSessionService;
 import com.ai.openai_api_service.service.api.InformationRequestCatalog;
+import com.ai.openai_api_service.service.vision.ImageAttachmentValidator;
+import com.ai.openai_api_service.service.vision.ValidatedImageAttachment;
+import com.ai.openai_api_service.service.vision.VisionDirectAnswerResult;
+import com.ai.openai_api_service.service.vision.VisionDirectAnswerService;
+import com.ai.openai_api_service.service.vision.VisionQueryGenerationResult;
+import com.ai.openai_api_service.service.vision.VisionQueryGenerationService;
 import com.ai.openai_api_service.service.TenantQuotaService.QuotaCheckResult;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -129,6 +135,14 @@ class ComprehendChatServiceTest {
     private SupportedResponseLanguages supportedResponseLanguages = new SupportedResponseLanguages("");
     @Mock
     private ExecutorService suggestionExecutor;
+    @Mock
+    private ImageAttachmentValidator imageAttachmentValidator;
+    @Mock
+    private VisionQueryGenerationService visionQueryGenerationService;
+    @Mock
+    private VisionDirectAnswerService visionDirectAnswerService;
+    @Mock
+    private ChatAttachmentService chatAttachmentService;
     @Spy
     private InMemoryPendingLexSessionService pendingLexSessionService = new InMemoryPendingLexSessionService(3600);
     @Spy
@@ -149,6 +163,12 @@ class ComprehendChatServiceTest {
             task.run();
             return null;
         }).when(suggestionExecutor).execute(any(Runnable.class));
+        lenient().when(imageAttachmentValidator.validateAll(any()))
+                .thenReturn(List.of());
+        lenient().when(chatAttachmentService.requiresMessageId(any())).thenReturn(false);
+        lenient().doNothing().when(chatAttachmentService).validateForChat(any());
+        ReflectionTestUtils.setField(comprehendChatService, "visionRagPipelineEnabled", true);
+        ReflectionTestUtils.setField(comprehendChatService, "ragPromptThreshold", 0.45f);
         ReflectionTestUtils.setField(comprehendChatService, "ragPartialGapFillEnabled", true);
         ReflectionTestUtils.setField(comprehendChatService, "queryRewriteEnabled", false);
         ReflectionTestUtils.setField(comprehendChatService, "suggestionRagChunkCount", 2);
@@ -232,6 +252,301 @@ class ComprehendChatServiceTest {
             }
             return reply;
         });
+    }
+
+    @Test
+    void blankUserMessageFailsIndependentlyOfImageFields() {
+        ChatRequest request = baseRequest("   ");
+        request.setImageBase64("aaa");
+        request.setImageMediaType("image/png");
+        request.setImageFileName("x.png");
+
+        OpenAIException ex = assertThrows(OpenAIException.class, () -> comprehendChatService.chat(request));
+
+        assertEquals(400, ex.getStatusCode());
+        assertEquals("User message cannot be empty", ex.getMessage());
+        verify(imageAttachmentValidator, never()).validateAll(any());
+        verify(tenantQuotaService, never()).checkBeforeChat(anyString());
+        verify(languageDetectionService, never()).detect(any());
+        verify(translationService, never()).normalize(any(), any());
+        verify(pythonRagService, never()).route(anyString());
+    }
+
+    @Test
+    void invalidImageFailsBeforeQuotaLanguageTranslationAndRouting() {
+        when(imageAttachmentValidator.validateAll(any()))
+                .thenThrow(new OpenAIException("Incomplete image payload.", 400));
+
+        ChatRequest request = baseRequest("What is on this screen?");
+        request.setImageBase64("partial-only");
+
+        OpenAIException ex = assertThrows(OpenAIException.class, () -> comprehendChatService.chat(request));
+
+        assertEquals(400, ex.getStatusCode());
+        assertEquals("Incomplete image payload.", ex.getMessage());
+        verify(imageAttachmentValidator).validateAll(request);
+        verify(tenantQuotaService, never()).checkBeforeChat(anyString());
+        verify(languageDetectionService, never()).detect(any());
+        verify(translationService, never()).normalize(any(), any());
+        verify(piiProtectionService, never()).anonymize(anyString());
+        verify(pythonRagService, never()).route(anyString());
+        verify(lexService, never()).recognizeText(any(), anyString());
+    }
+
+    @Test
+    void copyRequestWithUserMessagePreservesImageFields() {
+        ChatRequest original = baseRequest("caption");
+        original.setImageBase64("YmFzZTY0");
+        original.setImageMediaType("image/png");
+        original.setImageFileName("screen.png");
+        original.setImages(List.of(
+                new com.ai.openai_api_service.model.ImageAttachmentRequest("YmFzZTY0", "image/png", "a.png")
+        ));
+
+        ChatRequest copy = ReflectionTestUtils.invokeMethod(
+                comprehendChatService,
+                "copyRequestWithUserMessage",
+                original,
+                "rewritten"
+        );
+
+        assertNotNull(copy);
+        assertEquals("rewritten", copy.getUserMessage());
+        assertEquals("YmFzZTY0", copy.getImageBase64());
+        assertEquals("image/png", copy.getImageMediaType());
+        assertEquals("screen.png", copy.getImageFileName());
+        assertNotNull(copy.getImages());
+        assertEquals(1, copy.getImages().size());
+        assertEquals("a.png", copy.getImages().get(0).getImageFileName());
+    }
+
+    @Test
+    void visionPath_strongRetrievalFull_usesVisionRagWithoutLex() {
+        stubQuotaAllowed();
+        stubSanitize();
+        ValidatedImageAttachment attachment = samplePngAttachment();
+        when(imageAttachmentValidator.validateAll(any())).thenReturn(List.of(attachment));
+        when(visionQueryGenerationService.generate(anyString(), eq(List.of(attachment))))
+                .thenReturn(new VisionQueryGenerationResult(
+                        "summary",
+                        List.of("CRS610"),
+                        List.of("q1", "q2", "q3", "q4"),
+                        new OpenAIUsage(1, 2, 3, "vision"),
+                        10L
+                ));
+
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        retrieval.setMaxScore(0.7f);
+        ChunkItem chunk = new ChunkItem("chunk", 0.7f, "Title", "http://ex", List.of(), null, null, null, null);
+        retrieval.setPromptChunks(List.of(chunk));
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
+
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any(), any(), any(), any()))
+                .thenReturn(new GroundedRagCallResult(
+                        new GroundedRagResult(RagStatus.FULL, "docs answer from image", List.of()),
+                        new OpenAIUsage(4, 5, 9, "gpt"),
+                        "{}"
+                ));
+
+        ChatRequest request = baseRequest("What error is shown?");
+        request.setMode(ChatMode.AUTO);
+        request.setImageBase64("x");
+        request.setImageMediaType("image/png");
+        request.setImageFileName("a.png");
+
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("docs answer from image", response.getReply());
+        assertEquals("vision_rag", response.getActionTaken());
+        assertEquals(12, response.getOpenAiUsage().getTotalTokens());
+        assertNull(response.getM3Request());
+        verify(lexService, never()).recognizeText(any(), anyString());
+        verify(lexService, never()).recognizeText(any(), anyString(), any());
+        verify(visionDirectAnswerService, never()).answer(anyString(), anyList(), any());
+        verify(pythonRagService, never()).route(anyString());
+        verify(tenantQuotaService).recordUsage(eq("tenant1"), eq(12), anyString());
+    }
+
+    @Test
+    void visionPath_docsMode_usesVisionWithoutLex() {
+        stubQuotaAllowed();
+        stubSanitize();
+        ValidatedImageAttachment attachment = samplePngAttachment();
+        when(imageAttachmentValidator.validateAll(any())).thenReturn(List.of(attachment));
+        when(visionQueryGenerationService.generate(anyString(), eq(List.of(attachment))))
+                .thenReturn(new VisionQueryGenerationResult(
+                        "summary",
+                        List.of(),
+                        List.of("q1", "q2", "q3"),
+                        new OpenAIUsage(1, 1, 2, "vision"),
+                        5L
+                ));
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("below_prompt_threshold");
+        retrieval.setMaxScore(0.1f);
+        retrieval.setPromptChunks(List.of());
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
+        when(visionDirectAnswerService.answer(anyString(), eq(List.of(attachment)), any()))
+                .thenReturn(new VisionDirectAnswerResult(
+                        "docs vision fallback",
+                        new OpenAIUsage(2, 2, 4, "vision"),
+                        3L
+                ));
+
+        ChatRequest request = imageRequest("Explain this screen");
+        request.setMode(ChatMode.DOCS);
+        ChatResponse response = comprehendChatService.chat(request);
+
+        assertEquals("docs vision fallback", response.getReply());
+        assertEquals("vision_fallback", response.getActionTaken());
+        verify(lexService, never()).recognizeText(any(), anyString());
+        verify(pythonRagService, never()).route(anyString());
+    }
+
+    @Test
+    void visionPath_m3ModeWithImage_rejectsBeforeVisionOrLex() {
+        ValidatedImageAttachment attachment = samplePngAttachment();
+        when(imageAttachmentValidator.validateAll(any())).thenReturn(List.of(attachment));
+
+        ChatRequest request = imageRequest("What is this?");
+        request.setMode(ChatMode.M3);
+
+        OpenAIException ex = assertThrows(OpenAIException.class, () -> comprehendChatService.chat(request));
+
+        assertEquals(400, ex.getStatusCode());
+        assertTrue(ex.getMessage().toLowerCase().contains("live m3")
+                || ex.getMessage().toLowerCase().contains("does not support"));
+        verify(tenantQuotaService, never()).checkBeforeChat(anyString());
+        verify(visionQueryGenerationService, never()).generate(anyString(), anyList());
+        verify(visionDirectAnswerService, never()).answer(anyString(), anyList(), any());
+        verify(lexService, never()).recognizeText(any(), anyString());
+        verify(pythonRagService, never()).route(anyString());
+    }
+
+    @Test
+    void visionPath_multiImageFallbackReceivesAllImages() {
+        stubQuotaAllowed();
+        stubSanitize();
+        ValidatedImageAttachment first = samplePngAttachment();
+        ValidatedImageAttachment second = new ValidatedImageAttachment(
+                first.bytes(), "image/png", "second.png");
+        List<ValidatedImageAttachment> attachments = List.of(first, second);
+        when(imageAttachmentValidator.validateAll(any())).thenReturn(attachments);
+        when(visionQueryGenerationService.generate(anyString(), eq(attachments)))
+                .thenThrow(new OpenAIException("query gen failed", 502));
+        when(visionDirectAnswerService.answer(anyString(), eq(attachments), any()))
+                .thenReturn(new VisionDirectAnswerResult(
+                        "fallback with both",
+                        new OpenAIUsage(1, 1, 2, "vision"),
+                        4L
+                ));
+
+        ChatResponse response = comprehendChatService.chat(imageRequest("Compare these"));
+
+        assertEquals("fallback with both", response.getReply());
+        assertEquals("vision_fallback", response.getActionTaken());
+        verify(visionDirectAnswerService).answer(anyString(), eq(attachments), any());
+        verify(lexService, never()).recognizeText(any(), anyString());
+    }
+
+    @Test
+    void visionPath_weakRetrieval_usesVisionFallback() {
+        stubQuotaAllowed();
+        stubSanitize();
+        ValidatedImageAttachment attachment = samplePngAttachment();
+        when(imageAttachmentValidator.validateAll(any())).thenReturn(List.of(attachment));
+        when(visionQueryGenerationService.generate(anyString(), eq(List.of(attachment))))
+                .thenReturn(new VisionQueryGenerationResult(
+                        "summary",
+                        List.of(),
+                        List.of("q1", "q2", "q3"),
+                        new OpenAIUsage(2, 2, 4, "vision"),
+                        5L
+                ));
+
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("below_prompt_threshold");
+        retrieval.setMaxScore(0.1f);
+        retrieval.setPromptChunks(List.of());
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
+        when(visionDirectAnswerService.answer(anyString(), eq(List.of(attachment)), any()))
+                .thenReturn(new VisionDirectAnswerResult(
+                        "fallback from image",
+                        new OpenAIUsage(3, 3, 6, "vision"),
+                        8L
+                ));
+
+        ChatResponse response = comprehendChatService.chat(imageRequest("Explain this screen"));
+
+        assertEquals("fallback from image", response.getReply());
+        assertEquals("vision_fallback", response.getActionTaken());
+        assertEquals(10, response.getOpenAiUsage().getTotalTokens());
+        verify(openAIService, never()).chatWithRagContext(any(), anyList(), any(), any(), any(), any());
+        verify(lexService, never()).recognizeText(any(), anyString());
+        verify(tenantQuotaService).recordUsage(eq("tenant1"), eq(10), anyString());
+    }
+
+    @Test
+    void visionPath_queryGenFailThenFallbackFail_propagatesError() {
+        stubQuotaAllowed();
+        stubSanitize();
+        ValidatedImageAttachment attachment = samplePngAttachment();
+        when(imageAttachmentValidator.validateAll(any())).thenReturn(List.of(attachment));
+        when(visionQueryGenerationService.generate(anyString(), eq(List.of(attachment))))
+                .thenThrow(new OpenAIException("query gen failed", 502));
+        when(visionDirectAnswerService.answer(anyString(), eq(List.of(attachment)), any()))
+                .thenThrow(new OpenAIException("fallback failed", 504));
+
+        OpenAIException ex = assertThrows(
+                OpenAIException.class,
+                () -> comprehendChatService.chat(imageRequest("What is this?"))
+        );
+        assertEquals(504, ex.getStatusCode());
+        verify(pythonRagService, never()).retrieve(anyString(), anyList(), any(), any(), any(), any());
+        verify(lexService, never()).recognizeText(any(), anyString());
+        verify(tenantQuotaService, never()).recordUsage(anyString(), anyInt(), anyString());
+    }
+
+    @Test
+    void visionPath_textOnlyStillCallsPythonRoute() {
+        stubQuotaAllowed();
+        stubSanitize();
+        when(pythonRagService.route("how to create customer")).thenReturn(new PythonRouteResponse("rag"));
+        PythonRetrievalResponse retrieval = new PythonRetrievalResponse();
+        retrieval.setRetrievalReason("ready_for_grounding");
+        retrieval.setMaxScore(0.62f);
+        ChunkItem chunk = new ChunkItem("chunk text", 0.62f, "Title", "http://example.com", List.of("CRS610"), null, null, null, null);
+        retrieval.setPromptChunks(List.of(chunk));
+        when(pythonRagService.retrieve(anyString(), anyList(), any(), any(), any(), any())).thenReturn(retrieval);
+        when(openAIService.chatWithRagContext(any(), eq(List.of(chunk)), any(), any(), any(), any()))
+                .thenReturn(new GroundedRagCallResult(
+                        new GroundedRagResult(RagStatus.FULL, "grounded answer", List.of()),
+                        new OpenAIUsage(10, 20, 30, "gpt-4.1"),
+                        "{}"
+                ));
+
+        ChatResponse response = comprehendChatService.chat(baseRequest("how to create customer"));
+
+        assertEquals("grounded answer", response.getReply());
+        verify(visionQueryGenerationService, never()).generate(anyString(), anyList());
+        verify(visionDirectAnswerService, never()).answer(anyString(), anyList(), any());
+        verify(pythonRagService).route("how to create customer");
+    }
+
+    private static ValidatedImageAttachment samplePngAttachment() {
+        byte[] png = java.util.Base64.getDecoder().decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+        );
+        return new ValidatedImageAttachment(png, "image/png", "screen.png");
+    }
+
+    private ChatRequest imageRequest(String message) {
+        ChatRequest request = baseRequest(message);
+        request.setImageBase64("x");
+        request.setImageMediaType("image/png");
+        request.setImageFileName("screen.png");
+        return request;
     }
 
     @Test
@@ -1111,7 +1426,7 @@ class ComprehendChatServiceTest {
         verify(chatPersistenceService, never()).persistChat(
                 anyString(), anyString(), anyString(), anyString(), anyString(),
                 anyString(), any(), anyString(), anyBoolean(), anyString(), any(), any(), any(), any(),
-                any(), any()
+                any(), any(), any()
         );
     }
 
@@ -1208,7 +1523,8 @@ class ComprehendChatServiceTest {
                 any(),
                 eq(ChatMode.AUTO),
                 eq("en"),
-                eq(ChatPersistenceService.LOCALE_EN_US)
+                eq(ChatPersistenceService.LOCALE_EN_US),
+                isNull()
         );
         assertEquals(100, usageCaptor.getValue().getPromptTokens());
         assertEquals(50, usageCaptor.getValue().getCompletionTokens());
@@ -1609,7 +1925,8 @@ class ComprehendChatServiceTest {
                 any(),
                 eq(ChatMode.AUTO),
                 eq("de"),
-                eq(ChatPersistenceService.LOCALE_DE_DE)
+                eq(ChatPersistenceService.LOCALE_DE_DE),
+                isNull()
         );
     }
 
@@ -2041,7 +2358,8 @@ class ComprehendChatServiceTest {
                 isNull(),
                 eq(ChatMode.AUTO),
                 eq("en"),
-                eq(ChatPersistenceService.LOCALE_EN_US)
+                eq(ChatPersistenceService.LOCALE_EN_US),
+                isNull()
         );
     }
 
@@ -2655,7 +2973,7 @@ class ComprehendChatServiceTest {
         stubDocsGroundedPath("how to create customer", "grounded answer");
         when(chatPersistenceService.persistChat(
                 anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
-                any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
         )).thenReturn(99L);
 
         ChatRequest request = baseRequest("how to create customer");
@@ -2844,7 +3162,7 @@ class ComprehendChatServiceTest {
         stubDocsGroundedPath("edited question", "edited answer");
         when(chatPersistenceService.persistChat(
                 anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
-                any(), any(), any(), any(), any(), any(), any(), eq(ChatMode.DOCS), any(), any()
+                any(), any(), any(), any(), any(), any(), any(), eq(ChatMode.DOCS), any(), any(), any()
         )).thenReturn(456L);
         when(chatPersistenceService.supersedeEditedRequest(123L, 456L, 10L)).thenReturn(true);
 
@@ -2873,7 +3191,8 @@ class ComprehendChatServiceTest {
                 any(),
                 eq(ChatMode.DOCS),
                 eq("en"),
-                eq(ChatPersistenceService.LOCALE_EN_US)
+                eq(ChatPersistenceService.LOCALE_EN_US),
+                isNull()
         );
     }
 
@@ -2903,7 +3222,7 @@ class ComprehendChatServiceTest {
 
         when(chatPersistenceService.persistChat(
                 anyString(), anyString(), anyString(), anyString(), anyString(), anyString(),
-                any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
         )).thenReturn(457L);
         when(chatPersistenceService.supersedeEditedRequest(123L, 457L, 10L)).thenReturn(false);
 
@@ -2937,7 +3256,7 @@ class ComprehendChatServiceTest {
         verify(pythonRagService, never()).route(anyString());
         verify(chatPersistenceService, never()).persistChat(
                 anyString(), anyString(), anyString(), anyString(), anyString(),
-                anyString(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
+                anyString(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()
         );
     }
 
@@ -3494,7 +3813,8 @@ class ComprehendChatServiceTest {
                 any(),
                 eq(ChatMode.AUTO),
                 eq("en"),
-                eq(ChatPersistenceService.LOCALE_EN_US)
+                eq(ChatPersistenceService.LOCALE_EN_US),
+                isNull()
         );
     }
 

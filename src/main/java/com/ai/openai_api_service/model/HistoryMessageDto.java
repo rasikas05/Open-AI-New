@@ -2,6 +2,8 @@ package com.ai.openai_api_service.model;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 
+import java.util.List;
+
 /**
  * Display-only history row for widget UI (comprehend history API).
  * Not used for OpenAI prompt construction — that continues to use {@link MessageDto}.
@@ -24,6 +26,12 @@ public class HistoryMessageDto {
             example = "auto"
     )
     private String mode;
+
+    @Schema(description = "Server-issued prepare messageId; set on user turns only. Null for legacy text-only rows.")
+    private String messageId;
+
+    @Schema(description = "IDM attachment metadata for this user turn (no binary). Null/empty on assistant turns.")
+    private List<ChatAttachmentDto> attachments;
 
     public HistoryMessageDto() {
     }
@@ -100,5 +108,21 @@ public class HistoryMessageDto {
 
     public void setMode(String mode) {
         this.mode = mode;
+    }
+
+    public String getMessageId() {
+        return messageId;
+    }
+
+    public void setMessageId(String messageId) {
+        this.messageId = messageId;
+    }
+
+    public List<ChatAttachmentDto> getAttachments() {
+        return attachments;
+    }
+
+    public void setAttachments(List<ChatAttachmentDto> attachments) {
+        this.attachments = attachments;
     }
 }

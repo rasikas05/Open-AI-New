@@ -32,6 +32,8 @@ public interface RequestLogRepository extends JpaRepository<RequestLog, Long> {
 
     List<RequestLog> findBySession_SessionId(String sessionId);
 
+    Optional<RequestLog> findByMessageId(String messageId);
+
     long countBySession_TenantAndSession_UserAndSession_SessionId(
             Tenant tenant,
             User user,
