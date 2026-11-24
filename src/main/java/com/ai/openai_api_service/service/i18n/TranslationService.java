@@ -141,7 +141,8 @@ public class TranslationService {
                     ),
                     0.0,
                     ROMANIZED_MAX_COMPLETION_TOKENS,
-                    false
+                    false,
+                    "Translate"
             );
             translated = result == null ? null : result.content();
         } catch (RuntimeException ex) {

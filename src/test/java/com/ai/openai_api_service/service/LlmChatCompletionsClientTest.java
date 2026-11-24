@@ -197,6 +197,50 @@ class LlmChatCompletionsClientTest {
     }
 
     @Test
+    void extractUsage_ignoresPromptTokensDetails_persistenceUnchanged() {
+        Map<String, Object> response = sampleResponseWithCacheDetails(
+                "x", "stop", 2000, 100, 2100, 900, 1100);
+        OpenAIUsage usage = client.extractUsage(response, "global.openai.gpt-5.6-terra");
+        assertEquals(2000, usage.getPromptTokens());
+        assertEquals(100, usage.getCompletionTokens());
+        assertEquals(2100, usage.getTotalTokens());
+        // No cache fields on OpenAIUsage — observation dump only
+        assertFalse(usage.toString().toLowerCase().contains("cache"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void complete_bedrock_outboundBodyHasNoExplicitCacheOptions() {
+        ReflectionTestUtils.setField(client, "provider", "bedrock");
+        Map<String, Object> response = sampleResponse("ok", "stop", 10, 2, 12);
+        when(restTemplate.exchange(any(String.class), eq(HttpMethod.POST), any(HttpEntity.class), eq(Map.class)))
+                .thenReturn(ResponseEntity.ok(response));
+
+        client.complete(
+                List.of(
+                        Map.of("role", "system", "content", "sys"),
+                        Map.of("role", "user", "content", "q")
+                ),
+                null,
+                null,
+                false,
+                "Grounded"
+        );
+
+        ArgumentCaptor<HttpEntity> entityCaptor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(
+                eq("https://bedrock-runtime.eu-west-1.amazonaws.com/openai/v1/chat/completions"),
+                eq(HttpMethod.POST),
+                entityCaptor.capture(),
+                eq(Map.class)
+        );
+        Map<String, Object> body = (Map<String, Object>) entityCaptor.getValue().getBody();
+        assertFalse(PromptCacheProbe.bodyHasExplicitCacheOptions(body));
+        assertFalse(body.containsKey("prompt_cache_options"));
+        assertFalse(body.containsKey("prompt_cache_key"));
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void complete_bedrock_withNestedCacheUsage_stillParsesOnlyTopLevelTokenFields() {
         ReflectionTestUtils.setField(client, "provider", "bedrock");

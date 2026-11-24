@@ -25,6 +25,7 @@ import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyDouble;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyList;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -178,7 +179,7 @@ class TranslationServiceTest {
     void romanizedHinglish_usesLlmNotAmazonTranslateAndRestoresIds() {
         String original = "Customer Y00111 ani MMS001 ani 45000123 chi details sanga";
         when(languageDetectionService.bypassesTranslation(original)).thenReturn(false);
-        when(llmClient.complete(anyList(), anyDouble(), anyInt(), anyBoolean())).thenAnswer(invocation -> {
+        when(llmClient.complete(anyList(), anyDouble(), anyInt(), anyBoolean(), any())).thenAnswer(invocation -> {
             List<Map<String, String>> messages = invocation.getArgument(0);
             String user = messages.get(1).get("content");
             assertTrue(user.contains("M3KEEP"));
@@ -196,7 +197,7 @@ class TranslationServiceTest {
         assertEquals("Customer Y00111 and MMS001 and 45000123 details please", result);
         verify(translateClient, never()).translateText(any(TranslateTextRequest.class));
         ArgumentCaptor<List> messagesCaptor = ArgumentCaptor.forClass(List.class);
-        verify(llmClient).complete(messagesCaptor.capture(), anyDouble(), anyInt(), anyBoolean());
+        verify(llmClient).complete(messagesCaptor.capture(), anyDouble(), anyInt(), anyBoolean(), eq("Translate"));
         @SuppressWarnings("unchecked")
         List<Map<String, String>> messages = messagesCaptor.getValue();
         assertTrue(messages.get(0).get("content").contains("M3"));
@@ -206,7 +207,7 @@ class TranslationServiceTest {
     void romanizedLlmFailure_doesNotFallBackToAmazonTranslate() {
         String original = "M3 madhe customer master maintain kasa karaycha";
         when(languageDetectionService.bypassesTranslation(original)).thenReturn(false);
-        when(llmClient.complete(anyList(), anyDouble(), anyInt(), anyBoolean()))
+        when(llmClient.complete(anyList(), anyDouble(), anyInt(), anyBoolean(), any()))
                 .thenThrow(new OpenAIException("Bedrock down", 504));
 
         OpenAIException ex = assertThrows(
@@ -230,7 +231,7 @@ class TranslationServiceTest {
 
         assertEquals("How to create a new item", result);
         verify(translateClient).translateText(any(TranslateTextRequest.class));
-        verify(llmClient, never()).complete(anyList(), anyDouble(), anyInt(), anyBoolean());
+        verify(llmClient, never()).complete(anyList(), anyDouble(), anyInt(), anyBoolean(), any());
     }
 
     private static LanguageDetectionResult detected(String language) {

@@ -114,7 +114,7 @@ public class VisionQueryGenerationService {
 
         LlmChatCompletionsClient.ChatCompletionResult completion;
         try {
-            completion = llmClient.completeMultimodal(messages, 0.2, maxCompletionTokens, true);
+            completion = llmClient.completeMultimodal(messages, 0.2, maxCompletionTokens, true, "VisionQuery");
         } catch (OpenAIException e) {
             throw sanitizeException(e);
         }

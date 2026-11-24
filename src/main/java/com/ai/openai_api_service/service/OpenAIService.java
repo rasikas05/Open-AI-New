@@ -242,7 +242,7 @@ public class OpenAIService {
         String sanitizedUserText = presidioService.sanitizeText(request.getUserMessage());
         String modelReadyUserText = protectForLlm(prepareUserContentForOpenAi(sanitizedUserText), ProtectionPurpose.ANSWER);
         List<Map<String, String>> messages = buildMessages(request, systemPromptForFallback(), modelReadyUserText);
-        OpenAiCallResult result = callOpenAi(messages);
+        OpenAiCallResult result = callOpenAi(messages, "General");
 
         int consumedTokens = result.usage().getTotalTokens() != null ? result.usage().getTotalTokens() : 0;
         String usageReferenceId = request.getSessionId() + ":" + System.currentTimeMillis();
@@ -295,7 +295,7 @@ public class OpenAIService {
                 modelReadyUserText,
                 true
         );
-        OpenAiCallResult result = callOpenAi(messages);
+        OpenAiCallResult result = callOpenAi(messages, "General");
         return toChatResponse(request, result, "gpt_infor", request.getUserMessage(), modelReadyUserText);
     }
 
@@ -315,7 +315,7 @@ public class OpenAIService {
                 modelReadyUserText,
                 true
         );
-        OpenAiCallResult result = callOpenAi(messages);
+        OpenAiCallResult result = callOpenAi(messages, "General");
         return toChatResponse(request, result, "gpt_infor", request.getUserMessage(), modelReadyUserText);
     }
 
@@ -382,7 +382,7 @@ public class OpenAIService {
         long promptBuildMs = System.currentTimeMillis() - buildStartMs;
         int promptContextChars = context != null ? context.length() : 0;
 
-        OpenAiCallResult result = callOpenAi(messages);
+        OpenAiCallResult result = callOpenAi(messages, "Grounded");
         long openAiWaitMs = result.elapsedMs();
 
         long parseStartMs = System.currentTimeMillis();
@@ -484,7 +484,7 @@ public class OpenAIService {
                 topics
         );
         List<Map<String, String>> messages = buildMessages(request, fallbackPrompt(resolvedLocale), userPrompt, true);
-        OpenAiCallResult result = callOpenAi(messages);
+        OpenAiCallResult result = callOpenAi(messages, "GapFill");
         return toChatResponse(request, result, "gpt_infor", request.getUserMessage(), modelReadyUserText);
     }
 
@@ -592,7 +592,7 @@ public class OpenAIService {
         );
 
         try {
-            OpenAiCallResult result = callOpenAi(messages, 0.3, 256);
+            OpenAiCallResult result = callOpenAi(messages, 0.3, 256, false, "Rewrite");
             List<String> queries = parseQueriesFromLlm(result.content());
             if (queries.size() > MAX_REWRITTEN_QUERIES) {
                 queries = queries.subList(0, MAX_REWRITTEN_QUERIES);
@@ -644,7 +644,7 @@ public class OpenAIService {
                 Map.of("role", "user", "content", userPrompt)
         );
 
-        OpenAiCallResult result = callOpenAi(messages, 0.3, 256, true);
+        OpenAiCallResult result = callOpenAi(messages, 0.3, 256, true, "Planner");
         RequestUnderstandResult parsed = parseUnderstandFromLlm(result.content(), result.usage());
         log.info(
                 "Request router understood type={} queryCount={}",
@@ -921,19 +921,16 @@ public class OpenAIService {
                 + current;
     }
 
-    private OpenAiCallResult callOpenAi(List<Map<String, String>> messages) {
-        return callOpenAi(messages, null, null, false);
-    }
-
-    private OpenAiCallResult callOpenAi(List<Map<String, String>> messages, Double temperature, Integer maxTokens) {
-        return callOpenAi(messages, temperature, maxTokens, false);
+    private OpenAiCallResult callOpenAi(List<Map<String, String>> messages, String stage) {
+        return callOpenAi(messages, null, null, false, stage);
     }
 
     private OpenAiCallResult callOpenAi(
             List<Map<String, String>> messages,
             Double temperature,
             Integer maxTokens,
-            boolean jsonObjectResponse
+            boolean jsonObjectResponse,
+            String stage
     ) {
         requireLlmClient();
         FlowTrace.recordLlmCall();
@@ -941,7 +938,8 @@ public class OpenAIService {
                 messages,
                 temperature,
                 maxTokens,
-                jsonObjectResponse
+                jsonObjectResponse,
+                stage
         );
         return new OpenAiCallResult(result.content(), result.truncated(), result.usage(), result.elapsedMs());
     }
