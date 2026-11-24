@@ -3,6 +3,7 @@ package com.ai.openai_api_service.service;
 import com.ai.openai_api_service.entity.PiiEntityDto;
 import com.ai.openai_api_service.model.PresidioAnalyzerResult;
 import com.ai.openai_api_service.service.timing.ChatStageSplitTracker;
+import com.ai.openai_api_service.service.timing.FlowTrace;
 import com.ai.openai_api_service.service.timing.RequestTimingLog;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -10,6 +11,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -61,31 +63,32 @@ public class ComprehendAnonymizationService {
         }
 
         try {
-            log.info("Detecting PII using AWS Comprehend");
+            log.debug("Detecting PII using AWS Comprehend");
             Instant comprehendStart = Instant.now();
             List<PiiEntityDto> comprehendResults = comprehendService.detectPii(text);
             Instant comprehendEnd = Instant.now();
             long comprehendMs = RequestTimingLog.durationMs(comprehendStart, comprehendEnd);
             ChatStageSplitTracker.addComprehendMs(comprehendMs);
             RequestTimingLog.logStage("comprehend", comprehendStart, comprehendEnd);
-            log.info("AWS Comprehend detected {} entities", comprehendResults.size());
+            log.debug("AWS Comprehend detected {} entities", comprehendResults.size());
+            FlowTrace.comprehendEntities(comprehendResults.size());
             log.debug("Comprehend entities: {}", comprehendResults.stream().map(PiiEntityDto::getType).toList());
 
-            log.info("Converting {} Comprehend results to Presidio format", comprehendResults.size());
-            List<PresidioAnalyzerResult> presidioResults = convertToPresidioFormat(comprehendResults);
+            log.debug("Converting {} Comprehend results to Presidio format", comprehendResults.size());
+            List<PresidioAnalyzerResult> presidioResults = convertToPresidioFormat(text, comprehendResults);
             log.debug("Presidio external results count={}", presidioResults.size());
 
             Instant presidioStart = Instant.now();
             String sanitizedText;
             if (presidioResults.isEmpty()) {
-                log.info("No Presidio external results produced by Comprehend; invoking Presidio raw anonymization fallback");
+                log.debug("No Presidio external results produced by Comprehend; invoking Presidio raw anonymization fallback");
                 sanitizedText = presidioService.sanitizeText(text);
             } else {
-                log.info("Anonymizing text using Presidio with external Comprehend results");
+                log.debug("Anonymizing text using Presidio with external Comprehend results");
                 sanitizedText = presidioService.sanitizeTextWithExternalResults(text, presidioResults);
             }
 
-            log.debug("Presidio anonymization result='{}'", sanitizedText);
+            log.debug("Presidio anonymization resultLength={}", sanitizedText == null ? 0 : sanitizedText.length());
 
             sanitizedText = applyFallbackSanitization(text, sanitizedText);
             Instant presidioEnd = Instant.now();
@@ -93,7 +96,8 @@ public class ComprehendAnonymizationService {
             ChatStageSplitTracker.addPresidioMs(presidioMs);
             RequestTimingLog.logStage("presidio", presidioStart, presidioEnd);
             boolean changed = !text.equals(sanitizedText);
-            log.info(
+            FlowTrace.presidioChanged(changed);
+            log.debug(
                     "Presidio sanitize complete | comprehendEntities={} | textChanged={}",
                     comprehendResults.size(),
                     changed
@@ -101,6 +105,7 @@ public class ComprehendAnonymizationService {
             return createResponseMap(text, sanitizedText, comprehendResults);
         } catch (Exception e) {
             log.error("Error in Comprehend-based anonymization: {}", e.getMessage(), e);
+            FlowTrace.apiFailed("comprehend", e.getClass().getSimpleName());
             try {
                 log.warn("Comprehend unavailable; falling back to Presidio-only anonymization");
                 Instant presidioStart = Instant.now();
@@ -109,9 +114,11 @@ public class ComprehendAnonymizationService {
                 long presidioMs = RequestTimingLog.durationMs(presidioStart, presidioEnd);
                 ChatStageSplitTracker.addPresidioMs(presidioMs);
                 RequestTimingLog.logStage("presidio", presidioStart, presidioEnd);
+                FlowTrace.presidioChanged(!text.equals(sanitizedText));
                 return createResponseMap(text, sanitizedText, List.of());
             } catch (Exception presidioError) {
                 log.warn("Presidio fallback failed, using original text: {}", presidioError.getMessage());
+                FlowTrace.apiFailed("presidio", presidioError.getClass().getSimpleName());
                 return createResponseMap(text, text, List.of());
             }
         }
@@ -124,20 +131,100 @@ public class ComprehendAnonymizationService {
     private static final Pattern EMAIL_PATTERN = Pattern.compile("\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b");
     private static final Pattern PHONE_PATTERN = Pattern.compile("\\b(?:\\+?\\d[\\d\\- ]{7,}\\d)\\b");
     private static final Pattern INVOICE_NUMBER_PATTERN = Pattern.compile("(?i)\\b((?:invoice|inv|order|ord|bill|receipt)\\s*(?:no\\.?|number|id)?\\s*[:#]?\\s*)([0-9]{4,})\\b");
+    /** Comprehend and Presidio both use 0–1 scores. */
+    static final double NAME_SCORE_THRESHOLD = 0.85;
+    private static final Pattern PERSON_CONTEXT_BEFORE = Pattern.compile(
+            "(?i)\\b(?:my\\s+name\\s+is|i\\s+am|i(?:'|’)m|this\\s+is|name\\s*[:=]|called)\\s+$"
+    );
 
-    private List<PresidioAnalyzerResult> convertToPresidioFormat(List<PiiEntityDto> comprehendEntities) {
-        return comprehendEntities.stream()
-                .map(entity -> {
-                    String presidioType = COMPREHEND_TO_PRESIDIO.getOrDefault(entity.getType(), entity.getType());
-                    // Comprehend score is 0-1, use as-is for Presidio (which also expects 0-1)
-                    return new PresidioAnalyzerResult(
-                            presidioType,
-                            entity.getStart(),
-                            entity.getEnd(),
-                            entity.getScore()
-                    );
-                })
-                .toList();
+    /**
+     * Drop weak NAME hits (e.g. Hinglish {@code banane}) before Presidio.
+     * Combines score, person-context, and span shape — not lowercase alone.
+     */
+    static boolean keepNameEntity(String text, PiiEntityDto entity) {
+        if (entity == null || entity.getType() == null) {
+            return false;
+        }
+        if (!"NAME".equalsIgnoreCase(entity.getType().trim())) {
+            return true;
+        }
+        int start = entity.getStart();
+        int end = entity.getEnd();
+        double score = entity.getScore();
+        boolean contextual = hasPersonContext(text, start, end);
+        if (contextual) {
+            return score >= 0.5;
+        }
+        if (score < NAME_SCORE_THRESHOLD) {
+            return false;
+        }
+        String span = safeSpan(text, start, end);
+        return looksLikeProperName(span);
+    }
+
+    static boolean hasPersonContext(String text, int start, int end) {
+        if (text == null || start < 0 || end > text.length() || start >= end) {
+            return false;
+        }
+        String prefix = text.substring(0, start);
+        String window = prefix.length() > 40 ? prefix.substring(prefix.length() - 40) : prefix;
+        return PERSON_CONTEXT_BEFORE.matcher(window).find();
+    }
+
+    static boolean looksLikeProperName(String span) {
+        if (span == null || span.isBlank()) {
+            return false;
+        }
+        String stripped = span.strip();
+        String[] parts = stripped.split("\\s+");
+        if (parts.length >= 2) {
+            for (String part : parts) {
+                for (int i = 0; i < part.length(); i++) {
+                    if (Character.isUpperCase(part.charAt(i))) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+        for (int i = 0; i < stripped.length(); i++) {
+            if (Character.isUpperCase(stripped.charAt(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String safeSpan(String text, int start, int end) {
+        if (text == null || start < 0 || end > text.length() || start >= end) {
+            return "";
+        }
+        return text.substring(start, end);
+    }
+
+    private List<PresidioAnalyzerResult> convertToPresidioFormat(String text, List<PiiEntityDto> comprehendEntities) {
+        if (comprehendEntities == null || comprehendEntities.isEmpty()) {
+            return List.of();
+        }
+        List<PresidioAnalyzerResult> results = new ArrayList<>();
+        for (PiiEntityDto entity : comprehendEntities) {
+            if (!keepNameEntity(text, entity)) {
+                log.debug(
+                        "Dropping Comprehend NAME span without person context score={}",
+                        entity.getScore()
+                );
+                continue;
+            }
+            String presidioType = COMPREHEND_TO_PRESIDIO.getOrDefault(entity.getType(), entity.getType());
+            // Comprehend score is 0-1, use as-is for Presidio (which also expects 0-1)
+            results.add(new PresidioAnalyzerResult(
+                    presidioType,
+                    entity.getStart(),
+                    entity.getEnd(),
+                    entity.getScore()
+            ));
+        }
+        return results;
     }
 
     private String applyFallbackSanitization(String originalText, String sanitizedText) {

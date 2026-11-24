@@ -1,12 +1,15 @@
 package com.ai.openai_api_service.service;
 
+import com.ai.openai_api_service.config.CorrelationIdSupport;
 import com.ai.openai_api_service.config.RestTemplateFactory;
 import com.ai.openai_api_service.exception.AiServiceErrors;
 import com.ai.openai_api_service.exception.OpenAIException;
 import com.ai.openai_api_service.model.OpenAIUsage;
+import com.ai.openai_api_service.service.vision.VisionMultimodalRequestSupport;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -219,6 +222,8 @@ public class LlmChatCompletionsClient {
             throw new OpenAIException("No response from " + activeProviderLabel() + ".", 502);
         }
 
+        logBedrockUsageDump(model, elapsed, response, "text");
+
         String content = extractContent(response);
         boolean truncated = isTruncated(response);
         OpenAIUsage usage = extractUsage(response, model);
@@ -231,6 +236,111 @@ public class LlmChatCompletionsClient {
             Integer maxCompletionTokens
     ) {
         return complete(messages, temperature, maxCompletionTokens, false);
+    }
+
+    /**
+     * POST multimodal chat completions (text + image_url content parts).
+     * Does not log the request body (may contain Base64 data URLs).
+     * Does not change the text-only {@link #complete(List, Double, Integer, boolean)} contract.
+     */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    public ChatCompletionResult completeMultimodal(
+            List<Map<String, Object>> messages,
+            Double temperature,
+            Integer maxCompletionTokens,
+            boolean jsonObjectResponse
+    ) {
+        requireApiKey();
+        if (restTemplate == null) {
+            this.restTemplate = RestTemplateFactory.create(activeTimeoutMs());
+        }
+
+        String model = activeModel();
+        String reasoning = activeReasoningEffort();
+        int defaultCap = activeDefaultMaxCompletionTokens();
+
+        Map<String, Object> body = VisionMultimodalRequestSupport.buildChatCompletionBody(
+                model,
+                reasoning,
+                defaultCap,
+                messages,
+                temperature,
+                maxCompletionTokens,
+                jsonObjectResponse
+        );
+
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.setBearerAuth(activeApiKey());
+
+        long start = System.currentTimeMillis();
+        log.info(
+                "Calling {} multimodal chat completions. model={}, reasoningEffort={}, messageCount={}, jsonObject={}",
+                activeProviderLabel(),
+                model,
+                VisionMultimodalRequestSupport.effectiveReasoningEffort(reasoning),
+                messages != null ? messages.size() : 0,
+                jsonObjectResponse
+        );
+
+        Map<String, Object> response;
+        try {
+            ResponseEntity<Map> responseEntity = restTemplate.exchange(
+                    activeUrl(),
+                    HttpMethod.POST,
+                    new HttpEntity<>(body, headers),
+                    Map.class
+            );
+            response = responseEntity.getBody();
+        } catch (HttpClientErrorException e) {
+            throw mapClientError(e);
+        } catch (ResourceAccessException e) {
+            long elapsed = System.currentTimeMillis() - start;
+            log.error("{} multimodal request failed after {}ms: {}", activeProviderLabel(), elapsed, e.getMessage());
+            throw new OpenAIException(
+                    activeProviderLabel() + " request timed out or failed after " + elapsed + "ms: " + e.getMessage(),
+                    504
+            );
+        }
+
+        long elapsed = System.currentTimeMillis() - start;
+        log.info("{} multimodal chat completions completed in {}ms", activeProviderLabel(), elapsed);
+
+        if (response == null) {
+            throw new OpenAIException("No response from " + activeProviderLabel() + ".", 502);
+        }
+
+        logBedrockUsageDump(model, elapsed, response, "multimodal");
+
+        String content = extractContent(response);
+        boolean truncated = isTruncated(response);
+        OpenAIUsage usage = extractUsage(response, model);
+        return new ChatCompletionResult(content, truncated, usage, elapsed, response);
+    }
+
+    /**
+     * Phase 1 temporary observation: dump Bedrock usage JSON only (no messages/content).
+     * Does not parse cache fields into {@link OpenAIUsage}.
+     */
+    private void logBedrockUsageDump(
+            String model,
+            long elapsedMs,
+            Map<String, Object> response,
+            String callType
+    ) {
+        if (!isBedrock()) {
+            return;
+        }
+        Object usage = response != null ? response.get("usage") : null;
+        String correlationId = MDC.get(CorrelationIdSupport.MDC_KEY);
+        log.info(
+                "Bedrock usage dump | correlationId={} model={} elapsedMs={} call={} usage={}",
+                correlationId,
+                model,
+                elapsedMs,
+                callType,
+                usage
+        );
     }
 
     OpenAIException mapClientError(HttpClientErrorException e) {

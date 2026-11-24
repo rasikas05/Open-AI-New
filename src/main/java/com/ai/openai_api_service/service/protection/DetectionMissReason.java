@@ -8,5 +8,7 @@ public enum DetectionMissReason {
     SHAPE_INVALID,
     CONNECTOR_INVALID,
     VALUE_BEFORE_KEYWORD,
-    RESERVED_VALUE
+    RESERVED_VALUE,
+    /** Known product / program identifier (e.g. M3, MMS001) deliberately not masked. */
+    ALLOWLIST_SKIP
 }

@@ -13,6 +13,7 @@ import com.ai.openai_api_service.model.python_rag.PythonRetrievalRequest;
 import com.ai.openai_api_service.model.python_rag.PythonRetrievalResponse;
 import com.ai.openai_api_service.model.python_rag.PythonRouteRequest;
 import com.ai.openai_api_service.model.python_rag.PythonRouteResponse;
+import com.ai.openai_api_service.service.timing.FlowTrace;
 import com.ai.openai_api_service.service.timing.RoutingCallTracker;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -167,10 +168,21 @@ public class PythonRagService {
         }
         String url = buildUrl(pythonRouteEndpoint);
         PythonRouteRequest body = new PythonRouteRequest(message);
-        log.info("Calling Python RAG route API. url={}, message='{}'", url, message);
-        PythonRouteResponse response = postForEntity(url, body, PythonRouteResponse.class, "route");
+        log.debug("Calling Python RAG route API. url={}, message='{}'", url, message);
+        PythonRouteResponse response;
+        try {
+            response = postForEntity(url, body, PythonRouteResponse.class, "route");
+        } catch (RuntimeException ex) {
+            FlowTrace.routeFailed(ex.getClass().getSimpleName());
+            throw ex;
+        }
+        if (response.getRoute() == null || response.getRoute().isBlank()) {
+            FlowTrace.routeEmpty();
+        } else {
+            FlowTrace.route(response.getRoute());
+        }
         String selectedRoute = response.getRoute() != null ? response.getRoute() : "rag";
-        log.info(
+        log.debug(
                 "Python RAG route selected: route='{}', nextStep='{}', message='{}'",
                 selectedRoute,
                 "live".equalsIgnoreCase(selectedRoute) ? "python/chat" : "python/retrieval",

@@ -4,6 +4,7 @@ import com.ai.openai_api_service.entity.RequestLog;
 import com.ai.openai_api_service.entity.Session;
 import com.ai.openai_api_service.entity.Tenant;
 import com.ai.openai_api_service.entity.User;
+import com.ai.openai_api_service.model.ChatAttachmentDto;
 import com.ai.openai_api_service.model.ChatMode;
 import com.ai.openai_api_service.model.HistoryMessageDto;
 import com.ai.openai_api_service.model.LiveHistoryAuditMetadata;
@@ -14,6 +15,7 @@ import com.ai.openai_api_service.repository.RequestLogRepository;
 import com.ai.openai_api_service.repository.SessionRepository;
 import com.ai.openai_api_service.repository.TenantRepository;
 import com.ai.openai_api_service.repository.UserRepository;
+import com.ai.openai_api_service.service.i18n.SupportedResponseLanguages;
 import com.ai.openai_api_service.service.timing.ChatStageSplitTracker;
 import com.ai.openai_api_service.service.timing.RequestTimingLog;
 
@@ -32,10 +34,15 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
 @Service
 public class ChatPersistenceService {
+
+    public static final String LOCALE_EN_US = "en_US";
+    public static final String LOCALE_DE_DE = "de_DE";
 
     private static final Logger log = LoggerFactory.getLogger(ChatPersistenceService.class);
 
@@ -43,6 +50,8 @@ public class ChatPersistenceService {
     private final RequestLogRepository requestLogRepository;
     private final TenantRepository tenantRepository;
     private final UserRepository userRepository;
+    private final SupportedResponseLanguages supportedResponseLanguages;
+    private final ChatAttachmentService chatAttachmentService;
     private final int maxRequestsPerSession;
 
     public ChatPersistenceService(
@@ -50,14 +59,97 @@ public class ChatPersistenceService {
             RequestLogRepository requestLogRepository,
             TenantRepository tenantRepository,
             UserRepository userRepository,
+            SupportedResponseLanguages supportedResponseLanguages,
+            ChatAttachmentService chatAttachmentService,
             @Value("${chat.session.max-requests:50}") int maxRequestsPerSession
     ) {
         this.sessionRepository = sessionRepository;
         this.requestLogRepository = requestLogRepository;
         this.tenantRepository = tenantRepository;
         this.userRepository = userRepository;
+        this.supportedResponseLanguages = supportedResponseLanguages;
+        this.chatAttachmentService = chatAttachmentService;
         this.maxRequestsPerSession = maxRequestsPerSession;
         log.info("ChatPersistenceService bean initialized: {}", this.getClass().getName());
+    }
+
+    public boolean isRuntimeLocale(String locale) {
+        return supportedResponseLanguages.isResponseLocale(locale);
+    }
+
+    /**
+     * Reads the locale from the session row already created for this tenant, user, and session id.
+     * Returns null when that row is missing or the stored value is outside the supported set.
+     */
+    @Transactional(readOnly = true)
+    public String findSavedSessionLocale(String tenantId, String userId, String sessionId) {
+        return findOwnedSession(tenantId, userId, sessionId)
+                .map(Session::getLocale)
+                .filter(this::isRuntimeLocale)
+                .orElse(null);
+    }
+
+    /**
+     * Newest active supported locale on the owned conversation. Does not query by session id alone.
+     * Returns null when the session is not owned or no valid locale is stored.
+     */
+    @Transactional(readOnly = true)
+    public String findRecoveredSessionLocale(String tenantId, String userId, String sessionId) {
+        Optional<Session> owned = findOwnedSession(tenantId, userId, sessionId);
+        if (owned.isEmpty()) {
+            return null;
+        }
+        Session session = owned.get();
+        List<String> locales = requestLogRepository.findActiveResolvedLocales(
+                session.getTenant(),
+                session.getUser(),
+                session.getSessionId(),
+                PageRequest.of(0, 20)
+        );
+        if (locales == null) {
+            return null;
+        }
+        for (String locale : locales) {
+            if (isRuntimeLocale(locale)) {
+                return locale;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Updates the existing owned session row when the locale changes.
+     * Does not insert a session when the row is missing, and does not look up by session id alone.
+     */
+    @Transactional
+    public void saveSessionLocaleIfAbsent(String tenantId, String userId, String sessionId, String locale) {
+        if (!isRuntimeLocale(locale)) {
+            return;
+        }
+        findOwnedSession(tenantId, userId, sessionId).ifPresent(session -> {
+            if (locale.equals(session.getLocale())) {
+                return;
+            }
+            session.setLocale(locale);
+            session.setUpdatedAt(LocalDateTime.now());
+            sessionRepository.save(session);
+        });
+    }
+
+    private Optional<Session> findOwnedSession(String tenantId, String userId, String sessionId) {
+        if (tenantId == null || tenantId.isBlank() || userId == null || userId.isBlank()
+                || sessionId == null || sessionId.isBlank()) {
+            return Optional.empty();
+        }
+        Tenant tenant = tenantRepository.findByTenantCode(tenantId).orElse(null);
+        if (tenant == null) {
+            return Optional.empty();
+        }
+        User user = userRepository.findByTenantAndUsername(tenant, userId).orElse(null);
+        if (user == null) {
+            return Optional.empty();
+        }
+        return sessionRepository.findByTenantAndUserAndSessionId(tenant, user, sessionId);
     }
 
     @Transactional
@@ -119,6 +211,8 @@ public class ChatPersistenceService {
                 retrievalTimeMs,
                 null,
                 null,
+                null,
+                null,
                 null
         );
     }
@@ -151,7 +245,6 @@ public class ChatPersistenceService {
                 retrievalReason,
                 retrievalTimeMs,
                 auditMetadata,
-                null,
                 null
         );
     }
@@ -186,6 +279,9 @@ public class ChatPersistenceService {
                 retrievalTimeMs,
                 auditMetadata,
                 protectionAudit,
+                null,
+                null,
+                null,
                 null
         );
     }
@@ -205,7 +301,50 @@ public class ChatPersistenceService {
             Integer retrievalTimeMs,
             LiveHistoryAuditMetadata auditMetadata,
             com.ai.openai_api_service.service.protection.ProtectionAuditSnapshot protectionAudit,
-            ChatMode resolvedMode
+            ChatMode resolvedMode,
+            String detectedLanguage,
+            String resolvedLocale
+    ) {
+        return persistChat(
+                tenantId,
+                userId,
+                sessionId,
+                originalText,
+                sanitizedText,
+                openAiResponse,
+                openAiUsage,
+                actionTaken,
+                sanitizedFlag,
+                retrievalReason,
+                retrievalTimeMs,
+                auditMetadata,
+                protectionAudit,
+                resolvedMode,
+                detectedLanguage,
+                resolvedLocale,
+                null
+        );
+    }
+
+    @Transactional
+    public Long persistChat(
+            String tenantId,
+            String userId,
+            String sessionId,
+            String originalText,
+            String sanitizedText,
+            String openAiResponse,
+            OpenAIUsage openAiUsage,
+            String actionTaken,
+            Boolean sanitizedFlag,
+            String retrievalReason,
+            Integer retrievalTimeMs,
+            LiveHistoryAuditMetadata auditMetadata,
+            com.ai.openai_api_service.service.protection.ProtectionAuditSnapshot protectionAudit,
+            ChatMode resolvedMode,
+            String detectedLanguage,
+            String resolvedLocale,
+            String messageId
     ) {
         try {
             int consumed = resolveConsumedTokens(openAiUsage, null);
@@ -336,11 +475,16 @@ public class ChatPersistenceService {
             message.setSession(savedSession);
             message.setOriginalText(originalText);
             message.setSanitizedText(sanitizedText);
+            message.setDetectedLanguage(detectedLanguage);
+            message.setResolvedLocale(isRuntimeLocale(resolvedLocale) ? resolvedLocale : null);
             message.setActionTaken(actionTaken);
             message.setSanitizedFlag(sanitizedFlag);
             message.setOpenaiResponse(openAiResponse);
             message.setTokensUsed(consumed);
             message.setMode(resolvedMode != null ? resolvedMode.name() : ChatMode.AUTO.name());
+            if (messageId != null && !messageId.isBlank()) {
+                message.setMessageId(messageId.trim());
+            }
             if (openAiUsage != null) {
                 message.setPromptTokens(openAiUsage.getPromptTokens());
                 message.setCompletionTokens(openAiUsage.getCompletionTokens());
@@ -610,16 +754,28 @@ public class ChatPersistenceService {
             return List.of();
         }
 
-        List<RequestLog> rows =
+        List<RequestLog> rows = new ArrayList<>(
                 requestLogRepository
                         .findActiveBySessionOrderByCreatedAtDesc(
                                 tenant,
                                 user,
                                 sessionId,
                                 PageRequest.of(0, maxExchanges)
-                        );
+                        )
+        );
 
         Collections.reverse(rows);
+
+        List<Long> requestLogIds = new ArrayList<>(rows.size());
+        for (RequestLog row : rows) {
+            if (row.getId() != null) {
+                requestLogIds.add(row.getId());
+            }
+        }
+        Map<Long, List<ChatAttachmentDto>> attachmentsByRequestLogId =
+                requestLogIds.isEmpty()
+                        ? Map.of()
+                        : chatAttachmentService.mapByRequestLogIds(tenantId, requestLogIds);
 
         List<HistoryMessageDto> messages = new ArrayList<>();
         for (RequestLog row : rows) {
@@ -629,14 +785,21 @@ public class ChatPersistenceService {
             String modeWire = toModeWireValue(row.getMode());
 
             if (userMessageContent != null && !userMessageContent.isBlank()) {
-                messages.add(new HistoryMessageDto(
+                HistoryMessageDto userTurn = new HistoryMessageDto(
                         "user",
                         userMessageContent,
                         row.getSanitizedFlag(),
                         null,
                         row.getId(),
                         modeWire
-                ));
+                );
+                userTurn.setMessageId(row.getMessageId());
+                List<ChatAttachmentDto> attachments = attachmentsByRequestLogId.getOrDefault(
+                        row.getId(),
+                        List.of()
+                );
+                userTurn.setAttachments(attachments);
+                messages.add(userTurn);
             }
 
             if (row.getOpenaiResponse() != null && !row.getOpenaiResponse().isBlank()) {

@@ -13,6 +13,7 @@ public final class DetectionStats {
     private int rulesEvaluated;
     private int matchesFound;
     private int rejectedByReserved;
+    private int rejectedByAllowlist;
     private int rejectedByShape;
     private int finalSpans;
     private final Map<DetectionMatchBand, Integer> bandCounts = new EnumMap<>(DetectionMatchBand.class);
@@ -28,6 +29,10 @@ public final class DetectionStats {
 
     void incrementRejectedByReserved() {
         rejectedByReserved++;
+    }
+
+    void incrementRejectedByAllowlist() {
+        rejectedByAllowlist++;
     }
 
     void incrementRejectedByShape() {
@@ -64,6 +69,10 @@ public final class DetectionStats {
         return rejectedByReserved;
     }
 
+    public int rejectedByAllowlist() {
+        return rejectedByAllowlist;
+    }
+
     public int rejectedByShape() {
         return rejectedByShape;
     }
@@ -85,6 +94,7 @@ public final class DetectionStats {
         return "Rules evaluated: " + rulesEvaluated
                 + ", Matches found: " + matchesFound
                 + ", Rejected by reserved words: " + rejectedByReserved
+                + ", Rejected by allowlist: " + rejectedByAllowlist
                 + ", Rejected by shape: " + rejectedByShape
                 + ", Final spans: " + finalSpans
                 + ", Bands: " + bandCounts

@@ -39,6 +39,9 @@ public class Session {
     @Column(name = "end_time")
     private LocalDateTime endTime;
 
+    @Column(name = "locale", length = 10)
+    private String locale;
+
     public Long getId() {
         return id;
     }
@@ -113,5 +116,13 @@ public class Session {
 
     public void setEndTime(LocalDateTime endTime) {
         this.endTime = endTime;
+    }
+
+    public String getLocale() {
+        return locale;
+    }
+
+    public void setLocale(String locale) {
+        this.locale = locale;
     }
 }

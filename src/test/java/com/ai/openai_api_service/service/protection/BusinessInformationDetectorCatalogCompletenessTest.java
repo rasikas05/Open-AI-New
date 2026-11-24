@@ -47,7 +47,8 @@ class BusinessInformationDetectorCatalogCompletenessTest {
             Map.entry("BUYE", "BUYER1"),
             Map.entry("CRLM", "10000"),
             Map.entry("NTAM", "5000"),
-            Map.entry("KSTR", "KEY123")
+            // Avoid [A-Z]{2,4}\d{3,4} program-ID shape (BIP allowlist skips those)
+            Map.entry("KSTR", "KEY12")
     );
 
     private BusinessInformationDetector detector;

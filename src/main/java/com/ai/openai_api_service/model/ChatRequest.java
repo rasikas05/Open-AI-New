@@ -56,6 +56,42 @@ public class ChatRequest {
     @Schema(description = "Optional M3 MI execution report from widget (pagination cursor)")
     private M3ClientReportDto m3ClientReport;
 
+    @Schema(
+            description = "Legacy single-image Base64 (no data: URL prefix). "
+                    + "Use either these flat fields or images[], not both. "
+                    + "When any flat image field is set, imageBase64, imageMediaType, and imageFileName are all required."
+    )
+    private String imageBase64;
+
+    @Schema(
+            description = "Legacy single-image MIME type. Allowed: image/png, image/jpeg, image/webp.",
+            example = "image/png"
+    )
+    private String imageMediaType;
+
+    @Schema(description = "Legacy single-image file name (metadata only)", example = "screen.png")
+    private String imageFileName;
+
+    @Valid
+    @Schema(
+            description = "Preferred multi-image attachments (max configured by chat.vision.max-images). "
+                    + "Omit for text-only. Do not combine with legacy flat image fields."
+    )
+    private List<ImageAttachmentRequest> images;
+
+    @Schema(
+            description = "Server-issued message id from POST /api/chat/prepare. "
+                    + "Required when images or IDM attachments are present."
+    )
+    private String messageId;
+
+    @Valid
+    @Schema(
+            description = "IDM attachment metadata (PIDs) from widget upload. "
+                    + "0–3 items; no Base64. Correlate to images[] by imageOrder."
+    )
+    private List<ChatAttachmentRef> attachments;
+
     public ChatRequest() {
     }
 
@@ -134,6 +170,54 @@ public class ChatRequest {
 
     public void setM3ClientReport(M3ClientReportDto m3ClientReport) {
         this.m3ClientReport = m3ClientReport;
+    }
+
+    public String getImageBase64() {
+        return imageBase64;
+    }
+
+    public void setImageBase64(String imageBase64) {
+        this.imageBase64 = imageBase64;
+    }
+
+    public String getImageMediaType() {
+        return imageMediaType;
+    }
+
+    public void setImageMediaType(String imageMediaType) {
+        this.imageMediaType = imageMediaType;
+    }
+
+    public String getImageFileName() {
+        return imageFileName;
+    }
+
+    public void setImageFileName(String imageFileName) {
+        this.imageFileName = imageFileName;
+    }
+
+    public List<ImageAttachmentRequest> getImages() {
+        return images;
+    }
+
+    public void setImages(List<ImageAttachmentRequest> images) {
+        this.images = images;
+    }
+
+    public String getMessageId() {
+        return messageId;
+    }
+
+    public void setMessageId(String messageId) {
+        this.messageId = messageId;
+    }
+
+    public List<ChatAttachmentRef> getAttachments() {
+        return attachments;
+    }
+
+    public void setAttachments(List<ChatAttachmentRef> attachments) {
+        this.attachments = attachments;
     }
 }
 

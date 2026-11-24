@@ -10,6 +10,7 @@ import com.ai.openai_api_service.repository.RequestLogRepository;
 import com.ai.openai_api_service.repository.SessionRepository;
 import com.ai.openai_api_service.repository.TenantRepository;
 import com.ai.openai_api_service.repository.UserRepository;
+import com.ai.openai_api_service.service.i18n.SupportedResponseLanguages;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -22,6 +23,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -44,6 +46,8 @@ class ChatPersistenceEditSupportTest {
     private TenantRepository tenantRepository;
     @Mock
     private UserRepository userRepository;
+    @Mock
+    private ChatAttachmentService chatAttachmentService;
 
     private ChatPersistenceService chatPersistenceService;
 
@@ -58,6 +62,8 @@ class ChatPersistenceEditSupportTest {
                 requestLogRepository,
                 tenantRepository,
                 userRepository,
+                new SupportedResponseLanguages(""),
+                chatAttachmentService,
                 50
         );
 
@@ -88,6 +94,8 @@ class ChatPersistenceEditSupportTest {
         when(requestLogRepository.findActiveBySessionOrderByCreatedAtDesc(
                 eq(tenant), eq(user), eq("session1"), any(Pageable.class)
         )).thenReturn(List.of(row));
+        when(chatAttachmentService.mapByRequestLogIds(eq("tenant1"), eq(List.of(55L))))
+                .thenReturn(Map.of());
 
         List<HistoryMessageDto> display = chatPersistenceService.loadHistoryForDisplay(
                 "tenant1", "user1", "session1", 10

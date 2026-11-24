@@ -19,6 +19,7 @@ import com.ai.openai_api_service.service.protection.BusinessInformationProtectio
 import com.ai.openai_api_service.service.protection.ProtectionContext;
 import com.ai.openai_api_service.service.protection.ProtectionPurpose;
 import com.ai.openai_api_service.service.protection.ProtectionSession;
+import com.ai.openai_api_service.service.timing.FlowTrace;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -65,6 +66,14 @@ public class OpenAIService {
             PARTIAL = documentation directly answers part of a multi-part request; list uncovered parts in missingTopics.
             INSUFFICIENT = documentation does not answer the requested task; set "answer" to "" and "missingTopics" to [].
             For a single-task question, related information is INSUFFICIENT, not PARTIAL.
+
+            When the retrieved documentation contains a usable how-to, procedure, MI transaction, API, Custom List,
+            or program reference that answers the user's question (for example MMS001 – Item. Open, or Custom List MI),
+            return status FULL and give that content in "answer".
+            Do not ask for company, division, warehouse, item type, M3 version, environment, or role unless the
+            retrieved documentation itself states those details are required for that specific instruction.
+            Do not replace documented steps or MI/API reference material with clarifying questions
+            or status INSUFFICIENT when the retrieved documentation already supports the request.
 
             Write a concise, direct, well-structured answer in "answer". Use Markdown when it improves readability.
             Do not include http:// or https:// URLs in "answer".
@@ -269,6 +278,10 @@ public class OpenAIService {
     }
 
     public ChatResponse chatWithoutPersistence(ChatRequest request, ProtectionSession session) {
+        return chatWithoutPersistence(request, session, null);
+    }
+
+    public ChatResponse chatWithoutPersistence(ChatRequest request, ProtectionSession session, String resolvedLocale) {
         validateApiKey();
         String modelReadyUserText;
         if (session != null) {
@@ -276,7 +289,32 @@ public class OpenAIService {
         } else {
             modelReadyUserText = protectForLlm(prepareUserContentForOpenAi(request.getUserMessage()), ProtectionPurpose.ANSWER);
         }
-        List<Map<String, String>> messages = buildMessages(request, systemPromptForFallback(), modelReadyUserText, true);
+        List<Map<String, String>> messages = buildMessages(
+                request,
+                fallbackPrompt(resolvedLocale),
+                modelReadyUserText,
+                true
+        );
+        OpenAiCallResult result = callOpenAi(messages);
+        return toChatResponse(request, result, "gpt_infor", request.getUserMessage(), modelReadyUserText);
+    }
+
+    /**
+     * One general answer for text whose language is uncertain. The reply follows the
+     * original message's language and script. This does not translate or route.
+     */
+    public ChatResponse chatFollowingUserMessage(ChatRequest request) {
+        validateApiKey();
+        String modelReadyUserText = protectForLlm(
+                prepareUserContentForOpenAi(request.getUserMessage()),
+                ProtectionPurpose.ANSWER
+        );
+        List<Map<String, String>> messages = buildMessages(
+                request,
+                systemPromptForFallback() + "\n\n" + userMessageLanguageInstruction(),
+                modelReadyUserText,
+                true
+        );
         OpenAiCallResult result = callOpenAi(messages);
         return toChatResponse(request, result, "gpt_infor", request.getUserMessage(), modelReadyUserText);
     }
@@ -291,11 +329,32 @@ public class OpenAIService {
     /**
      * Grounded OpenAI chat. When {@code session} is non-null, uses {@link ProtectionSession#textForLlm()}
      * only (Decision #27–#28) — does not re-apply business protection.
+     * A null locale keeps the original English prompt for existing callers.
      */
     public GroundedRagCallResult chatWithRagContext(
             ChatRequest request,
             List<ChunkItem> promptChunks,
             ProtectionSession session
+    ) {
+        return chatWithRagContext(request, promptChunks, session, null);
+    }
+
+    public GroundedRagCallResult chatWithRagContext(
+            ChatRequest request,
+            List<ChunkItem> promptChunks,
+            ProtectionSession session,
+            String resolvedLocale
+    ) {
+        return chatWithRagContext(request, promptChunks, session, resolvedLocale, null, null);
+    }
+
+    public GroundedRagCallResult chatWithRagContext(
+            ChatRequest request,
+            List<ChunkItem> promptChunks,
+            ProtectionSession session,
+            String resolvedLocale,
+            String protectedOriginalQuestion,
+            String detectedLanguage
     ) {
         validateApiKey();
         if (promptChunks == null || promptChunks.isEmpty()) {
@@ -312,9 +371,14 @@ public class OpenAIService {
                     : request.getUserMessage();
         }
         String context = formatRagContext(promptChunks);
-        String userPrompt = buildRagUserPrompt(context, userQuestion);
+        String userPrompt = buildRagUserPrompt(context, userQuestion, protectedOriginalQuestion, detectedLanguage);
 
-        List<Map<String, String>> messages = buildMessages(request, RAG_SYSTEM_PROMPT, userPrompt, true);
+        List<Map<String, String>> messages = buildMessages(
+                request,
+                groundedSystemPrompt(resolvedLocale),
+                userPrompt,
+                true
+        );
         long promptBuildMs = System.currentTimeMillis() - buildStartMs;
         int promptContextChars = context != null ? context.length() : 0;
 
@@ -331,7 +395,7 @@ public class OpenAIService {
         int completionTokens = result.usage() != null && result.usage().getCompletionTokens() != null
                 ? result.usage().getCompletionTokens()
                 : 0;
-        log.info(
+        log.debug(
                 "Grounded Stage Timing | promptBuildMs={} | openAiWaitMs={} | responseParseMs={} | "
                         + "totalMs={} | chunkCount={} | promptContextChars={} | promptTokens={} | completionTokens={}",
                 promptBuildMs,
@@ -373,6 +437,16 @@ public class OpenAIService {
             List<String> missingTopics,
             ProtectionSession session
     ) {
+        return chatGapFill(request, documentationAnswer, missingTopics, session, null);
+    }
+
+    public ChatResponse chatGapFill(
+            ChatRequest request,
+            String documentationAnswer,
+            List<String> missingTopics,
+            ProtectionSession session,
+            String resolvedLocale
+    ) {
         validateApiKey();
         String modelReadyUserText;
         String questionForPrompt;
@@ -409,7 +483,7 @@ public class OpenAIService {
                 documentationAnswer != null ? documentationAnswer : "",
                 topics
         );
-        List<Map<String, String>> messages = buildMessages(request, systemPromptForFallback(), userPrompt, true);
+        List<Map<String, String>> messages = buildMessages(request, fallbackPrompt(resolvedLocale), userPrompt, true);
         OpenAiCallResult result = callOpenAi(messages);
         return toChatResponse(request, result, "gpt_infor", request.getUserMessage(), modelReadyUserText);
     }
@@ -523,7 +597,7 @@ public class OpenAIService {
             if (queries.size() > MAX_REWRITTEN_QUERIES) {
                 queries = queries.subList(0, MAX_REWRITTEN_QUERIES);
             }
-            log.info("Query rewrite produced {} search queries: {}", queries.size(), queries);
+            log.debug("Query rewrite produced {} search queries: {}", queries.size(), queries);
             return new QueryRewriteResult(queries, result.usage());
         } catch (OpenAIException e) {
             if (e.isAiServiceUnavailable()) {
@@ -547,6 +621,10 @@ public class OpenAIService {
      * Does not execute Live M3 or retrieval.
      */
     public RequestUnderstandResult understandRequest(ChatRequest request, String sanitizedQuery) {
+        return understandRequest(request, sanitizedQuery, null);
+    }
+
+    public RequestUnderstandResult understandRequest(ChatRequest request, String sanitizedQuery, String resolvedLocale) {
         validateApiKey();
         if (sanitizedQuery == null || sanitizedQuery.isBlank()) {
             throw new OpenAIException("Sanitized query cannot be empty for request router", 400);
@@ -556,6 +634,10 @@ public class OpenAIService {
         List<MessageDto> userHistory = request == null ? List.of() : resolveHistory(request);
         ChatMode mode = request != null && request.getMode() != null ? request.getMode() : ChatMode.AUTO;
         String userPrompt = buildUnderstandUserContent(queryForLlm, userHistory, mode);
+        String languageLine = conversationalLanguageInstruction(resolvedLocale);
+        if (!languageLine.isEmpty()) {
+            userPrompt = userPrompt + "\n\n" + languageLine;
+        }
 
         List<Map<String, String>> messages = List.of(
                 Map.of("role", "system", "content", ROUTER_SYSTEM_PROMPT),
@@ -854,6 +936,7 @@ public class OpenAIService {
             boolean jsonObjectResponse
     ) {
         requireLlmClient();
+        FlowTrace.recordLlmCall();
         LlmChatCompletionsClient.ChatCompletionResult result = llmClient.complete(
                 messages,
                 temperature,
@@ -919,12 +1002,83 @@ public class OpenAIService {
     }
 
     String buildRagUserPrompt(String context, String question) {
-        return "USER QUESTION:\n" + question + "\n\nRETRIEVED DOCUMENTATION:\n" + context;
+        return buildRagUserPrompt(context, question, null, null);
+    }
+
+    String buildRagUserPrompt(
+            String context,
+            String englishQuestion,
+            String originalQuestion,
+            String detectedLanguage
+    ) {
+        if (originalQuestion == null || originalQuestion.isBlank()) {
+            return "USER QUESTION:\n" + englishQuestion + "\n\nRETRIEVED DOCUMENTATION:\n" + context;
+        }
+        return "Original user question:\n" + originalQuestion
+                + "\n\nDetected language: " + (detectedLanguage == null ? "" : detectedLanguage)
+                + "\n\nEnglish question:\n" + englishQuestion
+                + "\n\nRETRIEVED DOCUMENTATION:\n" + context;
     }
 
     /** Package-visible for unit tests. */
     String ragSystemPrompt() {
         return RAG_SYSTEM_PROMPT;
+    }
+
+    /**
+     * Null keeps the existing prompt. Any other locale asks for that locale's display language.
+     */
+    String groundedSystemPrompt(String resolvedLocale) {
+        if (resolvedLocale == null || resolvedLocale.isBlank()) {
+            return RAG_SYSTEM_PROMPT;
+        }
+        String language = Locale.forLanguageTag(resolvedLocale.replace('_', '-'))
+                .getDisplayLanguage(Locale.ENGLISH);
+        if (language == null || language.isBlank()) {
+            return RAG_SYSTEM_PROMPT;
+        }
+        return RAG_SYSTEM_PROMPT
+                + "\n\nUse the English question and the retrieved documentation as the grounding source. "
+                + "Use the original user question for intent and nuance. "
+                + "Do not invent M3 facts from the original question alone. "
+                + displayLanguageLine(resolvedLocale, "Write the JSON \"answer\" field in ");
+    }
+
+    /** Package-visible for unit tests. */
+    String fallbackPrompt(String resolvedLocale) {
+        String line = responseLanguageInstruction(resolvedLocale);
+        return line.isEmpty() ? systemPromptForFallback() : systemPromptForFallback() + "\n\n" + line;
+    }
+
+    /** Package-visible for unit tests. */
+    String responseLanguageInstruction(String resolvedLocale) {
+        return displayLanguageLine(resolvedLocale, "Write the reply in ");
+    }
+
+    /** Package-visible for unit tests. */
+    String conversationalLanguageInstruction(String resolvedLocale) {
+        return displayLanguageLine(
+                resolvedLocale,
+                "When type is CONVERSATIONAL or NON_M3, write the JSON \"response\" field in "
+        );
+    }
+
+    /** Package-visible for unit tests. */
+    static String userMessageLanguageInstruction() {
+        return "Copy program IDs, record IDs, field names, and MI names exactly. "
+                + "Do not replace an ordinary question with a greeting.";
+    }
+
+    private static String displayLanguageLine(String resolvedLocale, String prefix) {
+        if (resolvedLocale == null || resolvedLocale.isBlank() || prefix == null) {
+            return "";
+        }
+        String language = Locale.forLanguageTag(resolvedLocale.replace('_', '-'))
+                .getDisplayLanguage(Locale.ENGLISH);
+        if (language == null || language.isBlank()) {
+            return "";
+        }
+        return prefix + language + ". Copy program IDs, record IDs, field names, and MI names exactly.";
     }
 
     /** Package-visible for unit tests. */

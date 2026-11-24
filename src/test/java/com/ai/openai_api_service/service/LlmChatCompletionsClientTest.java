@@ -196,6 +196,119 @@ class LlmChatCompletionsClientTest {
         assertEquals("global.openai.gpt-5.6-terra", usage.getModel());
     }
 
+    @Test
+    @SuppressWarnings("unchecked")
+    void complete_bedrock_withNestedCacheUsage_stillParsesOnlyTopLevelTokenFields() {
+        ReflectionTestUtils.setField(client, "provider", "bedrock");
+        Map<String, Object> response = sampleResponseWithCacheDetails(
+                "ok", "stop", 2000, 300, 2300, 1500, 0);
+        when(restTemplate.exchange(any(String.class), eq(HttpMethod.POST), any(HttpEntity.class), eq(Map.class)))
+                .thenReturn(ResponseEntity.ok(response));
+
+        LlmChatCompletionsClient.ChatCompletionResult result = client.complete(
+                List.of(Map.of("role", "user", "content", "hi")),
+                null,
+                null,
+                false
+        );
+
+        assertEquals("ok", result.content());
+        assertEquals(2000, result.usage().getPromptTokens());
+        assertEquals(300, result.usage().getCompletionTokens());
+        assertEquals(2300, result.usage().getTotalTokens());
+        // Phase 1: extractUsage unchanged — nested cache fields are not mapped onto OpenAIUsage
+        Map<String, Object> rawUsage = (Map<String, Object>) result.rawResponse().get("usage");
+        assertTrue(rawUsage.containsKey("prompt_tokens_details"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void completeMultimodal_bedrock_withNestedCacheUsage_preservesRawUsageForObservation() {
+        ReflectionTestUtils.setField(client, "provider", "bedrock");
+        Map<String, Object> response = sampleResponseWithCacheDetails(
+                "vision-ok", "stop", 1800, 120, 1920, 0, 1600);
+        when(restTemplate.exchange(any(String.class), eq(HttpMethod.POST), any(HttpEntity.class), eq(Map.class)))
+                .thenReturn(ResponseEntity.ok(response));
+
+        List<Map<String, Object>> messages = List.of(
+                Map.of("role", "user", "content", List.of(
+                        Map.of("type", "text", "text", "describe"),
+                        Map.of("type", "image_url", "image_url", Map.of("url", "data:image/png;base64,aaa"))
+                ))
+        );
+
+        LlmChatCompletionsClient.ChatCompletionResult result = client.completeMultimodal(
+                messages, 0.2, 256, false);
+
+        assertEquals("vision-ok", result.content());
+        assertEquals(1800, result.usage().getPromptTokens());
+        Map<String, Object> details = (Map<String, Object>) ((Map<String, Object>) result.rawResponse().get("usage"))
+                .get("prompt_tokens_details");
+        assertEquals(0, details.get("cached_tokens"));
+        assertEquals(1600, details.get("cache_write_tokens"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void completeMultimodal_sendsImageUrlJsonObjectAndDoesNotRequireStringContent() {
+        ReflectionTestUtils.setField(client, "provider", "bedrock");
+        Map<String, Object> response = sampleResponse("{\"searchQueries\":[\"a\",\"b\",\"c\"]}", "stop", 8, 4, 12);
+        when(restTemplate.exchange(any(String.class), eq(HttpMethod.POST), any(HttpEntity.class), eq(Map.class)))
+                .thenReturn(ResponseEntity.ok(response));
+
+        List<Map<String, Object>> content = List.of(
+                Map.of("type", "text", "text", "question"),
+                Map.of("type", "image_url", "image_url", Map.of("url", "data:image/png;base64,aaa"))
+        );
+        List<Map<String, Object>> messages = List.of(
+                Map.of("role", "system", "content", "sys"),
+                Map.of("role", "user", "content", content)
+        );
+
+        LlmChatCompletionsClient.ChatCompletionResult result = client.completeMultimodal(
+                messages, 0.2, 512, true);
+
+        assertTrue(result.content().contains("searchQueries"));
+        assertEquals(8, result.usage().getPromptTokens());
+        assertTrue(result.elapsedMs() >= 0);
+
+        ArgumentCaptor<HttpEntity> entityCaptor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(
+                eq("https://bedrock-runtime.eu-west-1.amazonaws.com/openai/v1/chat/completions"),
+                eq(HttpMethod.POST),
+                entityCaptor.capture(),
+                eq(Map.class)
+        );
+        Map<String, Object> body = (Map<String, Object>) entityCaptor.getValue().getBody();
+        assertEquals("global.openai.gpt-5.6-terra", body.get("model"));
+        assertEquals("none", body.get("reasoning_effort"));
+        assertEquals(512, body.get("max_completion_tokens"));
+        assertEquals(Map.of("type", "json_object"), body.get("response_format"));
+        assertEquals(0.2, body.get("temperature"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void completeMultimodal_mapsTimeoutTo504WithoutLeakingDataUrlInClientMessagePath() {
+        ReflectionTestUtils.setField(client, "provider", "bedrock");
+        when(restTemplate.exchange(any(String.class), eq(HttpMethod.POST), any(HttpEntity.class), eq(Map.class)))
+                .thenThrow(new org.springframework.web.client.ResourceAccessException("Read timed out"));
+
+        List<Map<String, Object>> messages = List.of(
+                Map.of("role", "user", "content", List.of(
+                        Map.of("type", "text", "text", "q"),
+                        Map.of("type", "image_url", "image_url", Map.of("url", "data:image/png;base64,SECRETFIXTURE"))
+                ))
+        );
+
+        OpenAIException ex = assertThrows(
+                OpenAIException.class,
+                () -> client.completeMultimodal(messages, null, 256, true)
+        );
+        assertEquals(504, ex.getStatusCode());
+        assertFalse(ex.getMessage().contains("SECRETFIXTURE"));
+    }
+
     private static Map<String, Object> sampleResponse(
             String content,
             String finishReason,
@@ -212,6 +325,32 @@ class LlmChatCompletionsClientTest {
                         "prompt_tokens", promptTokens,
                         "completion_tokens", completionTokens,
                         "total_tokens", totalTokens
+                )
+        );
+    }
+
+    private static Map<String, Object> sampleResponseWithCacheDetails(
+            String content,
+            String finishReason,
+            int promptTokens,
+            int completionTokens,
+            int totalTokens,
+            int cachedTokens,
+            int cacheWriteTokens
+    ) {
+        return Map.of(
+                "choices", List.of(Map.of(
+                        "finish_reason", finishReason,
+                        "message", Map.of("role", "assistant", "content", content)
+                )),
+                "usage", Map.of(
+                        "prompt_tokens", promptTokens,
+                        "completion_tokens", completionTokens,
+                        "total_tokens", totalTokens,
+                        "prompt_tokens_details", Map.of(
+                                "cached_tokens", cachedTokens,
+                                "cache_write_tokens", cacheWriteTokens
+                        )
                 )
         );
     }

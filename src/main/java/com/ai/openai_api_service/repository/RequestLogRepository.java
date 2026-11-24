@@ -32,10 +32,28 @@ public interface RequestLogRepository extends JpaRepository<RequestLog, Long> {
 
     List<RequestLog> findBySession_SessionId(String sessionId);
 
+    Optional<RequestLog> findByMessageId(String messageId);
+
     long countBySession_TenantAndSession_UserAndSession_SessionId(
             Tenant tenant,
             User user,
             String sessionId
+    );
+
+    @Query("""
+            SELECT r.resolvedLocale FROM RequestLog r
+            WHERE r.session.tenant = :tenant
+              AND r.session.user = :user
+              AND r.session.sessionId = :sessionId
+              AND r.supersededByRequestLogId IS NULL
+              AND r.resolvedLocale IS NOT NULL
+            ORDER BY r.createdAt DESC
+            """)
+    List<String> findActiveResolvedLocales(
+            @Param("tenant") Tenant tenant,
+            @Param("user") User user,
+            @Param("sessionId") String sessionId,
+            Pageable pageable
     );
 
     @Query("""

@@ -62,4 +62,32 @@ class ComprehendAnonymizationServiceTest {
         assertEquals("Hi I am [Name] and i want to know about invoice number [NUMBER] how to get this email id is [EMAIL]",
                 result.get("sanitizedText"));
     }
+
+    @Test
+    void bananeNameHit_isDroppedAndPresidioRawPathUsed() {
+        String original = "Purchase order banane ke steps samjhao.";
+        int start = original.indexOf("banane");
+        when(comprehendService.detectPii(original))
+                .thenReturn(List.of(new PiiEntityDto("NAME", start, start + 6, 0.99)));
+        when(presidioService.sanitizeText(original)).thenReturn(original);
+        ReflectionTestUtils.setField(service, "enabled", true);
+
+        Map<String, Object> result = service.detectAndAnonymize(original);
+
+        assertEquals(original, result.get("sanitizedText"));
+        verify(presidioService).sanitizeText(original);
+    }
+
+    @Test
+    void keepNameEntity_dropsBananeKeepsContextualRahul() {
+        String hinglish = "Purchase order banane ke steps samjhao.";
+        int bananeStart = hinglish.indexOf("banane");
+        assertEquals(false, ComprehendAnonymizationService.keepNameEntity(
+                hinglish, new PiiEntityDto("NAME", bananeStart, bananeStart + 6, 0.99)));
+
+        String contextual = "my name is Rahul";
+        int rahulStart = contextual.indexOf("Rahul");
+        assertEquals(true, ComprehendAnonymizationService.keepNameEntity(
+                contextual, new PiiEntityDto("NAME", rahulStart, rahulStart + 5, 0.92)));
+    }
 }

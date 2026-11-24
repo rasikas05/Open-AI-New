@@ -24,6 +24,12 @@ public class RequestLog {
     @Column(name = "sanitized_text", columnDefinition = "TEXT")
     private String sanitizedText;
 
+    @Column(name = "detected_language", length = 32)
+    private String detectedLanguage;
+
+    @Column(name = "resolved_locale", length = 10)
+    private String resolvedLocale;
+
     @Lob
     @Column(name = "business_protected_text", columnDefinition = "TEXT")
     private String businessProtectedText;
@@ -90,6 +96,13 @@ public class RequestLog {
     @Column(name = "mode", length = 10)
     private String mode;
 
+    /**
+     * Server-issued chat message id from prepare API (IDM / attachment association).
+     * Null for legacy text-only turns without prepare.
+     */
+    @Column(name = "message_id", length = 100)
+    private String messageId;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt = LocalDateTime.now();
     // getters/setters
@@ -131,6 +144,22 @@ public class RequestLog {
 
     public void setSanitizedText(String sanitizedText) {
         this.sanitizedText = sanitizedText;
+    }
+
+    public String getDetectedLanguage() {
+        return detectedLanguage;
+    }
+
+    public void setDetectedLanguage(String detectedLanguage) {
+        this.detectedLanguage = detectedLanguage;
+    }
+
+    public String getResolvedLocale() {
+        return resolvedLocale;
+    }
+
+    public void setResolvedLocale(String resolvedLocale) {
+        this.resolvedLocale = resolvedLocale;
     }
 
     public String getBusinessProtectedText() {
@@ -299,6 +328,14 @@ public class RequestLog {
 
     public void setMode(String mode) {
         this.mode = mode;
+    }
+
+    public String getMessageId() {
+        return messageId;
+    }
+
+    public void setMessageId(String messageId) {
+        this.messageId = messageId;
     }
 
     public LocalDateTime getCreatedAt() {

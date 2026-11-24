@@ -25,6 +25,7 @@ import java.util.regex.Pattern;
  *   <li>Connector / separator skipping</li>
  *   <li>Capture candidate (optional simple parentheses)</li>
  *   <li>Reserved-word rejection (connectors ∪ catalog keyword/alias tokens)</li>
+ *   <li>Product / program allowlist skip ({@link BusinessIdentifierAllowlist})</li>
  *   <li>Shape validation</li>
  *   <li>Overlap resolution</li>
  * </ol>
@@ -108,6 +109,11 @@ public class BusinessInformationDetector {
                 if (reservedValueTokens.contains(lower) || DetectionGrammar.isConnector(lower)) {
                     stats.incrementRejectedByReserved();
                     stats.recordMiss(rule.matchedKeyword(), DetectionMissReason.RESERVED_VALUE);
+                    continue;
+                }
+                if (BusinessIdentifierAllowlist.shouldSkipMasking(value)) {
+                    stats.incrementRejectedByAllowlist();
+                    stats.recordMiss(rule.matchedKeyword(), DetectionMissReason.ALLOWLIST_SKIP);
                     continue;
                 }
                 ShapeMeta shape = shapeMetaByCode.get(rule.code());
