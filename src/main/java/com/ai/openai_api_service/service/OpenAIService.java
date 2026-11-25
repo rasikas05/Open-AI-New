@@ -45,28 +45,28 @@ public class OpenAIService {
 
     private static final String RAG_SYSTEM_PROMPT = """
             You are an Infor M3 / CloudSuite documentation-grounded assistant. Apply CLEAR strictly.
-
+            
             C - Context:
             Answer using ONLY the RETRIEVED DOCUMENTATION provided in the request. Do not use general M3 knowledge.
-
+            
             Only RETRIEVED DOCUMENTATION is authoritative factual evidence.
             Chat history may be used only to resolve references such as "it", "this", or "that";
             never treat previous user or assistant messages as documentation evidence.
-
+            
             L - Logic:
             Identify the user's primary question first. Use only relevant supporting content from retrieved documentation.
             Never invent or alter program IDs, MI transactions, APIs, fields, tables, panels, procedures, or facts.
             If the documentation does not directly support the requested task, do not infer or complete it from general knowledge.
-
+            
             E - Expectations:
             Return ONLY this JSON object (no markdown fences, no prose outside JSON):
             {"status":"FULL"|"PARTIAL"|"INSUFFICIENT","answer":"...","missingTopics":[]}
-
+            
             FULL = documentation completely answers the request.
             PARTIAL = documentation directly answers part of a multi-part request; list uncovered parts in missingTopics.
             INSUFFICIENT = documentation does not answer the requested task; set "answer" to "" and "missingTopics" to [].
             For a single-task question, related information is INSUFFICIENT, not PARTIAL.
-
+            
             When the retrieved documentation contains a usable how-to, procedure, MI transaction, API, Custom List,
             or program reference that answers the user's question (for example MMS001 – Item. Open, or Custom List MI),
             return status FULL and give that content in "answer".
@@ -74,18 +74,74 @@ public class OpenAIService {
             retrieved documentation itself states those details are required for that specific instruction.
             Do not replace documented steps or MI/API reference material with clarifying questions
             or status INSUFFICIENT when the retrieved documentation already supports the request.
-
+            
             Write a concise, direct, well-structured answer in "answer". Use Markdown when it improves readability.
             Do not include http:// or https:// URLs in "answer".
-
+            
             A - Actor:
             Act as an experienced Infor M3 documentation specialist and coverage classifier.
-
+            
             R - References:
             Treat the retrieved Infor M3 documentation as the source of truth.
             Use relevant program IDs, MI transactions, fields, APIs, tables, panels,
             and document titles exactly as provided in the context.
-            Never invent references or URLs.""";
+            Never invent references or URLs.
+            
+            Additional grounded coverage rules (stable application policy).
+            CLEAR above remains the primary policy. These rules refine status classification and answer quality without changing the JSON contract or M3 Bot behavior.
+            
+            Status decision procedure:
+            1. Restate the user's actionable ask as one or more discrete requested tasks (for example configure, look up, run MI, explain a panel field).
+            2. For each requested task, determine whether the current RETRIEVED DOCUMENTATION directly supports it (matching program IDs, MI names, field labels, panel steps, documented prerequisites, or explicit how-to sequences).
+            3. If every requested task is fully supported, return status FULL with a complete answer covering all requested tasks.
+            4. Return status PARTIAL only when the user requested multiple distinct tasks, at least one task is directly supported, and at least one other requested task is unsupported. Answer only the supported tasks, and list each unsupported requested task briefly in missingTopics.
+            5. If no requested task is directly supported, return status INSUFFICIENT with answer "" and missingTopics [].
+            6. For a single requested task, related or optional background that does not answer that task is INSUFFICIENT, not PARTIAL. Do not classify missing optional background information as PARTIAL.
+            
+            Evidence and anti-hallucination:
+            - Prefer concrete identifiers from the retrieved text (program, MI, API, table, panel, field) over loose paraphrases when precision matters.
+            If two retrieved chunks conflict:
+            - Prefer the chunk whose title, section, or program metadata most closely matches the user's request.
+            - If the conflict remains unresolved, state it briefly in "answer" without inventing a resolution.
+            - For a single-task question where the conflict prevents a reliable answer, return INSUFFICIENT.
+            - For multiple distinct tasks, return PARTIAL only if at least one task is supported and another remains unsupported because of the unresolved conflict. Otherwise, apply the normal FULL or INSUFFICIENT rules.
+            - Never invent company-specific defaults, warehouse codes, item types, numbering series, or partner-specific customizations absent from the retrieved documentation.
+            - Never claim a step is "usually" or "typically" done a certain way unless that wording appears in the retrieved documentation.
+            - Do not complete missing procedural steps from general ERP knowledge. Stop at what the documentation supports.
+            
+            History and reference resolution:
+            - Chat history (including PREVIOUS USER QUESTIONS when present) may identify the subject of a follow-up — for example resolving "it", "this", "that program", "the MI above", or "continue".
+            - The answer must still be supported by the current RETRIEVED DOCUMENTATION. History does not authorize facts that are absent from current retrieval.
+            - Do not treat prior assistant answers as documentation.
+            - If a follow-up's subject is clear from history but current retrieval does not support the answer, return INSUFFICIENT or PARTIAL rather than reconstructing an earlier answer from memory.
+            
+            Answer formatting inside the JSON "answer" field:
+            - Use short paragraphs and Markdown headings, numbered lists, or bullet lists when they improve scanability of procedures.
+            - For MI / API style content, preserve transaction or endpoint names exactly as documented.
+            - For panel or program navigation, keep the documented order of steps; do not reorder for style.
+            - Prefer the minimum complete procedure over encyclopedic restatement of every retrieved paragraph.
+            - Do not wrap the entire response in Markdown code fences. The outer response must be raw JSON only.
+            - If retrieved documentation mentions a URL, omit the URL and keep useful surrounding instructional text (CLEAR already forbids http/https in "answer").
+            
+            Clarifying questions:
+            - Follow CLEAR for when clarifying questions are allowed.
+            - Clarifying questions never replace a FULL answer when the docs already answer the ask.
+            - Do not treat missing optional background as a reason to ask questions or to return PARTIAL.
+            
+            missingTopics rules:
+            - Each entry must name an unsupported requested task or sub-question, not a vague topic label and not optional background the user did not ask for.
+            - Do not populate missingTopics when status is FULL.
+            - For INSUFFICIENT, missingTopics must be [].
+            - For PARTIAL, missingTopics must be non-empty and must not repeat content already answered.
+            
+            Quality checklist before finalizing JSON:
+            - status is exactly one of FULL, PARTIAL, INSUFFICIENT.
+            - answer is a string; for INSUFFICIENT it is "".
+            - missingTopics is a JSON array of strings.
+            - No markdown fence around the JSON object.
+            - No keys other than status, answer, missingTopics.
+            - Identifiers in the answer match retrieved documentation spelling and casing when present there.
+            """;
 
     private static final int MAX_REWRITTEN_QUERIES = 3;
     private static final Pattern MARKDOWN_JSON_FENCE = Pattern.compile("```(?:json)?\\s*([\\s\\S]*?)```");
@@ -242,7 +298,7 @@ public class OpenAIService {
         String sanitizedUserText = presidioService.sanitizeText(request.getUserMessage());
         String modelReadyUserText = protectForLlm(prepareUserContentForOpenAi(sanitizedUserText), ProtectionPurpose.ANSWER);
         List<Map<String, String>> messages = buildMessages(request, systemPromptForFallback(), modelReadyUserText);
-        OpenAiCallResult result = callOpenAi(messages);
+        OpenAiCallResult result = callOpenAi(messages, "General");
 
         int consumedTokens = result.usage().getTotalTokens() != null ? result.usage().getTotalTokens() : 0;
         String usageReferenceId = request.getSessionId() + ":" + System.currentTimeMillis();
@@ -295,7 +351,7 @@ public class OpenAIService {
                 modelReadyUserText,
                 true
         );
-        OpenAiCallResult result = callOpenAi(messages);
+        OpenAiCallResult result = callOpenAi(messages, "General");
         return toChatResponse(request, result, "gpt_infor", request.getUserMessage(), modelReadyUserText);
     }
 
@@ -315,7 +371,7 @@ public class OpenAIService {
                 modelReadyUserText,
                 true
         );
-        OpenAiCallResult result = callOpenAi(messages);
+        OpenAiCallResult result = callOpenAi(messages, "General");
         return toChatResponse(request, result, "gpt_infor", request.getUserMessage(), modelReadyUserText);
     }
 
@@ -382,7 +438,7 @@ public class OpenAIService {
         long promptBuildMs = System.currentTimeMillis() - buildStartMs;
         int promptContextChars = context != null ? context.length() : 0;
 
-        OpenAiCallResult result = callOpenAi(messages);
+        OpenAiCallResult result = callOpenAi(messages, "Grounded");
         long openAiWaitMs = result.elapsedMs();
 
         long parseStartMs = System.currentTimeMillis();
@@ -484,7 +540,7 @@ public class OpenAIService {
                 topics
         );
         List<Map<String, String>> messages = buildMessages(request, fallbackPrompt(resolvedLocale), userPrompt, true);
-        OpenAiCallResult result = callOpenAi(messages);
+        OpenAiCallResult result = callOpenAi(messages, "GapFill");
         return toChatResponse(request, result, "gpt_infor", request.getUserMessage(), modelReadyUserText);
     }
 
@@ -592,7 +648,7 @@ public class OpenAIService {
         );
 
         try {
-            OpenAiCallResult result = callOpenAi(messages, 0.3, 256);
+            OpenAiCallResult result = callOpenAi(messages, 0.3, 256, false, "Rewrite");
             List<String> queries = parseQueriesFromLlm(result.content());
             if (queries.size() > MAX_REWRITTEN_QUERIES) {
                 queries = queries.subList(0, MAX_REWRITTEN_QUERIES);
@@ -644,7 +700,7 @@ public class OpenAIService {
                 Map.of("role", "user", "content", userPrompt)
         );
 
-        OpenAiCallResult result = callOpenAi(messages, 0.3, 256, true);
+        OpenAiCallResult result = callOpenAi(messages, 0.3, 256, true, "Planner");
         RequestUnderstandResult parsed = parseUnderstandFromLlm(result.content(), result.usage());
         log.info(
                 "Request router understood type={} queryCount={}",
@@ -921,19 +977,16 @@ public class OpenAIService {
                 + current;
     }
 
-    private OpenAiCallResult callOpenAi(List<Map<String, String>> messages) {
-        return callOpenAi(messages, null, null, false);
-    }
-
-    private OpenAiCallResult callOpenAi(List<Map<String, String>> messages, Double temperature, Integer maxTokens) {
-        return callOpenAi(messages, temperature, maxTokens, false);
+    private OpenAiCallResult callOpenAi(List<Map<String, String>> messages, String stage) {
+        return callOpenAi(messages, null, null, false, stage);
     }
 
     private OpenAiCallResult callOpenAi(
             List<Map<String, String>> messages,
             Double temperature,
             Integer maxTokens,
-            boolean jsonObjectResponse
+            boolean jsonObjectResponse,
+            String stage
     ) {
         requireLlmClient();
         FlowTrace.recordLlmCall();
@@ -941,7 +994,8 @@ public class OpenAIService {
                 messages,
                 temperature,
                 maxTokens,
-                jsonObjectResponse
+                jsonObjectResponse,
+                stage
         );
         return new OpenAiCallResult(result.content(), result.truncated(), result.usage(), result.elapsedMs());
     }

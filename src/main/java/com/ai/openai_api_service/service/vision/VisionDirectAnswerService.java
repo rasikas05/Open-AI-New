@@ -93,7 +93,7 @@ public class VisionDirectAnswerService {
 
         LlmChatCompletionsClient.ChatCompletionResult completion;
         try {
-            completion = llmClient.completeMultimodal(messages, 0.3, maxCompletionTokens, false);
+            completion = llmClient.completeMultimodal(messages, 0.3, maxCompletionTokens, false, "VisionAnswer");
         } catch (OpenAIException e) {
             throw VisionQueryGenerationService.sanitizeException(e);
         }

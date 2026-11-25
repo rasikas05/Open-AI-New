@@ -90,7 +90,8 @@ public class SuggestionLLMService {
                     messages,
                     0.3,
                     tokenCap,
-                    false
+                    false,
+                    "Suggestion"
             );
             long openAiWaitMs = Duration.between(openAiStart, Instant.now()).toMillis();
             Instant parseStart = Instant.now();
@@ -102,7 +103,8 @@ public class SuggestionLLMService {
                         messages,
                         0.3,
                         SUGGESTION_COMPLETION_RETRY_TOKENS,
-                        false
+                        false,
+                        "Suggestion"
                 );
                 items = parseSuggestionContent(result.content(), maxCount);
             }

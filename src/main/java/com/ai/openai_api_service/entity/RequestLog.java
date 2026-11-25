@@ -69,6 +69,15 @@ public class RequestLog {
     private Integer promptTokens;
     @Column(name = "completion_tokens")
     private Integer completionTokens;
+    /** Bedrock cache write tokens; null when prompt_tokens_details was absent. */
+    @Column(name = "cache_write_tokens")
+    private Integer cacheWriteTokens;
+    /** Bedrock cache read tokens; null when prompt_tokens_details was absent. */
+    @Column(name = "cached_tokens")
+    private Integer cachedTokens;
+    /** True when usage.prompt_tokens_details was present on the LLM response. */
+    @Column(name = "cache_metrics_present", columnDefinition = "BIT(1)")
+    private Boolean cacheMetricsPresent;
     @Column(name = "openai_model", length = 64)
     private String openaiModel;
     @Column(name = "retrieval_reason", length = 64)
@@ -264,6 +273,30 @@ public class RequestLog {
 
     public void setCompletionTokens(Integer completionTokens) {
         this.completionTokens = completionTokens;
+    }
+
+    public Integer getCacheWriteTokens() {
+        return cacheWriteTokens;
+    }
+
+    public void setCacheWriteTokens(Integer cacheWriteTokens) {
+        this.cacheWriteTokens = cacheWriteTokens;
+    }
+
+    public Integer getCachedTokens() {
+        return cachedTokens;
+    }
+
+    public void setCachedTokens(Integer cachedTokens) {
+        this.cachedTokens = cachedTokens;
+    }
+
+    public Boolean getCacheMetricsPresent() {
+        return cacheMetricsPresent;
+    }
+
+    public void setCacheMetricsPresent(Boolean cacheMetricsPresent) {
+        this.cacheMetricsPresent = cacheMetricsPresent;
     }
 
     public String getOpenaiModel() {

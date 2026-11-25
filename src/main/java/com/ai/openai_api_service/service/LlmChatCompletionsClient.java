@@ -38,6 +38,8 @@ public class LlmChatCompletionsClient {
 
     public static final String PROVIDER_OPENAI = "openai";
     public static final String PROVIDER_BEDROCK = "bedrock";
+    /** MDC fallback when callers do not pass an explicit stage (async callers should pass stage). */
+    public static final String MDC_LLM_STAGE = "llm.stage";
 
     @Value("${llm.provider:openai}")
     private String provider;
@@ -77,6 +79,13 @@ public class LlmChatCompletionsClient {
 
     @Value("${bedrock.runtime.max-completion-tokens:4096}")
     private int bedrockMaxCompletionTokens;
+
+    /** off (default) | explicit — Grounded RAG only when explicit. */
+    @Value("${bedrock.prompt-cache.mode:off}")
+    private String promptCacheMode;
+
+    @Value("${bedrock.prompt-cache.ttl:30m}")
+    private String promptCacheTtl;
 
     private RestTemplate restTemplate;
 
@@ -154,12 +163,25 @@ public class LlmChatCompletionsClient {
     /**
      * POST chat completions. When {@code maxCompletionTokens} is null, uses the active provider default.
      */
-    @SuppressWarnings({"rawtypes", "unchecked"})
     public ChatCompletionResult complete(
             List<Map<String, String>> messages,
             Double temperature,
             Integer maxCompletionTokens,
             boolean jsonObjectResponse
+    ) {
+        return complete(messages, temperature, maxCompletionTokens, jsonObjectResponse, null);
+    }
+
+    /**
+     * POST chat completions with an explicit observation stage (preferred for async callers).
+     */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    public ChatCompletionResult complete(
+            List<Map<String, String>> messages,
+            Double temperature,
+            Integer maxCompletionTokens,
+            boolean jsonObjectResponse,
+            String stage
     ) {
         requireApiKey();
         if (restTemplate == null) {
@@ -180,6 +202,9 @@ public class LlmChatCompletionsClient {
                 tokenArg,
                 jsonObjectResponse
         );
+        if (isBedrock() && PromptCacheRequestSupport.shouldApplyExplicitCache(promptCacheMode, stage)) {
+            PromptCacheRequestSupport.applyExplicitGroundedCache(body, promptCacheTtl);
+        }
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
@@ -194,6 +219,7 @@ public class LlmChatCompletionsClient {
                 messages != null ? messages.size() : 0,
                 jsonObjectResponse
         );
+        logBedrockOutboundConfig(model, body, messages != null ? messages.size() : 0, jsonObjectResponse);
 
         Map<String, Object> response;
         try {
@@ -222,7 +248,7 @@ public class LlmChatCompletionsClient {
             throw new OpenAIException("No response from " + activeProviderLabel() + ".", 502);
         }
 
-        logBedrockUsageDump(model, elapsed, response, "text");
+        logBedrockUsageDump(model, elapsed, response, "text", stage, messages);
 
         String content = extractContent(response);
         boolean truncated = isTruncated(response);
@@ -235,20 +261,32 @@ public class LlmChatCompletionsClient {
             Double temperature,
             Integer maxCompletionTokens
     ) {
-        return complete(messages, temperature, maxCompletionTokens, false);
+        return complete(messages, temperature, maxCompletionTokens, false, null);
     }
 
     /**
      * POST multimodal chat completions (text + image_url content parts).
      * Does not log the request body (may contain Base64 data URLs).
-     * Does not change the text-only {@link #complete(List, Double, Integer, boolean)} contract.
+     */
+    public ChatCompletionResult completeMultimodal(
+            List<Map<String, Object>> messages,
+            Double temperature,
+            Integer maxCompletionTokens,
+            boolean jsonObjectResponse
+    ) {
+        return completeMultimodal(messages, temperature, maxCompletionTokens, jsonObjectResponse, null);
+    }
+
+    /**
+     * POST multimodal chat completions with an explicit observation stage.
      */
     @SuppressWarnings({"rawtypes", "unchecked"})
     public ChatCompletionResult completeMultimodal(
             List<Map<String, Object>> messages,
             Double temperature,
             Integer maxCompletionTokens,
-            boolean jsonObjectResponse
+            boolean jsonObjectResponse,
+            String stage
     ) {
         requireApiKey();
         if (restTemplate == null) {
@@ -282,6 +320,7 @@ public class LlmChatCompletionsClient {
                 messages != null ? messages.size() : 0,
                 jsonObjectResponse
         );
+        logBedrockOutboundConfig(model, body, messages != null ? messages.size() : 0, jsonObjectResponse);
 
         Map<String, Object> response;
         try {
@@ -310,7 +349,7 @@ public class LlmChatCompletionsClient {
             throw new OpenAIException("No response from " + activeProviderLabel() + ".", 502);
         }
 
-        logBedrockUsageDump(model, elapsed, response, "multimodal");
+        logBedrockUsageDump(model, elapsed, response, "multimodal", stage, messages);
 
         String content = extractContent(response);
         boolean truncated = isTruncated(response);
@@ -318,29 +357,107 @@ public class LlmChatCompletionsClient {
         return new ChatCompletionResult(content, truncated, usage, elapsed, response);
     }
 
+    private void logBedrockOutboundConfig(
+            String model,
+            Map<String, Object> body,
+            int messageCount,
+            boolean jsonObjectResponse
+    ) {
+        if (!isBedrock()) {
+            return;
+        }
+        boolean explicit = PromptCacheProbe.bodyHasExplicitCacheOptions(body);
+        log.info(
+                "Bedrock outbound config | cacheMode={} explicitCacheOptionsPresent={} model={} endpoint={} "
+                        + "messageCount={} jsonObject={}",
+                explicit ? "explicit_or_mixed" : "implicit_default",
+                explicit,
+                model,
+                activeUrl(),
+                messageCount,
+                jsonObjectResponse
+        );
+    }
+
     /**
-     * Phase 1 temporary observation: dump Bedrock usage JSON only (no messages/content).
-     * Does not parse cache fields into {@link OpenAIUsage}.
+     * Bedrock dump: usage cache fields + prompt structure hashes (observation).
+     * Cache fields are also mapped into {@link OpenAIUsage} via {@link #extractUsage}.
      */
     private void logBedrockUsageDump(
             String model,
             long elapsedMs,
             Map<String, Object> response,
-            String callType
+            String callType,
+            String stageArg,
+            List<? extends Map<String, ?>> messages
     ) {
         if (!isBedrock()) {
             return;
         }
-        Object usage = response != null ? response.get("usage") : null;
+        String stage = resolveStage(stageArg);
         String correlationId = MDC.get(CorrelationIdSupport.MDC_KEY);
+        String sessionId = MDC.get(CorrelationIdSupport.MDC_SESSION_ID);
+        String userId = MDC.get(CorrelationIdSupport.MDC_USER_ID);
+
+        int promptTokens = 0;
+        int cacheWriteTokens = 0;
+        int cachedTokens = 0;
+        Object usageObj = response != null ? response.get("usage") : null;
+        if (usageObj instanceof Map<?, ?> usageMap) {
+            promptTokens = toInt(usageMap.get("prompt_tokens"));
+            Object detailsObj = usageMap.get("prompt_tokens_details");
+            if (detailsObj instanceof Map<?, ?> details) {
+                cacheWriteTokens = toInt(details.get("cache_write_tokens"));
+                cachedTokens = toInt(details.get("cached_tokens"));
+            }
+        }
+
+        PromptCacheProbe.ProbeResult probe = PromptCacheProbe.probe(messages);
+
         log.info(
-                "Bedrock usage dump | correlationId={} model={} elapsedMs={} call={} usage={}",
+                "Bedrock usage dump | correlationId={} sessionId={} userId={} stage={} model={} endpoint={} "
+                        + "elapsedMs={} call={} messageCount={} promptTokens={} cacheWriteTokens={} cachedTokens={} "
+                        + "systemPromptHash={} historyHash={} ragContextHash={} fullPromptHash={} "
+                        + "cumSys={} cumSysHist={} cumSysHistQuestion={} cumFull={} "
+                        + "systemPromptChars={} systemPromptTokensEst={} "
+                        + "prefixCharsBeforeRag={} prefixTokensBeforeRagEst={} usage={}",
                 correlationId,
+                sessionId,
+                userId,
+                stage,
                 model,
+                activeUrl(),
                 elapsedMs,
                 callType,
-                usage
+                messages != null ? messages.size() : 0,
+                promptTokens,
+                cacheWriteTokens,
+                cachedTokens,
+                probe.systemPromptHash(),
+                probe.historyHash(),
+                probe.ragContextHash(),
+                probe.fullPromptHash(),
+                probe.cumulativeSys(),
+                probe.cumulativeSysHist(),
+                probe.cumulativeSysHistQuestion(),
+                probe.cumulativeFull(),
+                probe.systemPromptChars(),
+                probe.systemPromptTokensEst(),
+                probe.prefixCharsBeforeRag(),
+                probe.prefixTokensBeforeRagEst(),
+                usageObj
         );
+    }
+
+    static String resolveStage(String stageArg) {
+        if (stageArg != null && !stageArg.isBlank()) {
+            return stageArg.trim();
+        }
+        String fromMdc = MDC.get(MDC_LLM_STAGE);
+        if (fromMdc != null && !fromMdc.isBlank()) {
+            return fromMdc.trim();
+        }
+        return "Unknown";
     }
 
     OpenAIException mapClientError(HttpClientErrorException e) {
@@ -399,6 +516,9 @@ public class LlmChatCompletionsClient {
     OpenAIUsage extractUsage(Map<String, Object> response, String modelUsed) {
         OpenAIUsage usage = new OpenAIUsage();
         usage.setModel(modelUsed);
+        usage.setCacheMetricsPresent(false);
+        usage.setCacheWriteTokens(null);
+        usage.setCachedTokens(null);
         Object usageObj = response.get("usage");
         if (!(usageObj instanceof Map<?, ?> usageMap)) {
             usage.setPromptTokens(0);
@@ -409,6 +529,12 @@ public class LlmChatCompletionsClient {
         usage.setPromptTokens(toInt(usageMap.get("prompt_tokens")));
         usage.setCompletionTokens(toInt(usageMap.get("completion_tokens")));
         usage.setTotalTokens(toInt(usageMap.get("total_tokens")));
+        Object detailsObj = usageMap.get("prompt_tokens_details");
+        if (detailsObj instanceof Map<?, ?> details) {
+            usage.setCacheMetricsPresent(true);
+            usage.setCacheWriteTokens(toInt(details.get("cache_write_tokens")));
+            usage.setCachedTokens(toInt(details.get("cached_tokens")));
+        }
         return usage;
     }
 

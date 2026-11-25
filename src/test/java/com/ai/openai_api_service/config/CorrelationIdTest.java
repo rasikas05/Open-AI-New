@@ -54,6 +54,53 @@ class CorrelationIdSupportTest {
         assertEquals(preset, CorrelationIdSupport.current());
         assertEquals(preset, CorrelationIdSupport.current());
     }
+
+    @Test
+    void putRequestIds_storesAndClearRemoves() {
+        CorrelationIdSupport.putRequestIds("sess-1", "user-9");
+        assertEquals("sess-1", MDC.get(CorrelationIdSupport.MDC_SESSION_ID));
+        assertEquals("user-9", MDC.get(CorrelationIdSupport.MDC_USER_ID));
+        CorrelationIdSupport.clearRequestIds();
+        assertNull(MDC.get(CorrelationIdSupport.MDC_SESSION_ID));
+        assertNull(MDC.get(CorrelationIdSupport.MDC_USER_ID));
+    }
+
+    @Test
+    void clear_removesCorrelationAndRequestIds() {
+        MDC.put(CorrelationIdSupport.MDC_KEY, "corr-1");
+        CorrelationIdSupport.putRequestIds("s", "u");
+        CorrelationIdSupport.clear();
+        assertNull(MDC.get(CorrelationIdSupport.MDC_KEY));
+        assertNull(MDC.get(CorrelationIdSupport.MDC_SESSION_ID));
+        assertNull(MDC.get(CorrelationIdSupport.MDC_USER_ID));
+    }
+
+    @Test
+    void callWithMdc_installsCapturedParentContext() {
+        MDC.put(CorrelationIdSupport.MDC_KEY, "parent-corr");
+        CorrelationIdSupport.putRequestIds("parent-sess", "parent-user");
+        var parentSnapshot = CorrelationIdSupport.copyContextMap();
+
+        MDC.clear();
+        assertNull(MDC.get(CorrelationIdSupport.MDC_KEY));
+
+        AtomicReference<String> seenCorr = new AtomicReference<>();
+        AtomicReference<String> seenSession = new AtomicReference<>();
+        AtomicReference<String> seenUser = new AtomicReference<>();
+
+        String result = CorrelationIdSupport.callWithMdc(parentSnapshot, () -> {
+            seenCorr.set(MDC.get(CorrelationIdSupport.MDC_KEY));
+            seenSession.set(MDC.get(CorrelationIdSupport.MDC_SESSION_ID));
+            seenUser.set(MDC.get(CorrelationIdSupport.MDC_USER_ID));
+            return "ok";
+        });
+
+        assertEquals("ok", result);
+        assertEquals("parent-corr", seenCorr.get());
+        assertEquals("parent-sess", seenSession.get());
+        assertEquals("parent-user", seenUser.get());
+        assertNull(MDC.get(CorrelationIdSupport.MDC_KEY));
+    }
 }
 
 class CorrelationIdFilterTest {

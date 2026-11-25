@@ -51,7 +51,8 @@ public class RomanScriptClassifier {
                     ),
                     0.0,
                     MAX_COMPLETION_TOKENS,
-                    false
+                    false,
+                    "RomanClassify"
             );
             content = result == null ? null : result.content();
         } catch (RuntimeException ex) {

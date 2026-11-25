@@ -60,7 +60,7 @@ class RomanScriptClassifierTest {
 
     @Test
     void classifySendsOnlyTheLabelPromptAndAcceptsAnExactLabel() {
-        when(llmClient.complete(any(), eq(0.0), eq(RomanScriptClassifier.MAX_COMPLETION_TOKENS), eq(false)))
+        when(llmClient.complete(any(), eq(0.0), eq(RomanScriptClassifier.MAX_COMPLETION_TOKENS), eq(false), eq("RomanClassify")))
                 .thenReturn(completion("HINGLISH"));
 
         Optional<AcceptedRomanScript> accepted = classifier.classify("mujhe customer details batao");
@@ -68,7 +68,7 @@ class RomanScriptClassifierTest {
         assertEquals("hi", accepted.orElseThrow().languageCode());
         @SuppressWarnings("unchecked")
         ArgumentCaptor<List<Map<String, String>>> messages = ArgumentCaptor.forClass(List.class);
-        verify(llmClient).complete(messages.capture(), eq(0.0), eq(16), eq(false));
+        verify(llmClient).complete(messages.capture(), eq(0.0), eq(16), eq(false), eq("RomanClassify"));
         assertEquals("system", messages.getValue().get(0).get("role"));
         assertTrue(messages.getValue().get(0).get("content").contains("HINGLISH"));
         assertFalse(messages.getValue().get(0).get("content").contains("CLEAR"));
@@ -77,12 +77,12 @@ class RomanScriptClassifierTest {
 
     @Test
     void classifyRejectsASentenceAndAModelFailure() {
-        when(llmClient.complete(any(), any(), any(), anyBoolean()))
+        when(llmClient.complete(any(), any(), any(), anyBoolean(), any()))
                 .thenReturn(completion("This is HINGLISH, not a label."));
 
         assertTrue(classifier.classify("ciao come stai oggi").isEmpty());
 
-        when(llmClient.complete(any(), any(), any(), anyBoolean()))
+        when(llmClient.complete(any(), any(), any(), anyBoolean(), any()))
                 .thenThrow(new OpenAIException("Bedrock request timed out", 504));
 
         assertTrue(classifier.classify("mala madat kar").isEmpty());
@@ -91,7 +91,7 @@ class RomanScriptClassifierTest {
     @Test
     void blankTextDoesNotCallTheModel() {
         assertTrue(classifier.classify("  ").isEmpty());
-        verify(llmClient, never()).complete(any(), any(), any(), anyBoolean());
+        verify(llmClient, never()).complete(any(), any(), any(), anyBoolean(), any());
     }
 
     private static LlmChatCompletionsClient.ChatCompletionResult completion(String content) {

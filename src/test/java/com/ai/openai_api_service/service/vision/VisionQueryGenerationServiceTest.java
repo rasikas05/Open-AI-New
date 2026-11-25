@@ -61,7 +61,7 @@ class VisionQueryGenerationServiceTest {
         assertEquals(11, result.usage().getPromptTokens());
 
         ArgumentCaptor<List<Map<String, Object>>> messagesCaptor = ArgumentCaptor.forClass(List.class);
-        verify(llmClient).completeMultimodal(messagesCaptor.capture(), eq(0.2), eq(512), eq(true));
+        verify(llmClient).completeMultimodal(messagesCaptor.capture(), eq(0.2), eq(512), eq(true), eq("VisionQuery"));
         List<Map<String, Object>> messages = messagesCaptor.getValue();
         assertEquals("system", messages.get(0).get("role"));
         Map<String, Object> user = messages.get(1);
@@ -86,7 +86,7 @@ class VisionQueryGenerationServiceTest {
         assertEquals(50L, result.elapsedMs());
 
         ArgumentCaptor<List<Map<String, Object>>> messagesCaptor = ArgumentCaptor.forClass(List.class);
-        verify(llmClient).completeMultimodal(messagesCaptor.capture(), eq(0.2), eq(512), eq(true));
+        verify(llmClient).completeMultimodal(messagesCaptor.capture(), eq(0.2), eq(512), eq(true), eq("VisionQuery"));
         List<Map<String, Object>> content = (List<Map<String, Object>>) messagesCaptor.getValue().get(1).get("content");
         assertEquals(VisionQueryGenerationService.IMAGE_ONLY_USER_INSTRUCTION, content.get(0).get("text"));
         Map<String, Object> imageUrl = (Map<String, Object>) content.get(1).get("image_url");
@@ -101,7 +101,7 @@ class VisionQueryGenerationServiceTest {
         service.generate("Explain this screen", new ValidatedImageAttachment(WEBP_BYTES, "image/webp", "c.webp"));
 
         ArgumentCaptor<List<Map<String, Object>>> messagesCaptor = ArgumentCaptor.forClass(List.class);
-        verify(llmClient).completeMultimodal(messagesCaptor.capture(), eq(0.2), eq(512), eq(true));
+        verify(llmClient).completeMultimodal(messagesCaptor.capture(), eq(0.2), eq(512), eq(true), eq("VisionQuery"));
         List<Map<String, Object>> content = (List<Map<String, Object>>) messagesCaptor.getValue().get(1).get("content");
         Map<String, Object> imageUrl = (Map<String, Object>) content.get(1).get("image_url");
         assertTrue(((String) imageUrl.get("url")).startsWith("data:image/webp;base64,"));
@@ -122,7 +122,7 @@ class VisionQueryGenerationServiceTest {
 
     @Test
     void generate_rejectsFewerThanThreeQueriesWithoutLeakingBase64() {
-        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean()))
+        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean(), any()))
                 .thenReturn(completion("{\"imageSummary\":\"s\",\"visibleText\":[],\"searchQueries\":[\"only one\"]}", null, 9L));
 
         String fixtureB64 = Base64.getEncoder().encodeToString(PNG_BYTES);
@@ -137,7 +137,7 @@ class VisionQueryGenerationServiceTest {
 
     @Test
     void generate_rejectsNonStringSearchQueryItems() {
-        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean()))
+        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean(), any()))
                 .thenReturn(completion(
                         "{\"imageSummary\":\"s\",\"visibleText\":[],\"searchQueries\":[\"a\",2,\"c\"]}",
                         null,
@@ -154,7 +154,7 @@ class VisionQueryGenerationServiceTest {
 
     @Test
     void generate_rejectsMalformedJsonWithoutLeakingBase64() {
-        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean()))
+        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean(), any()))
                 .thenReturn(completion("not-json", null, 1L));
 
         String fixtureB64 = Base64.getEncoder().encodeToString(PNG_BYTES);
@@ -169,7 +169,7 @@ class VisionQueryGenerationServiceTest {
     @Test
     void generate_propagatesProviderErrorWithoutRequestBody() {
         String leaky = "failed data:image/png;base64," + Base64.getEncoder().encodeToString(PNG_BYTES);
-        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean()))
+        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean(), any()))
                 .thenThrow(new OpenAIException(leaky, 500));
 
         OpenAIException ex = assertThrows(
@@ -183,7 +183,7 @@ class VisionQueryGenerationServiceTest {
 
     @Test
     void generate_propagatesTimeoutStatus() {
-        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean()))
+        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean(), any()))
                 .thenThrow(new OpenAIException("Bedrock request timed out or failed after 10ms: read timed out", 504));
 
         OpenAIException ex = assertThrows(
@@ -211,7 +211,7 @@ class VisionQueryGenerationServiceTest {
         service.generate("Compare screens", images);
 
         ArgumentCaptor<List<Map<String, Object>>> messagesCaptor = ArgumentCaptor.forClass(List.class);
-        verify(llmClient).completeMultimodal(messagesCaptor.capture(), eq(0.2), eq(512), eq(true));
+        verify(llmClient).completeMultimodal(messagesCaptor.capture(), eq(0.2), eq(512), eq(true), eq("VisionQuery"));
         List<Map<String, Object>> content = (List<Map<String, Object>>) messagesCaptor.getValue().get(1).get("content");
         assertEquals(3, content.size());
         assertEquals("Compare screens", content.get(0).get("text"));
@@ -222,7 +222,7 @@ class VisionQueryGenerationServiceTest {
     }
 
     private void stubSuccess(String json, OpenAIUsage usage, long elapsedMs) {
-        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean()))
+        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean(), any()))
                 .thenReturn(completion(json, usage, elapsedMs));
     }
 

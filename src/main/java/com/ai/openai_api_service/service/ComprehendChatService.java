@@ -340,6 +340,7 @@ public class ComprehendChatService {
         String resolvedLocale = ChatPersistenceService.LOCALE_EN_US;
         RoutingCallTracker.begin();
         ChatStageSplitTracker.begin();
+        CorrelationIdSupport.putRequestIds(request.getSessionId(), request.getUserId());
         try {
         Instant quotaCheckStart = Instant.now();
         TenantQuotaService.QuotaCheckResult quotaCheck = tenantQuotaService.checkBeforeChat(request.getTenantCode());
@@ -1263,6 +1264,7 @@ public class ComprehendChatService {
                 FlowTraceLog.finish();
             } finally {
                 FlowTrace.clear();
+                CorrelationIdSupport.clearRequestIds();
             }
         }
     }
@@ -2334,8 +2336,9 @@ public class ComprehendChatService {
         context.setHistory(request.getHistory());
         context.setDocumentationExcerpts(excerpts);
         FlowTrace suggestionTrace = FlowTrace.current();
+        Map<String, String> parentMdc = CorrelationIdSupport.copyContextMap();
         return CompletableFuture.supplyAsync(
-                () -> {
+                () -> CorrelationIdSupport.callWithMdc(parentMdc, () -> {
                     FlowTrace previous = FlowTrace.current();
                     boolean attached = previous != suggestionTrace;
                     if (attached) {
@@ -2360,7 +2363,7 @@ public class ComprehendChatService {
                             }
                         }
                     }
-                },
+                }),
                 suggestionExecutor
         );
     }
@@ -3605,7 +3608,14 @@ public class ComprehendChatService {
         }
     }
 
-    private OpenAIUsage mergeUsage(OpenAIUsage first, OpenAIUsage second) {
+    /**
+     * Sums prompt/completion/total across LLM stages.
+     * Preserves Bedrock cache metrics when either side reported {@code prompt_tokens_details}:
+     * {@code cacheMetricsPresent} is true if either input has it; write/read token counts are summed
+     * from sides that reported metrics (null treated as 0 for that side).
+     * Does not change Bedrock caching behavior or reported prompt_tokens semantics.
+     */
+    OpenAIUsage mergeUsage(OpenAIUsage first, OpenAIUsage second) {
         if (first == null) {
             return second;
         }
@@ -3616,7 +3626,28 @@ public class ComprehendChatService {
         int completion = nullSafeInt(first.getCompletionTokens()) + nullSafeInt(second.getCompletionTokens());
         int total = nullSafeInt(first.getTotalTokens()) + nullSafeInt(second.getTotalTokens());
         String model = second.getModel() != null ? second.getModel() : first.getModel();
-        return new OpenAIUsage(prompt, completion, total, model);
+
+        OpenAIUsage merged = new OpenAIUsage(prompt, completion, total, model);
+        boolean cachePresent = first.isCacheMetricsPresent() || second.isCacheMetricsPresent();
+        merged.setCacheMetricsPresent(cachePresent);
+        if (cachePresent) {
+            int write = 0;
+            int cached = 0;
+            if (first.isCacheMetricsPresent()) {
+                write += nullSafeInt(first.getCacheWriteTokens());
+                cached += nullSafeInt(first.getCachedTokens());
+            }
+            if (second.isCacheMetricsPresent()) {
+                write += nullSafeInt(second.getCacheWriteTokens());
+                cached += nullSafeInt(second.getCachedTokens());
+            }
+            merged.setCacheWriteTokens(write);
+            merged.setCachedTokens(cached);
+        } else {
+            merged.setCacheWriteTokens(null);
+            merged.setCachedTokens(null);
+        }
+        return merged;
     }
 
     private int nullSafeInt(Integer value) {

@@ -23,6 +23,7 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -58,6 +59,8 @@ class LlmChatCompletionsClientTest {
         ReflectionTestUtils.setField(client, "bedrockTimeoutMs", 120_000);
         ReflectionTestUtils.setField(client, "bedrockReasoningEffort", "none");
         ReflectionTestUtils.setField(client, "bedrockMaxCompletionTokens", 4096);
+        ReflectionTestUtils.setField(client, "promptCacheMode", "off");
+        ReflectionTestUtils.setField(client, "promptCacheTtl", "30m");
         client.setRestTemplate(restTemplate);
     }
 
@@ -197,6 +200,60 @@ class LlmChatCompletionsClientTest {
     }
 
     @Test
+    void extractUsage_mapsPromptTokensDetails_whenPresent() {
+        Map<String, Object> response = sampleResponseWithCacheDetails(
+                "x", "stop", 2000, 100, 2100, 900, 1100);
+        OpenAIUsage usage = client.extractUsage(response, "global.openai.gpt-5.6-terra");
+        assertEquals(2000, usage.getPromptTokens());
+        assertEquals(100, usage.getCompletionTokens());
+        assertEquals(2100, usage.getTotalTokens());
+        assertTrue(usage.isCacheMetricsPresent());
+        assertEquals(1100, usage.getCacheWriteTokens());
+        assertEquals(900, usage.getCachedTokens());
+    }
+
+    @Test
+    void extractUsage_missingPromptTokensDetails_leavesCacheFieldsNull() {
+        Map<String, Object> response = sampleResponse("x", "stop", 12, 4, 16);
+        OpenAIUsage usage = client.extractUsage(response, "global.openai.gpt-5.6-terra");
+        assertFalse(usage.isCacheMetricsPresent());
+        assertNull(usage.getCacheWriteTokens());
+        assertNull(usage.getCachedTokens());
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void complete_bedrock_outboundBodyHasNoExplicitCacheOptions() {
+        ReflectionTestUtils.setField(client, "provider", "bedrock");
+        Map<String, Object> response = sampleResponse("ok", "stop", 10, 2, 12);
+        when(restTemplate.exchange(any(String.class), eq(HttpMethod.POST), any(HttpEntity.class), eq(Map.class)))
+                .thenReturn(ResponseEntity.ok(response));
+
+        client.complete(
+                List.of(
+                        Map.of("role", "system", "content", "sys"),
+                        Map.of("role", "user", "content", "q")
+                ),
+                null,
+                null,
+                false,
+                "Grounded"
+        );
+
+        ArgumentCaptor<HttpEntity> entityCaptor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(
+                eq("https://bedrock-runtime.eu-west-1.amazonaws.com/openai/v1/chat/completions"),
+                eq(HttpMethod.POST),
+                entityCaptor.capture(),
+                eq(Map.class)
+        );
+        Map<String, Object> body = (Map<String, Object>) entityCaptor.getValue().getBody();
+        assertFalse(PromptCacheProbe.bodyHasExplicitCacheOptions(body));
+        assertFalse(body.containsKey("prompt_cache_options"));
+        assertFalse(body.containsKey("prompt_cache_key"));
+    }
+
+    @Test
     @SuppressWarnings("unchecked")
     void complete_bedrock_withNestedCacheUsage_stillParsesOnlyTopLevelTokenFields() {
         ReflectionTestUtils.setField(client, "provider", "bedrock");
@@ -216,9 +273,82 @@ class LlmChatCompletionsClientTest {
         assertEquals(2000, result.usage().getPromptTokens());
         assertEquals(300, result.usage().getCompletionTokens());
         assertEquals(2300, result.usage().getTotalTokens());
-        // Phase 1: extractUsage unchanged — nested cache fields are not mapped onto OpenAIUsage
+        assertTrue(result.usage().isCacheMetricsPresent());
+        assertEquals(1500, result.usage().getCachedTokens());
+        assertEquals(0, result.usage().getCacheWriteTokens());
         Map<String, Object> rawUsage = (Map<String, Object>) result.rawResponse().get("usage");
         assertTrue(rawUsage.containsKey("prompt_tokens_details"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void complete_bedrock_explicitMode_grounded_addsBreakpointAndOptions_withoutCacheKey() {
+        ReflectionTestUtils.setField(client, "provider", "bedrock");
+        ReflectionTestUtils.setField(client, "promptCacheMode", "explicit");
+        Map<String, Object> response = sampleResponseWithCacheDetails(
+                "ok", "stop", 2000, 100, 2100, 0, 1400);
+        when(restTemplate.exchange(any(String.class), eq(HttpMethod.POST), any(HttpEntity.class), eq(Map.class)))
+                .thenReturn(ResponseEntity.ok(response));
+
+        client.complete(
+                List.of(
+                        Map.of("role", "system", "content", "stable grounded system"),
+                        Map.of("role", "user", "content", "USER QUESTION:\nq\n\nRETRIEVED DOCUMENTATION:\nchunk")
+                ),
+                null,
+                null,
+                false,
+                "Grounded"
+        );
+
+        ArgumentCaptor<HttpEntity> entityCaptor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(
+                eq("https://bedrock-runtime.eu-west-1.amazonaws.com/openai/v1/chat/completions"),
+                eq(HttpMethod.POST),
+                entityCaptor.capture(),
+                eq(Map.class)
+        );
+        Map<String, Object> body = (Map<String, Object>) entityCaptor.getValue().getBody();
+        assertTrue(PromptCacheProbe.bodyHasExplicitCacheOptions(body));
+        assertEquals(Map.of("mode", "explicit", "ttl", "30m"), body.get("prompt_cache_options"));
+        assertFalse(body.containsKey("prompt_cache_key"));
+
+        List<Map<String, Object>> outMessages = (List<Map<String, Object>>) body.get("messages");
+        Object content = outMessages.get(0).get("content");
+        assertTrue(content instanceof List<?>);
+        Map<String, Object> part = (Map<String, Object>) ((List<?>) content).get(0);
+        assertEquals("text", part.get("type"));
+        assertEquals("stable grounded system", part.get("text"));
+        assertEquals(Map.of("mode", "explicit"), part.get("prompt_cache_breakpoint"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void complete_bedrock_explicitMode_planner_doesNotAddCacheFields() {
+        ReflectionTestUtils.setField(client, "provider", "bedrock");
+        ReflectionTestUtils.setField(client, "promptCacheMode", "explicit");
+        Map<String, Object> response = sampleResponse("{}", "stop", 10, 2, 12);
+        when(restTemplate.exchange(any(String.class), eq(HttpMethod.POST), any(HttpEntity.class), eq(Map.class)))
+                .thenReturn(ResponseEntity.ok(response));
+
+        client.complete(
+                List.of(
+                        Map.of("role", "system", "content", "planner sys"),
+                        Map.of("role", "user", "content", "plan this")
+                ),
+                0.3,
+                256,
+                true,
+                "Planner"
+        );
+
+        ArgumentCaptor<HttpEntity> entityCaptor = ArgumentCaptor.forClass(HttpEntity.class);
+        verify(restTemplate).exchange(any(String.class), eq(HttpMethod.POST), entityCaptor.capture(), eq(Map.class));
+        Map<String, Object> body = (Map<String, Object>) entityCaptor.getValue().getBody();
+        assertFalse(PromptCacheProbe.bodyHasExplicitCacheOptions(body));
+        assertFalse(body.containsKey("prompt_cache_options"));
+        Object content = ((List<Map<String, Object>>) body.get("messages")).get(0).get("content");
+        assertEquals("planner sys", content);
     }
 
     @Test

@@ -45,7 +45,7 @@ class VisionDirectAnswerServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void answer_sendsOriginalQuestionAndImageWithoutJsonObject() {
-        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean()))
+        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean(), any()))
                 .thenReturn(new LlmChatCompletionsClient.ChatCompletionResult(
                         "Visible error is about CRS610.",
                         false,
@@ -62,7 +62,7 @@ class VisionDirectAnswerServiceTest {
         assertEquals(40L, result.elapsedMs());
 
         ArgumentCaptor<List<Map<String, Object>>> captor = ArgumentCaptor.forClass(List.class);
-        verify(llmClient).completeMultimodal(captor.capture(), eq(0.3), eq(1024), eq(false));
+        verify(llmClient).completeMultimodal(captor.capture(), eq(0.3), eq(1024), eq(false), eq("VisionAnswer"));
         List<Map<String, Object>> content = (List<Map<String, Object>>) captor.getValue().get(1).get("content");
         assertTrue(((String) content.get(0).get("text")).contains("Was ist der Fehler?"));
         assertTrue(((String) content.get(0).get("text")).contains("de_DE"));
@@ -73,7 +73,7 @@ class VisionDirectAnswerServiceTest {
     @Test
     @SuppressWarnings("unchecked")
     void answer_passesAllImagesInOrder() {
-        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean()))
+        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean(), any()))
                 .thenReturn(new LlmChatCompletionsClient.ChatCompletionResult(
                         "Both screens show CRS610.",
                         false,
@@ -91,7 +91,7 @@ class VisionDirectAnswerServiceTest {
 
         assertEquals("Both screens show CRS610.", result.reply());
         ArgumentCaptor<List<Map<String, Object>>> captor = ArgumentCaptor.forClass(List.class);
-        verify(llmClient).completeMultimodal(captor.capture(), eq(0.3), eq(1024), eq(false));
+        verify(llmClient).completeMultimodal(captor.capture(), eq(0.3), eq(1024), eq(false), eq("VisionAnswer"));
         List<Map<String, Object>> content = (List<Map<String, Object>>) captor.getValue().get(1).get("content");
         assertEquals(3, content.size());
         assertTrue(((String) ((Map<String, Object>) content.get(1).get("image_url")).get("url"))
@@ -102,7 +102,7 @@ class VisionDirectAnswerServiceTest {
 
     @Test
     void answer_rejectsEmptyModelReply() {
-        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean()))
+        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean(), any()))
                 .thenReturn(new LlmChatCompletionsClient.ChatCompletionResult(
                         "   ",
                         false,
@@ -122,7 +122,7 @@ class VisionDirectAnswerServiceTest {
     @Test
     void answer_sanitizesProviderErrorsWithDataUrl() {
         String leak = "failed data:image/png;base64," + Base64.getEncoder().encodeToString(PNG_BYTES);
-        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean()))
+        when(llmClient.completeMultimodal(any(), any(), anyInt(), anyBoolean(), any()))
                 .thenThrow(new OpenAIException(leak, 504));
 
         OpenAIException ex = assertThrows(
