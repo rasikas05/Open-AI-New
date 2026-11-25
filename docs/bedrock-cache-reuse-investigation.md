@@ -1,6 +1,8 @@
-# Bedrock cache reuse investigation (observation only)
+# Bedrock cache reuse investigation
 
-This guide covers controlled A/B/C/D tests and stage aggregation after deploying the observation-only build. It does **not** change prompt construction, explicit caching, `OpenAIUsage`, or DB persistence.
+Observation logging remains available. Explicit Grounded caching is implemented behind `bedrock.prompt-cache.mode` (default **`off`**). See [`bedrock-explicit-prompt-cache-implementation-report.md`](bedrock-explicit-prompt-cache-implementation-report.md).
+
+Do **not** enable `explicit` in production until controlled tests confirm Bedrock `cache_write_tokens` / `cached_tokens`.
 
 ## What each Bedrock call logs
 
@@ -37,7 +39,20 @@ Bedrock usage dump | correlationId=... sessionId=... userId=... stage=... model=
 
 **Stages:** `Planner`, `Rewrite`, `Grounded`, `Suggestion`, `General`, `GapFill`, `RomanClassify`, `Translate`, `VisionQuery`, `VisionAnswer`.
 
+**Request context:** `sessionId` / `userId` are put into MDC at chat entry (`ComprehendChatService` / `ChatService`). Async Suggestion captures parent MDC before `supplyAsync` and installs it via `CorrelationIdSupport.callWithMdc` so Suggestion dumps keep the parent `correlationId` / session / user.
+
 Privacy: hashes and lengths only — never raw prompts or documents.
+
+## Exact-prompt replay (preferred before conversational A/B/C/D)
+
+Normal chat turns are **not** an exact cache experiment: history grows and RAG changes, so prefixes diverge even when the user question is repeated.
+
+To test reuse itself:
+
+1. Capture one Grounded dump with a known `fullPromptHash`.
+2. Replay the **exact same serialized messages** twice (same model + endpoint), within a few minutes — ideally via a harness that posts identical bodies, not a second UI chat turn.
+3. Expect the second call: same `fullPromptHash`, and ideally `cachedTokens > 0` if Bedrock reuse works for that content.
+4. Separately, run conversational A/B/C/D to measure history/RAG divergence.
 
 ## Controlled tests A / B / C / D
 

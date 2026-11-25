@@ -489,6 +489,14 @@ public class ChatPersistenceService {
                 message.setPromptTokens(openAiUsage.getPromptTokens());
                 message.setCompletionTokens(openAiUsage.getCompletionTokens());
                 message.setOpenaiModel(openAiUsage.getModel());
+                message.setCacheMetricsPresent(openAiUsage.isCacheMetricsPresent());
+                if (openAiUsage.isCacheMetricsPresent()) {
+                    message.setCacheWriteTokens(openAiUsage.getCacheWriteTokens());
+                    message.setCachedTokens(openAiUsage.getCachedTokens());
+                } else {
+                    message.setCacheWriteTokens(null);
+                    message.setCachedTokens(null);
+                }
             }
             message.setRetrievalReason(retrievalReason);
             message.setRetrievalTimeMs(retrievalTimeMs);

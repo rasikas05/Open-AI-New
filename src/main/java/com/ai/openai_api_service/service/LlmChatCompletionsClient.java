@@ -80,6 +80,13 @@ public class LlmChatCompletionsClient {
     @Value("${bedrock.runtime.max-completion-tokens:4096}")
     private int bedrockMaxCompletionTokens;
 
+    /** off (default) | explicit — Grounded RAG only when explicit. */
+    @Value("${bedrock.prompt-cache.mode:off}")
+    private String promptCacheMode;
+
+    @Value("${bedrock.prompt-cache.ttl:30m}")
+    private String promptCacheTtl;
+
     private RestTemplate restTemplate;
 
     @PostConstruct
@@ -195,6 +202,9 @@ public class LlmChatCompletionsClient {
                 tokenArg,
                 jsonObjectResponse
         );
+        if (isBedrock() && PromptCacheRequestSupport.shouldApplyExplicitCache(promptCacheMode, stage)) {
+            PromptCacheRequestSupport.applyExplicitGroundedCache(body, promptCacheTtl);
+        }
 
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
@@ -370,8 +380,8 @@ public class LlmChatCompletionsClient {
     }
 
     /**
-     * Observation-only Bedrock dump: usage cache fields + prompt structure hashes.
-     * Does not parse cache fields into {@link OpenAIUsage}.
+     * Bedrock dump: usage cache fields + prompt structure hashes (observation).
+     * Cache fields are also mapped into {@link OpenAIUsage} via {@link #extractUsage}.
      */
     private void logBedrockUsageDump(
             String model,
@@ -386,8 +396,8 @@ public class LlmChatCompletionsClient {
         }
         String stage = resolveStage(stageArg);
         String correlationId = MDC.get(CorrelationIdSupport.MDC_KEY);
-        String sessionId = MDC.get("sessionId");
-        String userId = MDC.get("userId");
+        String sessionId = MDC.get(CorrelationIdSupport.MDC_SESSION_ID);
+        String userId = MDC.get(CorrelationIdSupport.MDC_USER_ID);
 
         int promptTokens = 0;
         int cacheWriteTokens = 0;
@@ -506,6 +516,9 @@ public class LlmChatCompletionsClient {
     OpenAIUsage extractUsage(Map<String, Object> response, String modelUsed) {
         OpenAIUsage usage = new OpenAIUsage();
         usage.setModel(modelUsed);
+        usage.setCacheMetricsPresent(false);
+        usage.setCacheWriteTokens(null);
+        usage.setCachedTokens(null);
         Object usageObj = response.get("usage");
         if (!(usageObj instanceof Map<?, ?> usageMap)) {
             usage.setPromptTokens(0);
@@ -516,6 +529,12 @@ public class LlmChatCompletionsClient {
         usage.setPromptTokens(toInt(usageMap.get("prompt_tokens")));
         usage.setCompletionTokens(toInt(usageMap.get("completion_tokens")));
         usage.setTotalTokens(toInt(usageMap.get("total_tokens")));
+        Object detailsObj = usageMap.get("prompt_tokens_details");
+        if (detailsObj instanceof Map<?, ?> details) {
+            usage.setCacheMetricsPresent(true);
+            usage.setCacheWriteTokens(toInt(details.get("cache_write_tokens")));
+            usage.setCachedTokens(toInt(details.get("cached_tokens")));
+        }
         return usage;
     }
 

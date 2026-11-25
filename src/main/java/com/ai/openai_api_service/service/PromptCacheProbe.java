@@ -169,6 +169,21 @@ final class PromptCacheProbe {
         if (content instanceof String s) {
             return s;
         }
+        if (content instanceof List<?> parts) {
+            StringBuilder sb = new StringBuilder();
+            for (Object partObj : parts) {
+                if (partObj instanceof Map<?, ?> part) {
+                    Object text = part.get("text");
+                    if (text != null) {
+                        if (!sb.isEmpty()) {
+                            sb.append('\n');
+                        }
+                        sb.append(text);
+                    }
+                }
+            }
+            return sb.toString();
+        }
         return String.valueOf(content);
     }
 

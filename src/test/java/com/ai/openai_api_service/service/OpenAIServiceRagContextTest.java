@@ -79,6 +79,10 @@ class OpenAIServiceRagContextTest {
         assertTrue(prompt.contains("Do not include http:// or https://"));
         assertTrue(prompt.contains("Treat the retrieved Infor M3 documentation as the source of truth"));
         assertTrue(prompt.contains("Never invent references or URLs"));
+        assertTrue(prompt.contains("Additional grounded coverage rules"));
+        assertTrue(prompt.contains("Return status PARTIAL only when the user requested multiple distinct tasks"));
+        assertTrue(prompt.contains("For a single-task question where the conflict prevents a reliable answer, return INSUFFICIENT"));
+        assertFalse(prompt.contains("Do not apologize, refuse for reasons unrelated to documentation coverage"));
         assertFalse(prompt.contains("Write the JSON \"answer\" field in"));
         assertFalse(prompt.contains("Presentation Guidance"));
         assertFalse(prompt.contains("shared knowledge pool, not a checklist"));

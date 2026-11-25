@@ -1,5 +1,6 @@
 package com.ai.openai_api_service.service;
 
+import com.ai.openai_api_service.config.CorrelationIdSupport;
 import com.ai.openai_api_service.model.ChatRequest;
 import com.ai.openai_api_service.model.ChatResponse;
 import com.ai.openai_api_service.model.MessageDto;
@@ -38,39 +39,47 @@ public class ChatService {
     }
 
     public ChatResponse chat(ChatRequest request) {
-        TenantQuotaService.QuotaCheckResult quotaCheck = tenantQuotaService.checkBeforeChat(request.getTenantCode());
-        if (!quotaCheck.allowed()) {
-            String reason = quotaCheck.reason();
-            String reply = "Token limit reached for this tenant. Please top up to continue.";
-            if ("QUOTA_NOT_CONFIGURED".equals(reason)) {
-                reply = "Quota is not configured for this tenant. Please contact admin.";
-            } else if ("TENANT_BLOCKED".equals(reason)) {
-                reply = "This tenant is blocked. Please contact admin.";
+        CorrelationIdSupport.putRequestIds(
+                request != null ? request.getSessionId() : null,
+                request != null ? request.getUserId() : null
+        );
+        try {
+            TenantQuotaService.QuotaCheckResult quotaCheck = tenantQuotaService.checkBeforeChat(request.getTenantCode());
+            if (!quotaCheck.allowed()) {
+                String reason = quotaCheck.reason();
+                String reply = "Token limit reached for this tenant. Please top up to continue.";
+                if ("QUOTA_NOT_CONFIGURED".equals(reason)) {
+                    reply = "Quota is not configured for this tenant. Please contact admin.";
+                } else if ("TENANT_BLOCKED".equals(reason)) {
+                    reply = "This tenant is blocked. Please contact admin.";
+                }
+                ChatResponse blocked = new ChatResponse(reply, false);
+                blocked.setLimitExceeded(true);
+                blocked.setUsage(quotaCheck.usage());
+                blocked.setBlockReason(reason);
+                if ("QUOTA_NOT_CONFIGURED".equals(reason)) {
+                    blocked.setUpgradeOptions(List.of("Contact admin to assign quota"));
+                } else {
+                    blocked.setUpgradeOptions(List.of("Buy 100 tokens", "Buy 500 tokens", "Buy 5000 tokens"));
+                }
+                return blocked;
             }
-            ChatResponse blocked = new ChatResponse(reply, false);
-            blocked.setLimitExceeded(true);
-            blocked.setUsage(quotaCheck.usage());
-            blocked.setBlockReason(reason);
-            if ("QUOTA_NOT_CONFIGURED".equals(reason)) {
-                blocked.setUpgradeOptions(List.of("Contact admin to assign quota"));
-            } else {
-                blocked.setUpgradeOptions(List.of("Buy 100 tokens", "Buy 500 tokens", "Buy 5000 tokens"));
-            }
-            return blocked;
-        }
 
-        ChatResponse chatResponse = openAIService.chat(request);
-        if (Boolean.TRUE.equals(chatResponse.getLimitExceeded())) {
+            ChatResponse chatResponse = openAIService.chat(request);
+            if (Boolean.TRUE.equals(chatResponse.getLimitExceeded())) {
+                return chatResponse;
+            }
+            chatResponse.setLimitExceeded(false);
+
+            ChatRequest sanitizedRequest = sanitizeRequestForSuggestions(request);
+            SuggestionContext context = buildSuggestionContext(sanitizedRequest, chatResponse.getReply());
+            SuggestionResult suggestionResult = suggestionEngineService.generateSuggestions(context);
+            chatResponse.setSuggestions(suggestionResult.getSuggestions());
+            chatResponse.setSuggestionDetails(suggestionResult.getDetails());
             return chatResponse;
+        } finally {
+            CorrelationIdSupport.clearRequestIds();
         }
-        chatResponse.setLimitExceeded(false);
-
-        ChatRequest sanitizedRequest = sanitizeRequestForSuggestions(request);
-        SuggestionContext context = buildSuggestionContext(sanitizedRequest, chatResponse.getReply());
-        SuggestionResult suggestionResult = suggestionEngineService.generateSuggestions(context);
-        chatResponse.setSuggestions(suggestionResult.getSuggestions());
-        chatResponse.setSuggestionDetails(suggestionResult.getDetails());
-        return chatResponse;
     }
 
     private SuggestionContext buildSuggestionContext(ChatRequest request, String answer) {
